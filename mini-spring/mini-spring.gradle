@@ -1,1 +1,6 @@
 description = "mini spring"
+
+dependencies {
+    // https://mvnrepository.com/artifact/org.dom4j/dom4j
+    implementation group: 'org.dom4j', name: 'dom4j', version: '2.1.4'
+}

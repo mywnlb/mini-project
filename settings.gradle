@@ -1,9 +1,14 @@
 rootProject.name = 'miniproject'
 
+include 'mini-mysql'
 include 'mini-spring'
+include 'mini-tomcat'
+include 'mini-nyadbbyjava'
+include 'mini-simplebookdb'
+
 
 rootProject.children.each {project ->
     project.buildFileName = "${project.name}.gradle"
 }
-include 'mini-tomcat'
+include 'mini-mysql'
 

@@ -5,7 +5,7 @@ plugins {
 group = 'cn.zhangyis'
 version = '1.0-SNAPSHOT'
 
-subprojects {
+allprojects {
     apply plugin: 'java'
 
     group = 'cn.zhangyis'
@@ -55,4 +55,8 @@ configurations {
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+tasks.withType(JavaExec){
+    jvmArgs = ['-Xmx512m', '-Dfile.encoding=UTF-8', '-Dsun.stdout.encoding=UTF-8','-Dsun.stderr.encoding=UTF-8']
 }
