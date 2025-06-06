@@ -19,6 +19,8 @@ public class MainParser {
         switch (token.getType()) {
             case SELECT:
                 return new SelectParser(tokens).parse();
+            case UPDATE:
+                return new UpdateParser(tokens).parse();
             case INSERT:
                 return new InsertParser(tokens).parse();
             case DELETE:

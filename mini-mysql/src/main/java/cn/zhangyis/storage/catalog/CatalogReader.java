@@ -1,4 +1,8 @@
-package cn.zhangyis.sql.catalog;
+package cn.zhangyis.storage.catalog;
+
+import cn.zhangyis.enums.FiledType;
+
+import java.util.List;
 
 public interface CatalogReader {
     // 检查表是否存在
@@ -8,5 +12,5 @@ public interface CatalogReader {
     List<ColumnMeta> getTableColumns(String schema, String table);
 
     // 获取列的数据类型
-    DataType getColumnType(String schema, String table, String column);
+    FiledType getColumnType(String schema, String table, String column);
 }

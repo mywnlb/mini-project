@@ -32,6 +32,9 @@ allprojects {
         implementation 'commons-io:commons-io:2.15.1'
 // https://mvnrepository.com/artifact/cn.hutool/hutool-all
         implementation 'cn.hutool:hutool-all:5.8.24'
+        // https://mvnrepository.com/artifact/org.apache.commons/commons-collections4
+// https://mvnrepository.com/artifact/org.apache.commons/commons-collections4
+        implementation 'org.apache.commons:commons-collections4:4.5.0'
         testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.2'
         testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.2'
     }

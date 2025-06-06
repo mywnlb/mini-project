@@ -40,6 +40,53 @@ public class SelectStatement extends SQLStatement {
     public List<OrderByItem> getOrderByItems() { return orderByItems; }
     public Integer getLimit() { return limit; }
     public boolean isDistinct() { return distinct; }
+    
+    // Setters
+    public void setSelectItems(List<SelectItem> selectItems) { 
+        this.selectItems = selectItems != null ? selectItems : new ArrayList<>(); 
+    }
+    public void setFromTables(List<TableReference> fromTables) { 
+        this.fromTables = fromTables != null ? fromTables : new ArrayList<>(); 
+    }
+    public void setJoins(List<JoinClause> joins) { 
+        this.joins = joins != null ? joins : new ArrayList<>(); 
+    }
+    public void setWhereCondition(Expression whereCondition) { 
+        this.whereCondition = whereCondition; 
+    }
+    public void setGroupByColumns(List<Expression> groupByColumns) { 
+        this.groupByColumns = groupByColumns != null ? groupByColumns : new ArrayList<>(); 
+    }
+    public void setHavingCondition(Expression havingCondition) { 
+        this.havingCondition = havingCondition; 
+    }
+    public void setOrderByItems(List<OrderByItem> orderByItems) { 
+        this.orderByItems = orderByItems != null ? orderByItems : new ArrayList<>(); 
+    }
+    public void setLimit(Integer limit) { 
+        this.limit = limit; 
+    }
+    public void setDistinct(boolean distinct) { 
+        this.distinct = distinct; 
+    }
+    
+    // 便利方法 - 兼容新的语义分析器接口
+    public List<TableReference> getFrom() { 
+        return getFromTables(); 
+    }
+    public Expression getWhere() { 
+        return getWhereCondition(); 
+    }
+    public void setWhere(Expression where) { 
+        setWhereCondition(where); 
+    }
+    public Expression getHaving() { 
+        return getHavingCondition(); 
+    }
+    public void setHaving(Expression having) { 
+        setHavingCondition(having); 
+    }
+
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder("SELECT ");

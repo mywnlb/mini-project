@@ -4,21 +4,18 @@ package cn.zhangyis.sql;
  * 字面量表达式，表示SQL中的常量值
  */
 public class LiteralExpression implements Expression {
-    private final String value;
+    private final Object value;
     private final LiteralType literalType;
     
-    public LiteralExpression(String value, LiteralType literalType) {
+    public LiteralExpression(Object value, LiteralType literalType) {
         this.value = value;
         this.literalType = literalType;
     }
     
-    public String getValue() {
+    public Object getValue() {
         return value;
     }
-    
-    public LiteralType getLiteralType() {
-        return literalType;
-    }
+
     
     @Override
     public ExpressionType getType() {
@@ -30,7 +27,20 @@ public class LiteralExpression implements Expression {
         if (literalType == LiteralType.STRING) {
             return "'" + value + "'";
         }
-        return value;
+        return value.toString();
+    }
+
+    public boolean isNumber() {
+        return literalType == LiteralType.NUMBER;
+    }
+    public boolean isString() {
+        return literalType == LiteralType.STRING;
+    }
+    public boolean isBoolean() {
+        return literalType == LiteralType.BOOLEAN;
+    }
+    public boolean isNull() {
+        return literalType == LiteralType.NULL;
     }
 }
 

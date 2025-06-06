@@ -1,8 +1,14 @@
 package cn.zhangyis.sql;
 
+/**
+ * SQL 删除语句表示
+ */
 public class DeleteStatement extends SQLStatement {
     private String tableName;
     private Expression whereCondition;
+
+    private SelectStatement selectStatement;
+
 
     public DeleteStatement(String tableName, Expression whereCondition) {
         super(SQLType.DELETE);
@@ -16,6 +22,19 @@ public class DeleteStatement extends SQLStatement {
 
     public Expression getWhereCondition() {
         return whereCondition;
+    }
+
+
+    public SelectStatement getSelectStatement() {
+        return selectStatement;
+    }
+
+    public void setWhereCondition(Expression whereCondition) {
+        this.whereCondition = whereCondition;
+    }
+
+    public void setSelectStatement(SelectStatement selectStatement) {
+        this.selectStatement = selectStatement;
     }
 
     @Override

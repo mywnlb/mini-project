@@ -8,8 +8,8 @@ import java.util.List;
 public class InsertStatement extends SQLStatement {
     private final String tableName;
     private final List<String> columnNames;
-    private final List<List<Expression>> valuesList;
-    private final SelectStatement selectStatement;
+    private List<List<Expression>> valuesList;
+    private SelectStatement selectStatement;
 
     /**
      * 创建带有VALUES子句的INSERT语句
@@ -49,6 +49,14 @@ public class InsertStatement extends SQLStatement {
 
     public SelectStatement getSelectStatement() {
         return selectStatement;
+    }
+
+    public void setSelectStatement(SelectStatement selectStatement) {
+        this.selectStatement = selectStatement;
+    }
+
+    public void setValuesList(List<List<Expression>> valuesList) {
+        this.valuesList = valuesList;
     }
 
     public boolean isSelectBased() {
