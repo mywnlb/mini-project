@@ -64,7 +64,7 @@ public class SqlValidatorScope {
      * 添加表到作用域，支持别名
      */
     public void addTable(String name, Table table, String alias) {
-        SqlValidatorNamespace namespace = new TableNamespace(table);
+        SqlValidatorNamespace namespace = new TableNamespace(table,alias);
         namespaces.put(name, namespace);
         
         if (alias != null && !alias.equals(name)) {
@@ -145,6 +145,26 @@ public class SqlValidatorScope {
             // 多个候选，需要报告歧义错误
             throw new SemanticException("Column '" + columnName + "' is ambiguous");
         }
+    }
+    
+    /**
+     * 查找命名空间
+     */
+    public SqlValidatorNamespace findNamespace(String name) {
+        // 处理别名
+        String realName = aliases.getOrDefault(name, name);
+        
+        SqlValidatorNamespace namespace = namespaces.get(realName);
+        if (namespace != null) {
+            return namespace;
+        }
+        
+        // 如果当前作用域找不到，查找父作用域
+        if (parent != null) {
+            return parent.findNamespace(name);
+        }
+        
+        return null;
     }
     
     /**

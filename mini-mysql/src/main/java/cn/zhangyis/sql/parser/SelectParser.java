@@ -1,6 +1,8 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser;
 
 import cn.zhangyis.exceptions.SQLParseException;
+import cn.zhangyis.sql.parser.expression.ColumnExpression;
+import cn.zhangyis.sql.parser.expression.Expression;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -79,13 +81,28 @@ public class SelectParser extends SQLParser {
             orderByItems = parseOrderByItems();
         }
 
-        // 解析LIMIT子句
+        // 解析LIMIT子句  limt 5 or limt 5,10
+        Integer offset = null;
         Integer limit = null;
         if (peek() != null && peek().getValue().equalsIgnoreCase("LIMIT")) {
             consume();
+            // 检查是否有可选的LIMIT值
             if (peek() != null && peek().getType() == SQLLexer.TokenType.NUMBER) {
-                limit = Integer.parseInt(consume().getValue());
+                offset = Integer.parseInt(consume().getValue());
             }
+            // 检查是否有可选的OFFSET值 limt 5,10
+            if (peek() != null && peek().getType() == SQLLexer.TokenType.COMMA) {
+                consume(); // 消费逗号
+                if (peek() != null && peek().getType() == SQLLexer.TokenType.NUMBER) {
+                    limit = Integer.parseInt(consume().getValue());
+                } else {
+                    throw new SQLParseException("Expected number after LIMIT comma");
+                }
+            }else if (offset != null) {
+                limit = offset; // 如果只有一个数字，则作为LIMIT值
+                offset = null; // 清除偏移量
+            }
+
         }
 
         // 解析可选的分号
@@ -95,7 +112,7 @@ public class SelectParser extends SQLParser {
 
         return new SelectStatement(
                 selectItems, fromTables, joins, whereCondition,
-                groupByColumns, havingCondition, orderByItems, limit, distinct
+                groupByColumns, havingCondition, orderByItems, limit,offset, distinct
         );
     }
 

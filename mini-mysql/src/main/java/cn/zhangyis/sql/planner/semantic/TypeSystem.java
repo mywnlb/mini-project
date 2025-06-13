@@ -3,8 +3,19 @@ package cn.zhangyis.sql.planner.semantic;
 import java.util.*;
 
 /**
- * SQL类型系统
- * 负责处理SQL类型推导和兼容性检查
+ * 类型系统工具类
+ * 负责SQL类型推导、类型兼容性检查和类型转换
+ * 参考 Apache Calcite 的类型系统实现
+ * 
+ * 职责：
+ * 1. 二元表达式的类型推导
+ * 2. 函数调用的返回类型推导
+ * 3. 类型兼容性检查
+ * 4. 类型优先级处理
+ * 
+ * @Description SQL类型系统
+ * @Date 2025/6/6
+ * @Created by libo
  */
 public class TypeSystem {
     // 数值类型
@@ -25,6 +36,9 @@ public class TypeSystem {
     // 类型转换规则
     private static final Map<String, Set<String>> TYPE_CONVERSION_RULES = new HashMap<>();
     
+    // 类型优先级定义 - 数值越大优先级越高
+    private static final Map<String, Integer> TYPE_PRECEDENCE = new HashMap<>();
+    
     static {
         // 数值类型转换规则
         TYPE_CONVERSION_RULES.put("INT", new HashSet<>(Arrays.asList("BIGINT", "FLOAT", "DOUBLE", "DECIMAL")));
@@ -40,205 +54,162 @@ public class TypeSystem {
         TYPE_CONVERSION_RULES.put("DATE", new HashSet<>(Arrays.asList("DATETIME", "TIMESTAMP")));
         TYPE_CONVERSION_RULES.put("TIME", new HashSet<>(Arrays.asList("DATETIME", "TIMESTAMP")));
         TYPE_CONVERSION_RULES.put("DATETIME", new HashSet<>(Arrays.asList("TIMESTAMP")));
+        
+        TYPE_PRECEDENCE.put("NULL", 0);
+        TYPE_PRECEDENCE.put("BOOLEAN", 1);
+        TYPE_PRECEDENCE.put("TINYINT", 2);
+        TYPE_PRECEDENCE.put("SMALLINT", 3);
+        TYPE_PRECEDENCE.put("INT", 4);
+        TYPE_PRECEDENCE.put("BIGINT", 5);
+        TYPE_PRECEDENCE.put("FLOAT", 6);
+        TYPE_PRECEDENCE.put("DOUBLE", 7);
+        TYPE_PRECEDENCE.put("DECIMAL", 8);
+        TYPE_PRECEDENCE.put("CHAR", 9);
+        TYPE_PRECEDENCE.put("VARCHAR", 10);
+        TYPE_PRECEDENCE.put("TEXT", 11);
+        TYPE_PRECEDENCE.put("DATE", 12);
+        TYPE_PRECEDENCE.put("TIME", 13);
+        TYPE_PRECEDENCE.put("TIMESTAMP", 14);
     }
     
     /**
      * 推导二元表达式的类型
+     * 
+     * @param operator 操作符
+     * @param leftType 左操作数类型
+     * @param rightType 右操作数类型
+     * @return 结果类型
      */
     public static String deriveBinaryExpressionType(String operator, String leftType, String rightType) {
-        // 算术运算符
-        if (isArithmeticOperator(operator)) {
-            return deriveArithmeticType(leftType, rightType);
+        switch (operator.toUpperCase()) {
+            // 算术运算符
+            case "+":
+            case "-":
+            case "*":
+            case "/":
+                return deriveArithmeticType(leftType, rightType);
+            
+            // 比较运算符 - 返回布尔类型
+            case "=":
+            case "!=":
+            case "<>":
+            case "<":
+            case "<=":
+            case ">":
+            case ">=":
+                return "BOOLEAN";
+            
+            // 逻辑运算符 - 要求操作数是布尔类型
+            case "AND":
+            case "OR":
+                if ("BOOLEAN".equals(leftType) && "BOOLEAN".equals(rightType)) {
+                    return "BOOLEAN";
+                }
+                throw new SemanticException("Logical operators require boolean operands");
+            
+            // 字符串连接
+            case "||":
+            case "CONCAT":
+                if (isStringType(leftType) && isStringType(rightType)) {
+                    return getHigherPrecedenceStringType(leftType, rightType);
+                }
+                return "VARCHAR";
+            
+            // LIKE 操作符
+            case "LIKE":
+            case "NOT LIKE":
+                return "BOOLEAN";
+            
+            // IN 操作符
+            case "IN":
+            case "NOT IN":
+                return "BOOLEAN";
+            
+            default:
+                // 默认使用高优先级类型
+                return getHigherPrecedenceType(leftType, rightType);
         }
-        
-        // 比较运算符
-        if (isComparisonOperator(operator)) {
-            return "BOOLEAN";
-        }
-        
-        // 逻辑运算符
-        if (isLogicalOperator(operator)) {
-            return "BOOLEAN";
-        }
-        
-        // 字符串连接
-        if (operator.equals("||")) {
-            return deriveStringConcatType(leftType, rightType);
-        }
-        
-        throw new SemanticException("Unsupported operator: " + operator);
     }
     
     /**
-     * 推导函数调用的类型
+     * 推导函数的返回类型
+     * 
+     * @param functionName 函数名
+     * @param argTypes 参数类型列表
+     * @return 函数返回类型
      */
     public static String deriveFunctionType(String functionName, List<String> argTypes) {
-        // 聚合函数
-        if (isAggregateFunction(functionName)) {
-            return deriveAggregateFunctionType(functionName, argTypes);
-        }
-        
-        // 数学函数
-        if (isMathFunction(functionName)) {
-            return deriveMathFunctionType(functionName, argTypes);
-        }
-        
-        // 字符串函数
-        if (isStringFunction(functionName)) {
-            return deriveStringFunctionType(functionName, argTypes);
-        }
-        
-        // 日期时间函数
-        if (isDateTimeFunction(functionName)) {
-            return deriveDateTimeFunctionType(functionName, argTypes);
-        }
-        
-        throw new SemanticException("Unsupported function: " + functionName);
-    }
-    
-    /**
-     * 检查类型是否兼容
-     */
-    public static boolean isTypeCompatible(String sourceType, String targetType) {
-        // 相同类型一定兼容
-        if (sourceType.equals(targetType)) {
-            return true;
-        }
-        
-        // 检查类型转换规则
-        Set<String> convertibleTypes = TYPE_CONVERSION_RULES.get(sourceType);
-        if (convertibleTypes != null && convertibleTypes.contains(targetType)) {
-            return true;
-        }
-        
-        // 数值类型兼容性
-        if (isNumericType(sourceType) && isNumericType(targetType)) {
-            return true;
-        }
-        
-        // 字符串类型兼容性
-        if (isStringType(sourceType) && isStringType(targetType)) {
-            return true;
-        }
-        
-        // 日期时间类型兼容性
-        if (isDateTimeType(sourceType) && isDateTimeType(targetType)) {
-            return true;
-        }
-        
-        return false;
-    }
-    
-    /**
-     * 推导算术表达式的类型
-     */
-    private static String deriveArithmeticType(String leftType, String rightType) {
-        // 如果两个操作数都是数值类型
-        if (isNumericType(leftType) && isNumericType(rightType)) {
-            // 如果有一个是DOUBLE，结果是DOUBLE
-            if (leftType.equals("DOUBLE") || rightType.equals("DOUBLE")) {
-                return "DOUBLE";
-            }
-            // 如果有一个是FLOAT，结果是FLOAT
-            if (leftType.equals("FLOAT") || rightType.equals("FLOAT")) {
-                return "FLOAT";
-            }
-            // 如果有一个是BIGINT，结果是BIGINT
-            if (leftType.equals("BIGINT") || rightType.equals("BIGINT")) {
-                return "BIGINT";
-            }
-            // 默认返回INT
-            return "INT";
-        }
-        
-        throw new SemanticException("Incompatible types for arithmetic operation: " + 
-            leftType + " and " + rightType);
-    }
-    
-    /**
-     * 推导字符串连接的类型
-     */
-    private static String deriveStringConcatType(String leftType, String rightType) {
-        if (isStringType(leftType) && isStringType(rightType)) {
-            // 如果有一个是TEXT，结果是TEXT
-            if (leftType.equals("TEXT") || rightType.equals("TEXT")) {
-                return "TEXT";
-            }
-            // 如果有一个是VARCHAR，结果是VARCHAR
-            if (leftType.equals("VARCHAR") || rightType.equals("VARCHAR")) {
-                return "VARCHAR";
-            }
-            // 默认返回CHAR
-            return "CHAR";
-        }
-        
-        throw new SemanticException("Incompatible types for string concatenation: " + 
-            leftType + " and " + rightType);
-    }
-    
-    /**
-     * 推导聚合函数的类型
-     */
-    private static String deriveAggregateFunctionType(String functionName, List<String> argTypes) {
         switch (functionName.toUpperCase()) {
+            // 聚合函数
             case "COUNT":
                 return "BIGINT";
             case "SUM":
-            case "AVG":
-                if (isNumericType(argTypes.get(0))) {
-                    return argTypes.get(0);
+                if (argTypes.size() > 0) {
+                    String argType = argTypes.get(0);
+                    if (isNumericType(argType)) {
+                        return argType;
+                    }
                 }
-                throw new SemanticException("SUM/AVG requires numeric argument");
+                return "DOUBLE";
+            case "AVG":
+                return "DOUBLE";
             case "MAX":
             case "MIN":
-                return argTypes.get(0);
-            case "GROUP_CONCAT":
-                return "TEXT";
-            default:
-                throw new SemanticException("Unsupported aggregate function: " + functionName);
-        }
-    }
-    
-    /**
-     * 推导数学函数的类型
-     */
-    private static String deriveMathFunctionType(String functionName, List<String> argTypes) {
-        switch (functionName.toUpperCase()) {
-            case "ABS":
-            case "CEIL":
-            case "FLOOR":
-            case "ROUND":
-                return argTypes.get(0);
-            case "POWER":
-                return "DOUBLE";
-            default:
-                throw new SemanticException("Unsupported math function: " + functionName);
-        }
-    }
-    
-    /**
-     * 推导字符串函数的类型
-     */
-    private static String deriveStringFunctionType(String functionName, List<String> argTypes) {
-        switch (functionName.toUpperCase()) {
+                if (argTypes.size() > 0) {
+                    return argTypes.get(0);
+                }
+                return "VARCHAR";
+            
+            // 字符串函数
             case "LENGTH":
+            case "CHAR_LENGTH":
                 return "INT";
             case "UPPER":
             case "LOWER":
             case "TRIM":
-                return argTypes.get(0);
-            case "SUBSTRING":
+            case "LTRIM":
+            case "RTRIM":
+                if (argTypes.size() > 0 && isStringType(argTypes.get(0))) {
+                    return argTypes.get(0);
+                }
                 return "VARCHAR";
-            default:
-                throw new SemanticException("Unsupported string function: " + functionName);
-        }
-    }
-    
-    /**
-     * 推导日期时间函数的类型
-     */
-    private static String deriveDateTimeFunctionType(String functionName, List<String> argTypes) {
-        switch (functionName.toUpperCase()) {
+            case "SUBSTRING":
+            case "SUBSTR":
+                return "VARCHAR";
+            case "CONCAT":
+                return "VARCHAR";
+            
+            // 数学函数
+            case "ABS":
+                if (argTypes.size() > 0) {
+                    String argType = argTypes.get(0);
+                    if (isNumericType(argType)) {
+                        return argType;
+                    }
+                }
+                return "DOUBLE";
+            case "ROUND":
+            case "FLOOR":
+            case "CEIL":
+            case "CEILING":
+                return "DOUBLE";
+            case "SQRT":
+            case "LOG":
+            case "EXP":
+            case "POWER":
+            case "SIN":
+            case "COS":
+            case "TAN":
+                return "DOUBLE";
+            
+            // 日期时间函数
+            case "NOW":
+            case "CURRENT_TIMESTAMP":
+                return "TIMESTAMP";
+            case "CURRENT_DATE":
+                return "DATE";
+            case "CURRENT_TIME":
+                return "TIME";
             case "YEAR":
             case "MONTH":
             case "DAY":
@@ -246,106 +217,165 @@ public class TypeSystem {
             case "MINUTE":
             case "SECOND":
                 return "INT";
-            case "DATE_ADD":
-            case "DATE_SUB":
-                return argTypes.get(0);
+            
+            // 条件函数
+            case "COALESCE":
+            case "ISNULL":
+            case "NULLIF":
+                // 返回第一个非空参数的类型
+                for (String argType : argTypes) {
+                    if (!"NULL".equals(argType)) {
+                        return argType;
+                    }
+                }
+                return "NULL";
+            
+            case "CASE":
+                // CASE表达式返回所有WHEN分支的通用类型
+                if (argTypes.size() > 1) {
+                    return getCommonType(argTypes);
+                }
+                return "VARCHAR";
+            
             default:
-                throw new SemanticException("Unsupported datetime function: " + functionName);
+                // 未知函数默认返回VARCHAR
+                return "VARCHAR";
         }
     }
     
     /**
-     * 检查是否是算术运算符
+     * 检查两个类型是否兼容
      */
-    private static boolean isArithmeticOperator(String operator) {
-        return operator.equals("+") || operator.equals("-") ||
-               operator.equals("*") || operator.equals("/") ||
-               operator.equals("%");
+    public static boolean isTypeCompatible(String type1, String type2) {
+        if (type1 == null || type2 == null) {
+            return false;
+        }
+        
+        // 相同类型总是兼容的
+        if (type1.equals(type2)) {
+            return true;
+        }
+        
+        // NULL类型与任何类型兼容
+        if ("NULL".equals(type1) || "NULL".equals(type2)) {
+            return true;
+        }
+        
+        // 数值类型之间的兼容性
+        if (isNumericType(type1) && isNumericType(type2)) {
+            return true;
+        }
+        
+        // 字符串类型之间的兼容性
+        if (isStringType(type1) && isStringType(type2)) {
+            return true;
+        }
+        
+        // 日期时间类型之间的兼容性
+        if (isDateTimeType(type1) && isDateTimeType(type2)) {
+            return true;
+        }
+        
+        return false;
     }
     
     /**
-     * 检查是否是比较运算符
+     * 获取两个类型中优先级更高的类型
      */
-    private static boolean isComparisonOperator(String operator) {
-        return operator.equals("=") || operator.equals("<>") ||
-               operator.equals("<") || operator.equals(">") ||
-               operator.equals("<=") || operator.equals(">=");
+    public static String getHigherPrecedenceType(String type1, String type2) {
+        Integer precedence1 = TYPE_PRECEDENCE.get(type1);
+        Integer precedence2 = TYPE_PRECEDENCE.get(type2);
+        
+        if (precedence1 == null && precedence2 == null) {
+            return type1; // 默认返回第一个类型
+        }
+        if (precedence1 == null) {
+            return type2;
+        }
+        if (precedence2 == null) {
+            return type1;
+        }
+        
+        return precedence1 >= precedence2 ? type1 : type2;
     }
     
     /**
-     * 检查是否是逻辑运算符
+     * 获取字符串类型中优先级更高的类型
      */
-    private static boolean isLogicalOperator(String operator) {
-        return operator.equals("AND") || operator.equals("OR") ||
-               operator.equals("NOT");
+    private static String getHigherPrecedenceStringType(String type1, String type2) {
+        // TEXT > VARCHAR > CHAR
+        if ("TEXT".equals(type1) || "TEXT".equals(type2)) {
+            return "TEXT";
+        }
+        if ("VARCHAR".equals(type1) || "VARCHAR".equals(type2)) {
+            return "VARCHAR";
+        }
+        return "CHAR";
     }
     
     /**
-     * 检查是否是聚合函数
+     * 获取多个类型的通用类型
      */
-    private static boolean isAggregateFunction(String functionName) {
-        return functionName.equalsIgnoreCase("COUNT") ||
-               functionName.equalsIgnoreCase("SUM") ||
-               functionName.equalsIgnoreCase("AVG") ||
-               functionName.equalsIgnoreCase("MAX") ||
-               functionName.equalsIgnoreCase("MIN") ||
-               functionName.equalsIgnoreCase("GROUP_CONCAT");
+    public static String getCommonType(List<String> types) {
+        if (types.isEmpty()) {
+            return "NULL";
+        }
+        
+        String commonType = types.get(0);
+        for (int i = 1; i < types.size(); i++) {
+            commonType = getHigherPrecedenceType(commonType, types.get(i));
+        }
+        return commonType;
     }
     
     /**
-     * 检查是否是数学函数
-     */
-    private static boolean isMathFunction(String functionName) {
-        return functionName.equalsIgnoreCase("ABS") ||
-               functionName.equalsIgnoreCase("CEIL") ||
-               functionName.equalsIgnoreCase("FLOOR") ||
-               functionName.equalsIgnoreCase("ROUND") ||
-               functionName.equalsIgnoreCase("POWER");
-    }
-    
-    /**
-     * 检查是否是字符串函数
-     */
-    private static boolean isStringFunction(String functionName) {
-        return functionName.equalsIgnoreCase("LENGTH") ||
-               functionName.equalsIgnoreCase("UPPER") ||
-               functionName.equalsIgnoreCase("LOWER") ||
-               functionName.equalsIgnoreCase("TRIM") ||
-               functionName.equalsIgnoreCase("SUBSTRING");
-    }
-    
-    /**
-     * 检查是否是日期时间函数
-     */
-    private static boolean isDateTimeFunction(String functionName) {
-        return functionName.equalsIgnoreCase("YEAR") ||
-               functionName.equalsIgnoreCase("MONTH") ||
-               functionName.equalsIgnoreCase("DAY") ||
-               functionName.equalsIgnoreCase("HOUR") ||
-               functionName.equalsIgnoreCase("MINUTE") ||
-               functionName.equalsIgnoreCase("SECOND") ||
-               functionName.equalsIgnoreCase("DATE_ADD") ||
-               functionName.equalsIgnoreCase("DATE_SUB");
-    }
-    
-    /**
-     * 检查是否是数值类型
+     * 检查是否为数值类型
      */
     public static boolean isNumericType(String type) {
-        return NUMERIC_TYPES.contains(type);
+        return "TINYINT".equals(type) || "SMALLINT".equals(type) || "INT".equals(type) ||
+               "BIGINT".equals(type) || "FLOAT".equals(type) || "DOUBLE".equals(type) ||
+               "DECIMAL".equals(type);
     }
     
     /**
-     * 检查是否是字符串类型
+     * 检查是否为字符串类型
      */
     public static boolean isStringType(String type) {
-        return STRING_TYPES.contains(type);
+        return "CHAR".equals(type) || "VARCHAR".equals(type) || "TEXT".equals(type);
     }
     
     /**
-     * 检查是否是日期时间类型
+     * 检查是否为日期时间类型
      */
     public static boolean isDateTimeType(String type) {
-        return DATETIME_TYPES.contains(type);
+        return "DATE".equals(type) || "TIME".equals(type) || "TIMESTAMP".equals(type);
+    }
+    
+    /**
+     * 检查是否可以进行隐式类型转换
+     */
+    public static boolean canImplicitlyCast(String fromType, String toType) {
+        if (fromType.equals(toType)) {
+            return true;
+        }
+        
+        // NULL可以转换为任何类型
+        if ("NULL".equals(fromType)) {
+            return true;
+        }
+        
+        // 数值类型的向上转换
+        if (isNumericType(fromType) && isNumericType(toType)) {
+            Integer fromPrec = TYPE_PRECEDENCE.get(fromType);
+            Integer toPrec = TYPE_PRECEDENCE.get(toType);
+            return fromPrec != null && toPrec != null && fromPrec <= toPrec;
+        }
+        
+        // 字符串类型的转换
+        if (isStringType(fromType) && isStringType(toType)) {
+            return true;
+        }
+        
+        return false;
     }
 } 

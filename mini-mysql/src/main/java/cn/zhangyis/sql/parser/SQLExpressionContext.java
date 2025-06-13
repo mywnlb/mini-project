@@ -1,4 +1,4 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser;
 
 /**
  * @Description TODO

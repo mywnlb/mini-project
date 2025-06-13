@@ -1,4 +1,4 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser.expression;
 
 /**
  * 字面量表达式，表示SQL中的常量值
@@ -6,6 +6,7 @@ package cn.zhangyis.sql;
 public class LiteralExpression implements Expression {
     private final Object value;
     private final LiteralType literalType;
+    private ExpressionType dataType; // 添加数据类型字段，用于类型推断
     
     public LiteralExpression(Object value, LiteralType literalType) {
         this.value = value;
@@ -16,11 +17,12 @@ public class LiteralExpression implements Expression {
         return value;
     }
 
-    
     @Override
     public ExpressionType getType() {
-        return ExpressionType.LITERAL;
+        return dataType;
     }
+
+
     
     @Override
     public String toString() {
@@ -41,6 +43,10 @@ public class LiteralExpression implements Expression {
     }
     public boolean isNull() {
         return literalType == LiteralType.NULL;
+    }
+
+    public LiteralType getLiteralType() {
+        return literalType;
     }
 }
 

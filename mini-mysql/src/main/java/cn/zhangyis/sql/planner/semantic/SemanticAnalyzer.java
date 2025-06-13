@@ -1,6 +1,6 @@
 package cn.zhangyis.sql.planner.semantic;
 
-import cn.zhangyis.sql.SQLStatement;
+import cn.zhangyis.sql.parser.SQLStatement;
 import cn.zhangyis.sql.planner.logical.RelNode;
 
 /**

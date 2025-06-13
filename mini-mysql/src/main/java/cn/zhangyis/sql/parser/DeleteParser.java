@@ -1,4 +1,6 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser;
+
+import cn.zhangyis.sql.parser.expression.Expression;
 
 import java.util.List;
 

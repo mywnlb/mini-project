@@ -1,8 +1,15 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser;
+
+import cn.zhangyis.sql.parser.expression.Expression;
 
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * SQL SELECT 语句表示
+ * 包含选择项、表引用、连接、条件、分组、排序等信息
+ * 参考 Apache Calcite 的 SelectStatement 设计
+ */
 public class SelectStatement extends SQLStatement {
     private List<SelectItem> selectItems;
     private List<TableReference> fromTables;
@@ -12,12 +19,13 @@ public class SelectStatement extends SQLStatement {
     private Expression havingCondition;
     private List<OrderByItem> orderByItems;
     private Integer limit;
+    private Integer offset;
     private boolean distinct;
 
     public SelectStatement(List<SelectItem> selectItems, List<TableReference> fromTables,
                            List<JoinClause> joins, Expression whereCondition,
                            List<Expression> groupByColumns, Expression havingCondition,
-                           List<OrderByItem> orderByItems, Integer limit, boolean distinct) {
+                           List<OrderByItem> orderByItems, Integer limit,Integer offset, boolean distinct) {
         super(SQLType.SELECT);
         this.selectItems = selectItems != null ? selectItems : new ArrayList<>();
         this.fromTables = fromTables != null ? fromTables : new ArrayList<>();
@@ -27,6 +35,7 @@ public class SelectStatement extends SQLStatement {
         this.havingCondition = havingCondition;
         this.orderByItems = orderByItems != null ? orderByItems : new ArrayList<>();
         this.limit = limit;
+        this.offset = offset;
         this.distinct = distinct;
     }
 
@@ -185,26 +194,83 @@ public class SelectStatement extends SQLStatement {
         private String tableName;
         private String alias;
         private SelectStatement subquery;
+        private List<List<Expression>> valuesList; // VALUES子句
+        private String functionName; // 表值函数名
+        private List<Expression> functionArguments; // 表值函数参数
 
+        // 普通表引用构造器
         public TableReference(String tableName, String alias) {
             this.tableName = tableName;
             this.alias = alias;
         }
 
+        // 子查询引用构造器
         public TableReference(SelectStatement subquery, String alias) {
             this.subquery = subquery;
+            this.alias = alias;
+        }
+        
+        // VALUES子句构造器
+        public TableReference(List<List<Expression>> valuesList, String alias) {
+            this.valuesList = valuesList;
+            this.alias = alias;
+        }
+        
+        // 表值函数构造器
+        public TableReference(String functionName, List<Expression> functionArguments, String alias) {
+            this.functionName = functionName;
+            this.functionArguments = functionArguments;
             this.alias = alias;
         }
 
         public String getTableName() { return tableName; }
         public String getAlias() { return alias; }
         public SelectStatement getSubquery() { return subquery; }
+        public List<List<Expression>> getValuesList() { return valuesList; }
+        public String getFunctionName() { return functionName; }
+        public List<Expression> getFunctionArguments() { return functionArguments; }
+        
         public boolean isSubquery() { return subquery != null; }
+        public boolean isValues() { return valuesList != null; }
+        public boolean isTableFunction() { return functionName != null; }
 
         @Override
         public String toString() {
-            String source = isSubquery() ? "(" + subquery + ")" : tableName;
+            String source;
+            if (isSubquery()) {
+                source = "(" + subquery + ")";
+            } else if (isValues()) {
+                source = "VALUES " + formatValuesList();
+            } else if (isTableFunction()) {
+                source = "TABLE(" + functionName + "(" + formatFunctionArguments() + "))";
+            } else {
+                source = tableName;
+            }
             return alias != null ? source + " AS " + alias : source;
+        }
+        
+        private String formatValuesList() {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < valuesList.size(); i++) {
+                if (i > 0) sb.append(", ");
+                sb.append("(");
+                List<Expression> row = valuesList.get(i);
+                for (int j = 0; j < row.size(); j++) {
+                    if (j > 0) sb.append(", ");
+                    sb.append(row.get(j));
+                }
+                sb.append(")");
+            }
+            return sb.toString();
+        }
+        
+        private String formatFunctionArguments() {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < functionArguments.size(); i++) {
+                if (i > 0) sb.append(", ");
+                sb.append(functionArguments.get(i));
+            }
+            return sb.toString();
         }
     }
 

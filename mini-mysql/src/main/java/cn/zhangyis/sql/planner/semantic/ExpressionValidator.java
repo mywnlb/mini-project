@@ -2,7 +2,7 @@ package cn.zhangyis.sql.planner.semantic;
 
 
 
-import cn.zhangyis.sql.Expression;
+import cn.zhangyis.sql.parser.expression.Expression;
 import cn.zhangyis.storage.catalog.CatalogManager;
 
 import java.util.*;

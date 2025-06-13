@@ -1,8 +1,7 @@
 package cn.zhangyis.sql.planner.semantic;
 
-import cn.zhangyis.sql.SelectStatement;
-import cn.zhangyis.sql.ColumnExpression;
-import cn.zhangyis.sql.Expression;
+import cn.zhangyis.sql.parser.SelectStatement;
+import cn.zhangyis.sql.parser.expression.ColumnExpression;
 import cn.zhangyis.storage.catalog.Column;
 
 import java.util.ArrayList;
@@ -119,9 +118,7 @@ public class SelectNamespace implements SqlValidatorNamespace {
         for (SelectStatement.SelectItem item : selectStatement.getSelectItems()) {
             if (item.getExpression() instanceof ColumnExpression) {
                 ColumnExpression colExpr = (ColumnExpression) item.getExpression();
-                if (colExpr.isStar()) {
-                    return true;
-                }
+                return colExpr.getAll();
             }
         }
         return false;

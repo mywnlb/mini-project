@@ -1,4 +1,4 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser.expression;
 
 /**
  * 比较表达式，表示SQL中的比较操作

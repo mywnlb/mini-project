@@ -1,8 +1,11 @@
 package cn.zhangyis.sql.planner.semantic;
 
-import cn.zhangyis.sql.*;
+import cn.zhangyis.sql.parser.*;
+import cn.zhangyis.sql.parser.expression.ColumnExpression;
+import cn.zhangyis.sql.parser.expression.Expression;
 import cn.zhangyis.storage.catalog.CatalogManager;
-import org.apache.commons.collections4.CollectionUtils;
+import cn.zhangyis.storage.catalog.Column;
+import cn.zhangyis.storage.catalog.Table;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -305,6 +308,7 @@ public class SqlRewriter {
             null,                 // HAVING
             null,                 // ORDER BY
             null,                 // LIMIT
+            null,                 // LIMIT
             false                 // DISTINCT
         );
     }
@@ -347,6 +351,7 @@ public class SqlRewriter {
             null,                 // HAVING
             null,                 // ORDER BY
             null,                 // LIMIT
+            null,                 // offset
             false                 // DISTINCT
         );
     }

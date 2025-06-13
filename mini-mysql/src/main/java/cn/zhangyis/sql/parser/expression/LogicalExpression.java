@@ -1,4 +1,4 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser.expression;
 
 /**
  * 逻辑表达式，表示SQL中的逻辑操作

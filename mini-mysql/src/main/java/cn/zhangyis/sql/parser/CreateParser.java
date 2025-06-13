@@ -1,4 +1,4 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser;
 
 import java.util.ArrayList;
 import java.util.List;

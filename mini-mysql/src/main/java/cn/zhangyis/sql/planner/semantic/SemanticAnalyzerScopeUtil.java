@@ -1,6 +1,8 @@
 package cn.zhangyis.sql.planner.semantic;
 
-import cn.zhangyis.sql.*;
+import cn.zhangyis.sql.parser.*;
+import cn.zhangyis.sql.parser.expression.Expression;
+import cn.zhangyis.sql.parser.expression.SubqueryExpression;
 import cn.zhangyis.storage.catalog.CatalogManager;
 import cn.zhangyis.storage.catalog.Table;
 
@@ -172,12 +174,10 @@ public class SemanticAnalyzerScopeUtil {
             registerTableReference(fromScope, tableRef, select);
         }
 
-        // 3. 处理JOIN子句
+        // 3. 处理JOIN子句 - 增强的JOIN处理
         if (select.getJoins() != null) {
             for (SelectStatement.JoinClause join : select.getJoins()) {
-                registerTableReference(fromScope, join.getJoinTable(), select);
-                // JOIN条件在专门的JoinScope中处理
-                registerJoinCondition(fromScope, join);
+                registerJoinOperation(fromScope, join, select);
             }
         }
 
@@ -207,6 +207,18 @@ public class SemanticAnalyzerScopeUtil {
             // 创建子查询namespace
             namespace = new SubqueryNamespace(subquery, tableRef.getAlias());
 
+        } else if (tableRef.isValues()) {
+            // VALUES子句处理 - 新增支持
+            namespace = new ValuesNamespace(tableRef.getValuesList(), tableRef.getAlias());
+
+        } else if (tableRef.isTableFunction()) {
+            // 表值函数处理 - 新增支持
+            namespace = new TableFunctionNamespace(
+                tableRef.getFunctionName(), 
+                tableRef.getFunctionArguments(), 
+                tableRef.getAlias()
+            );
+
         } else {
             // 普通表引用处理
             String tableName = tableRef.getTableName();
@@ -228,14 +240,49 @@ public class SemanticAnalyzerScopeUtil {
     }
 
     /**
-     * 注册JOIN条件 - 处理JOIN的ON子句
+     * 注册JOIN操作 - 创建专门的JoinNamespace
      */
-    private void registerJoinCondition(SqlValidatorScope fromScope, SelectStatement.JoinClause join) throws SemanticException {
-        if (join.getJoinCondition() != null) {
-            // JOIN条件在专门的JoinScope中验证
-            SqlValidatorScope joinScope = new SqlValidatorScope(fromScope, SqlValidatorScope.ScopeType.FROM);
-            // 这里可以进一步处理JOIN条件中的表达式
+    private void registerJoinOperation(
+            SqlValidatorScope fromScope, 
+            SelectStatement.JoinClause join, 
+            SelectStatement select) throws SemanticException {
+            
+        // 注册JOIN的右表
+        registerTableReference(fromScope, join.getJoinTable(), select);
+        
+        // 创建JOIN命名空间
+        SqlValidatorNamespace leftNamespace = findLastNamespaceInScope(fromScope);
+        SqlValidatorNamespace rightNamespace = fromScope.findNamespace(
+            join.getJoinTable().getAlias() != null ? 
+            join.getJoinTable().getAlias() : 
+            join.getJoinTable().getTableName()
+        );
+        
+        if (leftNamespace != null && rightNamespace != null) {
+            JoinNamespace joinNamespace = new JoinNamespace(
+                leftNamespace,
+                rightNamespace, 
+                join.getJoinType(),
+                join.getJoinCondition(),
+                null // JOIN结果通常不需要别名
+            );
+            
+            // 注册JOIN namespace
+            String joinName = "JOIN_" + System.currentTimeMillis(); // 生成唯一名称
+            registerNamespace(fromScope, joinName, joinNamespace, false);
         }
+        
+        // JOIN条件在专门的JoinScope中处理
+        registerJoinCondition(fromScope, join);
+    }
+    
+    /**
+     * 在作用域中查找最后添加的命名空间（通常是左表）
+     */
+    private SqlValidatorNamespace findLastNamespaceInScope(SqlValidatorScope scope) {
+        // 这里简化实现，实际应该根据scope中的namespace顺序来确定
+        // 可以通过遍历scope的namespaceMap来找到最近添加的namespace
+        return null; // TODO: 实现获取左表namespace的逻辑
     }
 
     /**
@@ -450,6 +497,18 @@ public class SemanticAnalyzerScopeUtil {
 
         // 其他基础结构验证...
         // 注意：这里不做详细的列名表名验证，那是DefaultSemanticAnalyzer的职责
+    }
+
+    /**
+     * 注册JOIN条件 - 处理JOIN的ON子句
+     */
+    private void registerJoinCondition(SqlValidatorScope fromScope, SelectStatement.JoinClause join) throws SemanticException {
+        if (join.getJoinCondition() != null) {
+            // JOIN条件在专门的JoinScope中验证
+            SqlValidatorScope joinScope = new SqlValidatorScope(fromScope, SqlValidatorScope.ScopeType.FROM);
+            // 这里可以进一步处理JOIN条件中的表达式
+            registerExpressionSubqueries(join.getJoinCondition(), joinScope);
+        }
     }
 
     // ==================== 公共接口方法 ====================

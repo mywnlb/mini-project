@@ -1,8 +1,9 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser.expression;
 
 public class ColumnExpression implements Expression {
     private final String tableAlias;
     private final String columnName;
+    private String columnType = null; // 用于存储列类型，默认为null
     private boolean isAll = false;
 
     public ColumnExpression(String columnName) {
@@ -31,6 +32,14 @@ public class ColumnExpression implements Expression {
 
     public String getColumnName() {
         return columnName;
+    }
+
+    public String getColumnType() {
+        return columnType;
+    }
+
+    public void setColumnType(String columnType) {
+        this.columnType = columnType;
     }
 
     @Override

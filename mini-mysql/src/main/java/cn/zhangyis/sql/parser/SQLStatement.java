@@ -1,4 +1,4 @@
-package cn.zhangyis.sql;
+package cn.zhangyis.sql.parser;
 
 public abstract class SQLStatement {
     public enum SQLType {
