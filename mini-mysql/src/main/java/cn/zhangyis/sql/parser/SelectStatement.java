@@ -25,7 +25,7 @@ public class SelectStatement extends SQLStatement {
     public SelectStatement(List<SelectItem> selectItems, List<TableReference> fromTables,
                            List<JoinClause> joins, Expression whereCondition,
                            List<Expression> groupByColumns, Expression havingCondition,
-                           List<OrderByItem> orderByItems, Integer limit,Integer offset, boolean distinct) {
+                           List<OrderByItem> orderByItems, Integer limit, Integer offset, boolean distinct) {
         super(SQLType.SELECT);
         this.selectItems = selectItems != null ? selectItems : new ArrayList<>();
         this.fromTables = fromTables != null ? fromTables : new ArrayList<>();
@@ -40,60 +40,98 @@ public class SelectStatement extends SQLStatement {
     }
 
     // Getters
-    public List<SelectItem> getSelectItems() { return selectItems; }
-    public List<TableReference> getFromTables() { return fromTables; }
-    public List<JoinClause> getJoins() { return joins; }
-    public Expression getWhereCondition() { return whereCondition; }
-    public List<Expression> getGroupByColumns() { return groupByColumns; }
-    public Expression getHavingCondition() { return havingCondition; }
-    public List<OrderByItem> getOrderByItems() { return orderByItems; }
-    public Integer getLimit() { return limit; }
-    public boolean isDistinct() { return distinct; }
-    
+    public List<SelectItem> getSelectItems() {
+        return selectItems;
+    }
+
+    public List<TableReference> getFromTables() {
+        return fromTables;
+    }
+
+    public List<JoinClause> getJoins() {
+        return joins;
+    }
+
+    public Expression getWhereCondition() {
+        return whereCondition;
+    }
+
+    public List<Expression> getGroupByColumns() {
+        return groupByColumns;
+    }
+
+    public Expression getHavingCondition() {
+        return havingCondition;
+    }
+
+    public List<OrderByItem> getOrderByItems() {
+        return orderByItems;
+    }
+
+    public Integer getLimit() {
+        return limit;
+    }
+
+    public boolean isDistinct() {
+        return distinct;
+    }
+
     // Setters
-    public void setSelectItems(List<SelectItem> selectItems) { 
-        this.selectItems = selectItems != null ? selectItems : new ArrayList<>(); 
+    public void setSelectItems(List<SelectItem> selectItems) {
+        this.selectItems = selectItems != null ? selectItems : new ArrayList<>();
     }
-    public void setFromTables(List<TableReference> fromTables) { 
-        this.fromTables = fromTables != null ? fromTables : new ArrayList<>(); 
+
+    public void setFromTables(List<TableReference> fromTables) {
+        this.fromTables = fromTables != null ? fromTables : new ArrayList<>();
     }
-    public void setJoins(List<JoinClause> joins) { 
-        this.joins = joins != null ? joins : new ArrayList<>(); 
+
+    public void setJoins(List<JoinClause> joins) {
+        this.joins = joins != null ? joins : new ArrayList<>();
     }
-    public void setWhereCondition(Expression whereCondition) { 
-        this.whereCondition = whereCondition; 
+
+    public void setWhereCondition(Expression whereCondition) {
+        this.whereCondition = whereCondition;
     }
-    public void setGroupByColumns(List<Expression> groupByColumns) { 
-        this.groupByColumns = groupByColumns != null ? groupByColumns : new ArrayList<>(); 
+
+    public void setGroupByColumns(List<Expression> groupByColumns) {
+        this.groupByColumns = groupByColumns != null ? groupByColumns : new ArrayList<>();
     }
-    public void setHavingCondition(Expression havingCondition) { 
-        this.havingCondition = havingCondition; 
+
+    public void setHavingCondition(Expression havingCondition) {
+        this.havingCondition = havingCondition;
     }
-    public void setOrderByItems(List<OrderByItem> orderByItems) { 
-        this.orderByItems = orderByItems != null ? orderByItems : new ArrayList<>(); 
+
+    public void setOrderByItems(List<OrderByItem> orderByItems) {
+        this.orderByItems = orderByItems != null ? orderByItems : new ArrayList<>();
     }
-    public void setLimit(Integer limit) { 
-        this.limit = limit; 
+
+    public void setLimit(Integer limit) {
+        this.limit = limit;
     }
-    public void setDistinct(boolean distinct) { 
-        this.distinct = distinct; 
+
+    public void setDistinct(boolean distinct) {
+        this.distinct = distinct;
     }
-    
+
     // 便利方法 - 兼容新的语义分析器接口
-    public List<TableReference> getFrom() { 
-        return getFromTables(); 
+    public List<TableReference> getFrom() {
+        return getFromTables();
     }
-    public Expression getWhere() { 
-        return getWhereCondition(); 
+
+    public Expression getWhere() {
+        return getWhereCondition();
     }
-    public void setWhere(Expression where) { 
-        setWhereCondition(where); 
+
+    public void setWhere(Expression where) {
+        setWhereCondition(where);
     }
-    public Expression getHaving() { 
-        return getHavingCondition(); 
+
+    public Expression getHaving() {
+        return getHavingCondition();
     }
-    public void setHaving(Expression having) { 
-        setHavingCondition(having); 
+
+    public void setHaving(Expression having) {
+        setHavingCondition(having);
     }
 
     @Override
@@ -181,8 +219,17 @@ public class SelectStatement extends SQLStatement {
             this.alias = alias;
         }
 
-        public Expression getExpression() { return expression; }
-        public String getAlias() { return alias; }
+        public Expression getExpression() {
+            return expression;
+        }
+
+        public void setExpression(Expression expression) {
+            this.expression = expression;
+        }
+
+        public String getAlias() {
+            return alias;
+        }
 
         @Override
         public String toString() {
@@ -209,13 +256,13 @@ public class SelectStatement extends SQLStatement {
             this.subquery = subquery;
             this.alias = alias;
         }
-        
+
         // VALUES子句构造器
         public TableReference(List<List<Expression>> valuesList, String alias) {
             this.valuesList = valuesList;
             this.alias = alias;
         }
-        
+
         // 表值函数构造器
         public TableReference(String functionName, List<Expression> functionArguments, String alias) {
             this.functionName = functionName;
@@ -223,16 +270,41 @@ public class SelectStatement extends SQLStatement {
             this.alias = alias;
         }
 
-        public String getTableName() { return tableName; }
-        public String getAlias() { return alias; }
-        public SelectStatement getSubquery() { return subquery; }
-        public List<List<Expression>> getValuesList() { return valuesList; }
-        public String getFunctionName() { return functionName; }
-        public List<Expression> getFunctionArguments() { return functionArguments; }
-        
-        public boolean isSubquery() { return subquery != null; }
-        public boolean isValues() { return valuesList != null; }
-        public boolean isTableFunction() { return functionName != null; }
+        public String getTableName() {
+            return tableName;
+        }
+
+        public String getAlias() {
+            return alias;
+        }
+
+        public SelectStatement getSubquery() {
+            return subquery;
+        }
+
+        public List<List<Expression>> getValuesList() {
+            return valuesList;
+        }
+
+        public String getFunctionName() {
+            return functionName;
+        }
+
+        public List<Expression> getFunctionArguments() {
+            return functionArguments;
+        }
+
+        public boolean isSubquery() {
+            return subquery != null;
+        }
+
+        public boolean isValues() {
+            return valuesList != null;
+        }
+
+        public boolean isTableFunction() {
+            return functionName != null;
+        }
 
         @Override
         public String toString() {
@@ -248,7 +320,7 @@ public class SelectStatement extends SQLStatement {
             }
             return alias != null ? source + " AS " + alias : source;
         }
-        
+
         private String formatValuesList() {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < valuesList.size(); i++) {
@@ -263,7 +335,7 @@ public class SelectStatement extends SQLStatement {
             }
             return sb.toString();
         }
-        
+
         private String formatFunctionArguments() {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < functionArguments.size(); i++) {
@@ -275,7 +347,7 @@ public class SelectStatement extends SQLStatement {
     }
 
     public static class JoinClause {
-        public enum JoinType { INNER, LEFT, RIGHT }
+        public enum JoinType {INNER, LEFT, RIGHT}
 
         private JoinType joinType;
         private TableReference joinTable;
@@ -287,9 +359,21 @@ public class SelectStatement extends SQLStatement {
             this.joinCondition = joinCondition;
         }
 
-        public JoinType getJoinType() { return joinType; }
-        public TableReference getJoinTable() { return joinTable; }
-        public Expression getJoinCondition() { return joinCondition; }
+        public JoinType getJoinType() {
+            return joinType;
+        }
+
+        public TableReference getJoinTable() {
+            return joinTable;
+        }
+
+        public Expression getJoinCondition() {
+            return joinCondition;
+        }
+
+        public void setJoinCondition(Expression joinCondition) {
+            this.joinCondition = joinCondition;
+        }
 
         @Override
         public String toString() {
@@ -306,8 +390,17 @@ public class SelectStatement extends SQLStatement {
             this.ascending = ascending;
         }
 
-        public Expression getExpression() { return expression; }
-        public boolean isAscending() { return ascending; }
+        public Expression getExpression() {
+            return expression;
+        }
+
+        public void setExpression(Expression expression) {
+            this.expression = expression;
+        }
+
+        public boolean isAscending() {
+            return ascending;
+        }
 
         @Override
         public String toString() {

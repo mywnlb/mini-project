@@ -1,12 +1,12 @@
 package cn.zhangyis.sql.parser.expression;
 
+import cn.zhangyis.sql.parser.enums.LogicalOperator;
+
 /**
  * 逻辑表达式，表示SQL中的逻辑操作
  */
-public class LogicalExpression implements Expression {
-    private final Expression left;
+public class LogicalExpression extends BinaryExpression {
     private final LogicalOperator operator;
-    private final Expression right;
 
     public LogicalExpression(Expression left, LogicalOperator operator, Expression right) {
         this.left = left;
@@ -36,22 +36,3 @@ public class LogicalExpression implements Expression {
         return "(" + left + " " + operator + " " + right + ")";
     }
 }
-
-/**
- * 逻辑运算符枚举
- */
-enum LogicalOperator {
-    AND("AND"),
-    OR("OR");
-
-    private final String symbol;
-
-    LogicalOperator(String symbol) {
-        this.symbol = symbol;
-    }
-
-    @Override
-    public String toString() {
-        return symbol;
-    }
-} 

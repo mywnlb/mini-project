@@ -140,8 +140,9 @@ public class SemanticAnalyzerScopeUtil {
         SqlValidatorScope selectScope = new SqlValidatorScope(parentScope, SqlValidatorScope.ScopeType.SELECT);
 
         // 2. 注册FROM子句 - 这是关键步骤
+        SqlValidatorScope fromScope = null;
         if (select.getFrom() != null && !select.getFrom().isEmpty()) {
-            SqlValidatorScope fromScope = registerFrom(selectScope, select.getFrom(), select);
+            fromScope = registerFrom(selectScope, select.getFrom(), select);
         }
 
         // 3. 创建SelectNamespace
@@ -154,8 +155,101 @@ public class SemanticAnalyzerScopeUtil {
         scopes.put(select, selectScope);
         namespaces.put(select, selectNamespace);
 
-        // 6. 递归处理子查询 - 在表达式中查找
+        // 6. 注册WHERE子句作用域
+        registerWhereClause(select, fromScope != null ? fromScope : selectScope);
+
+        // 7. 注册GROUP BY作用域
+        registerGroupByClause(select, selectScope);
+
+        // 8. 注册HAVING作用域
+        registerHavingClause(select, selectScope);
+
+        // 9. 注册ORDER BY作用域
+        registerOrderByClause(select, selectScope);
+
+        // 10. 递归处理子查询 - 在表达式中查找
         registerSubqueries(select, selectScope);
+    }
+
+    /**
+     * 注册WHERE子句作用域 - 按照Calcite SqlValidatorImpl.validateWhereClause()模式
+     */
+    private void registerWhereClause(SelectStatement select, SqlValidatorScope fromScope) throws SemanticException {
+        if (select.getWhere() != null) {
+            // 创建WHERE作用域
+            SqlValidatorScope whereScope = new SqlValidatorScope(fromScope, SqlValidatorScope.ScopeType.WHERE);
+            
+            // 将WHERE表达式与作用域关联
+            scopes.put(select.getWhere(), whereScope);
+            
+            // 处理WHERE子句中的子查询
+            registerExpressionSubqueries(select.getWhere(), whereScope);
+            
+            // 在这里可以添加更多WHERE子句特定的处理逻辑
+            // 例如：验证WHERE子句中不能包含聚合函数等
+        }
+    }
+
+    /**
+     * 注册GROUP BY子句作用域 - 按照Calcite SqlValidatorImpl.validateGroupClause()模式
+     */
+    private void registerGroupByClause(SelectStatement select, SqlValidatorScope selectScope) throws SemanticException {
+        if (select.getGroupByColumns() != null && !select.getGroupByColumns().isEmpty()) {
+            // 创建GROUP BY作用域
+            SqlValidatorScope groupByScope = new SqlValidatorScope(selectScope, SqlValidatorScope.ScopeType.GROUP_BY);
+            
+            // 将GROUP BY表达式与作用域关联
+            for (Expression groupExpr : select.getGroupByColumns()) {
+                scopes.put(groupExpr, groupByScope);
+                
+                // 处理GROUP BY表达式中的子查询
+                registerExpressionSubqueries(groupExpr, groupByScope);
+            }
+            
+            // 在这里可以添加更多GROUP BY子句特定的处理逻辑
+            // 例如：验证GROUP BY中的表达式是否有效等
+        }
+    }
+
+    /**
+     * 注册HAVING子句作用域 - 按照Calcite SqlValidatorImpl.validateHavingClause()模式
+     */
+    private void registerHavingClause(SelectStatement select, SqlValidatorScope selectScope) throws SemanticException {
+        if (select.getHaving() != null) {
+            // 创建HAVING作用域
+            // 注意：HAVING作用域应该能够访问GROUP BY的结果和聚合函数
+            SqlValidatorScope havingScope = new SqlValidatorScope(selectScope, SqlValidatorScope.ScopeType.HAVING);
+            
+            // 将HAVING表达式与作用域关联
+            scopes.put(select.getHaving(), havingScope);
+            
+            // 处理HAVING子句中的子查询
+            registerExpressionSubqueries(select.getHaving(), havingScope);
+            
+            // 在这里可以添加更多HAVING子句特定的处理逻辑
+            // 例如：验证HAVING中的表达式是否有效、是否包含聚合函数等
+        }
+    }
+
+    /**
+     * 注册ORDER BY子句作用域 - 按照Calcite SqlValidatorImpl.validateOrderList()模式
+     */
+    private void registerOrderByClause(SelectStatement select, SqlValidatorScope selectScope) throws SemanticException {
+        if (select.getOrderByItems() != null && !select.getOrderByItems().isEmpty()) {
+            // 创建ORDER BY作用域
+            SqlValidatorScope orderByScope = new SqlValidatorScope(selectScope, SqlValidatorScope.ScopeType.ORDER_BY);
+            
+            // 将ORDER BY表达式与作用域关联
+            for (SelectStatement.OrderByItem orderItem : select.getOrderByItems()) {
+                scopes.put(orderItem.getExpression(), orderByScope);
+                
+                // 处理ORDER BY表达式中的子查询
+                registerExpressionSubqueries(orderItem.getExpression(), orderByScope);
+            }
+            
+            // 在这里可以添加更多ORDER BY子句特定的处理逻辑
+            // 例如：验证ORDER BY中的表达式是否有效等
+        }
     }
 
     /**
@@ -294,34 +388,63 @@ public class SemanticAnalyzerScopeUtil {
             registerExpressionSubqueries(item.getExpression(), selectScope);
         }
 
-        // 在WHERE子句中查找子查询
-        if (select.getWhere() != null) {
-            registerExpressionSubqueries(select.getWhere(), selectScope);
-        }
+        // 在WHERE子句中查找子查询 - 已在registerWhereClause中处理
+        // 在HAVING子句中查找子查询 - 已在registerHavingClause中处理
+        // 在ORDER BY子句中查找子查询 - 已在registerOrderByClause中处理
+        // 在GROUP BY子句中查找子查询 - 已在registerGroupByClause中处理
 
-        // 在HAVING子句中查找子查询
-        if (select.getHaving() != null) {
-            registerExpressionSubqueries(select.getHaving(), selectScope);
-        }
-
-        // 在ORDER BY子句中查找子查询
-        if (select.getOrderByItems() != null) {
-            for (SelectStatement.OrderByItem orderItem : select.getOrderByItems()) {
-                registerExpressionSubqueries(orderItem.getExpression(), selectScope);
+        // 处理JOIN条件中的子查询
+        if (select.getJoins() != null) {
+            for (SelectStatement.JoinClause join : select.getJoins()) {
+                if (join.getJoinCondition() != null) {
+                    // 获取JOIN作用域
+                    SqlValidatorScope joinScope = getJoinScope(select, join);
+                    registerExpressionSubqueries(join.getJoinCondition(), joinScope != null ? joinScope : selectScope);
+                }
             }
         }
     }
 
     /**
-     * 在表达式中注册子查询
+     * 获取JOIN的作用域
+     */
+    private SqlValidatorScope getJoinScope(SelectStatement select, SelectStatement.JoinClause join) {
+        // 尝试直接从作用域映射中获取JOIN条件对应的作用域
+        if (join.getJoinCondition() != null) {
+            SqlValidatorScope joinScope = scopes.get(join.getJoinCondition());
+            if (joinScope != null) {
+                return joinScope;
+            }
+        }
+        
+        // 如果没有找到，尝试获取FROM作用域
+        for (Map.Entry<SQLStatement, SqlValidatorScope> entry : scopes.entrySet()) {
+            if (entry.getKey() == select && entry.getValue().getScopeType() == SqlValidatorScope.ScopeType.FROM) {
+                return entry.getValue();
+            }
+        }
+        
+        return null;
+    }
+
+    /**
+     * 在表达式中注册子查询 - 增强版，递归处理复合表达式
      */
     private void registerExpressionSubqueries(Expression expr, SqlValidatorScope scope) throws SemanticException {
+        if (expr == null) {
+            return;
+        }
+
         if (expr instanceof SubqueryExpression) {
             SubqueryExpression subqueryExpr = (SubqueryExpression) expr;
             // 递归注册子查询
             registerQuery(scope, null, subqueryExpr.getSubquery(), subqueryExpr.getSubquery(), null, false);
+        } else {
+            // 递归处理复合表达式中的子表达式
+            for (Expression subExpr : expr.getChildExpressions()) {
+                registerExpressionSubqueries(subExpr, scope);
+            }
         }
-        // TODO: 处理其他包含子查询的表达式类型
     }
 
     /**
@@ -495,8 +618,82 @@ public class SemanticAnalyzerScopeUtil {
             throw new SemanticException("SELECT statement must have select items");
         }
 
+        // 验证WHERE子句
+        validateWhereStructure(select);
+        
+        // 验证GROUP BY子句
+        validateGroupByStructure(select);
+        
+        // 验证HAVING子句
+        validateHavingStructure(select);
+        
+        // 验证ORDER BY子句
+        validateOrderByStructure(select);
+
         // 其他基础结构验证...
         // 注意：这里不做详细的列名表名验证，那是DefaultSemanticAnalyzer的职责
+    }
+    
+    /**
+     * 验证WHERE子句的基础结构
+     */
+    private void validateWhereStructure(SelectStatement select) throws SemanticException {
+        if (select.getWhere() != null) {
+            // 检查WHERE子句的作用域是否正确构建
+            if (!scopes.containsKey(select.getWhere())) {
+                throw new SemanticException("WHERE clause scope not properly registered");
+            }
+            
+            // 这里只做基础结构验证，不做详细的表达式验证
+            // 详细的表达式验证由DefaultSemanticAnalyzer负责
+        }
+    }
+    
+    /**
+     * 验证GROUP BY子句的基础结构
+     */
+    private void validateGroupByStructure(SelectStatement select) throws SemanticException {
+        if (select.getGroupByColumns() != null && !select.getGroupByColumns().isEmpty()) {
+            // 检查GROUP BY表达式的作用域是否正确构建
+            for (Expression expr : select.getGroupByColumns()) {
+                if (!scopes.containsKey(expr)) {
+                    throw new SemanticException("GROUP BY expression scope not properly registered");
+                }
+            }
+            
+            // 这里只做基础结构验证，不做详细的表达式验证
+        }
+    }
+    
+    /**
+     * 验证HAVING子句的基础结构
+     */
+    private void validateHavingStructure(SelectStatement select) throws SemanticException {
+        if (select.getHaving() != null) {
+            // 检查HAVING子句的作用域是否正确构建
+            if (!scopes.containsKey(select.getHaving())) {
+                throw new SemanticException("HAVING clause scope not properly registered");
+            }
+            
+            // 这里只做基础结构验证，不做详细的表达式验证
+            // 例如：HAVING子句通常需要包含聚合函数，但这种检查由DefaultSemanticAnalyzer负责
+        }
+    }
+    
+    /**
+     * 验证ORDER BY子句的基础结构
+     */
+    private void validateOrderByStructure(SelectStatement select) throws SemanticException {
+        if (select.getOrderByItems() != null && !select.getOrderByItems().isEmpty()) {
+            // 检查ORDER BY表达式的作用域是否正确构建
+            for (SelectStatement.OrderByItem orderItem : select.getOrderByItems()) {
+                if (!scopes.containsKey(orderItem.getExpression())) {
+                    throw new SemanticException("ORDER BY expression scope not properly registered");
+                }
+            }
+            
+            // 这里只做基础结构验证，不做详细的表达式验证
+        }
     }
 
     /**
@@ -506,7 +703,11 @@ public class SemanticAnalyzerScopeUtil {
         if (join.getJoinCondition() != null) {
             // JOIN条件在专门的JoinScope中验证
             SqlValidatorScope joinScope = new SqlValidatorScope(fromScope, SqlValidatorScope.ScopeType.FROM);
-            // 这里可以进一步处理JOIN条件中的表达式
+            
+            // 将JOIN条件与作用域关联
+            scopes.put(join.getJoinCondition(), joinScope);
+            
+            // 处理JOIN条件中的子查询
             registerExpressionSubqueries(join.getJoinCondition(), joinScope);
         }
     }
@@ -521,12 +722,21 @@ public class SemanticAnalyzerScopeUtil {
     }
 
     /**
+     * 获取表达式对应的作用域
+     * 
+     * @param expr 表达式
+     * @return 表达式对应的作用域，如果未找到则返回null
+     */
+    public SqlValidatorScope getExpressionScope(Expression expr) {
+        return scopes.get(expr);
+    }
+
+    /**
      * 获取语句对应的命名空间
      */
     public SqlValidatorNamespace getNamespace(SQLStatement statement) {
         return namespaces.get(statement);
     }
-
 
     /**
      * 清理所有映射
@@ -570,3 +780,5 @@ public class SemanticAnalyzerScopeUtil {
         analyzer.analyzeScopes(statement, rootScope);
     }
 }
+
+

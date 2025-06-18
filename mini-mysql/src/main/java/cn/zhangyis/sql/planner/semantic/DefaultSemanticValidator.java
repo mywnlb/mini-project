@@ -274,22 +274,6 @@ public class DefaultSemanticValidator implements SemanticValidator {
         
         return map;
     }
-    
-    /**
-     * 解析表达式
-     */
-    private Expression parseExpression(String expression) throws SemanticException {
-        return expressionParser.parse(expression);
-    }
-    
-    /**
-     * 将字符串参数转换为表达式
-     */
-    private List<Expression> convertToExpressions(List<String> arguments) throws SemanticException {
-        List<Expression> expressions = new ArrayList<>();
-        for (String arg : arguments) {
-            expressions.add(expressionParser.parse(arg));
-        }
-        return expressions;
-    }
+
+
 } 

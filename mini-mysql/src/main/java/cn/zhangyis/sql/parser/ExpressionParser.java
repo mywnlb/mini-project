@@ -1,5 +1,9 @@
 package cn.zhangyis.sql.parser;
 
+import cn.zhangyis.sql.parser.enums.ArithmeticOperator;
+import cn.zhangyis.sql.parser.enums.ComparisonOperator;
+import cn.zhangyis.sql.parser.enums.LiteralType;
+import cn.zhangyis.sql.parser.enums.LogicalOperator;
 import cn.zhangyis.sql.parser.expression.*;
 
 import java.util.ArrayList;
@@ -70,7 +74,7 @@ public class ExpressionParser{
                 } // 其他比较运算符...
 
                 if (op != null) {
-                    Expression right = parsePrimaryExpression();
+                    Expression right = parseArithmeticExpression();
                     return new ComparisonExpression(left, op, right);
                 }
             }
@@ -107,7 +111,7 @@ public class ExpressionParser{
                     if (parser.peek() != null && parser.peek().getType() == SQLLexer.TokenType.STAR) {
                         parser.consume(); // 消费 *
                         parser.match(SQLLexer.TokenType.RIGHT_PAREN);
-                        return new FunctionExpression("COUNT", new ColumnExpression(tableAlias, "*"));
+                        return new FunctionExpression("COUNT", new ColumnExpression(tableAlias, true));
                     } else {
                         // 回退到普通列引用 (COUNT(a.id))
                         parser.setPos(parser.getPos() - 2); // 回退到函数名后面
@@ -125,18 +129,18 @@ public class ExpressionParser{
         }
 
         // 解析普通表达式
-        return parsePrimaryExpression();
+        return parseArithmeticExpression();  // 修改为使用算术表达式解析
     }
     // Add helper method to detect aggregate functions
     private boolean isAggregateFunction(SQLLexer.Token token) {
         if (token == null) return false;
-        String value = token.getValue().toUpperCase();
-        return value.equals("COUNT") || value.equals("SUM") ||
-                value.equals("AVG") || value.equals("MIN") || value.equals("MAX");
+        SQLLexer.TokenType type = token.getType();
+        return type == SQLLexer.TokenType.COUNT || type == SQLLexer.TokenType.SUM ||
+               type == SQLLexer.TokenType.AVG || type == SQLLexer.TokenType.MIN || 
+               type == SQLLexer.TokenType.MAX;
     }
     // 原有的表达式解析方法改名为条件表达式解析
     private Expression parseConditionExpression() {
-
         Expression left = parseAndExpression();
 
         while (parser.peek() != null && parser.peek().getType() == SQLLexer.TokenType.OR) {
@@ -182,7 +186,14 @@ public class ExpressionParser{
      * @return 解析后的表达式对象
      */
     private Expression parsePredicateExpression() {
-        Expression left = parsePrimaryExpression();
+        // 解析算术表达式，然后再处理比较运算符
+        Expression left = parseArithmeticExpression();
+
+        // 尝试解析子查询表达式（EXISTS、IN等）
+        Expression subqueryExpr = parseSubqueryExpression(left);
+        if (subqueryExpr != null) {
+            return subqueryExpr;
+        }
 
         if (parser.peek() != null) {
             SQLLexer.TokenType type = parser.peek().getType();
@@ -190,58 +201,83 @@ public class ExpressionParser{
             // 处理标准比较运算符
             if (type == SQLLexer.TokenType.EQUALS) {
                 parser.match(SQLLexer.TokenType.EQUALS);
-                Expression right = parsePrimaryExpression();
+                Expression right = parseArithmeticExpression();
                 return new ComparisonExpression(left, ComparisonOperator.EQUALS, right);
             } else if (type == SQLLexer.TokenType.NOT_EQUALS) {
                 parser.match(SQLLexer.TokenType.NOT_EQUALS);
-                Expression right = parsePrimaryExpression();
+                Expression right = parseArithmeticExpression();
                 return new ComparisonExpression(left, ComparisonOperator.NOT_EQUALS, right);
             } else if (type == SQLLexer.TokenType.GREATER) {
                 parser.match(SQLLexer.TokenType.GREATER);
-                Expression right = parsePrimaryExpression();
+                Expression right = parseArithmeticExpression();
                 return new ComparisonExpression(left, ComparisonOperator.GREATER, right);
             } else if (type == SQLLexer.TokenType.GREATER_EQUALS) {
                 parser.match(SQLLexer.TokenType.GREATER_EQUALS);
-                Expression right = parsePrimaryExpression();
+                Expression right = parseArithmeticExpression();
                 return new ComparisonExpression(left, ComparisonOperator.GREATER_EQUALS, right);
             } else if (type == SQLLexer.TokenType.LESS) {
                 parser.match(SQLLexer.TokenType.LESS);
-                Expression right = parsePrimaryExpression();
+                Expression right = parseArithmeticExpression();
                 return new ComparisonExpression(left, ComparisonOperator.LESS, right);
             } else if (type == SQLLexer.TokenType.LESS_EQUALS) {
                 parser.match(SQLLexer.TokenType.LESS_EQUALS);
-                Expression right = parsePrimaryExpression();
+                Expression right = parseArithmeticExpression();
                 return new ComparisonExpression(left, ComparisonOperator.LESS_EQUALS, right);
             }
 
-            // 处理IN操作符
-            else if (parser.peek().getValue().equalsIgnoreCase("IN")) {
-                parser.consume(); // 消费IN关键字
-                parser.match(SQLLexer.TokenType.LEFT_PAREN);
+            // 处理IN操作符 - 已移至parseSubqueryExpression方法中处理
+        }
 
-                // 检查是子查询还是值列表
-                if (parser.peek() != null && parser.peek().getType() == SQLLexer.TokenType.SELECT) {
-                    // 子查询处理逻辑
-                    SelectParser subqueryParser = new SelectParser(
-                            parser.getTokens().subList(parser.getPos(), parser.getTokens().size()));
-                    SelectStatement subquery = (SelectStatement) subqueryParser.parse();
+        return left;
+    }
 
-                    // 调整父解析器中的位置
-                    parser.setPos(parser.getPos() + subqueryParser.getPos());
+    /**
+     * 解析算术表达式，处理加法和减法
+     * 遵循运算符优先级：先乘除，后加减
+     */
+    private Expression parseArithmeticExpression() {
+        Expression left = parseMultiplicativeExpression();
 
-                    parser.match(SQLLexer.TokenType.RIGHT_PAREN);
-                    return new SubqueryExpression(left, subquery, SubqueryExpression.SubqueryType.IN);
-                } else {
-                    // 处理IN和值列表
-                    List<Expression> valueList = new ArrayList<>();
-                    do {
-                        valueList.add(parsePrimaryExpression());
-                    } while (parser.peek() != null && parser.peek().getType() == SQLLexer.TokenType.COMMA
-                            && parser.consume() != null);
+        while (parser.peek() != null) {
+            SQLLexer.TokenType type = parser.peek().getType();
+            if (type == SQLLexer.TokenType.PLUS) {
+                parser.consume();
+                Expression right = parseMultiplicativeExpression();
+                left = new ArithmeticExpression(left, ArithmeticOperator.ADD, right);
+            } else if (type == SQLLexer.TokenType.MINUS) {
+                parser.consume();
+                Expression right = parseMultiplicativeExpression();
+                left = new ArithmeticExpression(left, ArithmeticOperator.SUBTRACT, right);
+            } else {
+                break;
+            }
+        }
 
-                    parser.match(SQLLexer.TokenType.RIGHT_PAREN);
-                    return new InListExpression(left, valueList);
-                }
+        return left;
+    }
+
+    /**
+     * 解析乘法、除法和取模表达式
+     */
+    private Expression parseMultiplicativeExpression() {
+        Expression left = parsePrimaryExpression();
+
+        while (parser.peek() != null) {
+            SQLLexer.TokenType type = parser.peek().getType();
+            if (type == SQLLexer.TokenType.STAR) {
+                parser.consume();
+                Expression right = parsePrimaryExpression();
+                left = new ArithmeticExpression(left, ArithmeticOperator.MULTIPLY, right);
+            } else if (type == SQLLexer.TokenType.DIVIDE) {
+                parser.consume();
+                Expression right = parsePrimaryExpression();
+                left = new ArithmeticExpression(left, ArithmeticOperator.DIVIDE, right);
+            } else if (type == SQLLexer.TokenType.MODULO) {
+                parser.consume();
+                Expression right = parsePrimaryExpression();
+                left = new ArithmeticExpression(left, ArithmeticOperator.MODULO, right);
+            } else {
+                break;
             }
         }
 
@@ -297,11 +333,14 @@ public class ExpressionParser{
         }
     }
 
-
-    // 添加此方法到ExpressionParser类
+    /**
+     * 解析子查询表达式，包括EXISTS、IN等
+     * @param leftExpr 子查询左侧表达式（如IN操作符左侧的表达式）
+     * @return 解析后的子查询表达式，如果不是子查询则返回null
+     */
     private Expression parseSubqueryExpression(Expression leftExpr) {
         // 处理EXISTS谓词
-        if (parser.peek() != null && parser.peek().getValue().equalsIgnoreCase("EXISTS")) {
+        if (parser.peek() != null && parser.peek().getType() == SQLLexer.TokenType.EXISTS) {
             parser.consume();
             parser.match(SQLLexer.TokenType.LEFT_PAREN);
 
@@ -318,7 +357,7 @@ public class ExpressionParser{
         }
 
         // 处理IN谓词
-        if (leftExpr != null && parser.peek() != null && parser.peek().getValue().equalsIgnoreCase("IN")) {
+        if (leftExpr != null && parser.peek() != null && parser.peek().getType() == SQLLexer.TokenType.IN) {
             parser.consume();
             parser.match(SQLLexer.TokenType.LEFT_PAREN);
 
@@ -338,7 +377,7 @@ public class ExpressionParser{
                 // 处理IN和值列表
                 List<Expression> valueList = new ArrayList<>();
                 do {
-                    valueList.add(parseExpression());
+                    valueList.add(parseArithmeticExpression());
                 } while (parser.peek() != null && parser.peek().getType() == SQLLexer.TokenType.COMMA
                         && parser.consume() != null);
 
@@ -349,6 +388,7 @@ public class ExpressionParser{
 
         // 处理标量子查询
         if (parser.peek() != null && parser.peek().getType() == SQLLexer.TokenType.LEFT_PAREN) {
+            int savedPos = parser.getPos(); // 保存当前位置，以便回退
             parser.match(SQLLexer.TokenType.LEFT_PAREN);
 
             // 向前看是否是子查询
@@ -364,10 +404,9 @@ public class ExpressionParser{
                 parser.match(SQLLexer.TokenType.RIGHT_PAREN);
                 return new SubqueryExpression(subquery, SubqueryExpression.SubqueryType.SCALAR);
             } else {
-                // 这只是一个括号表达式，不是子查询
-                Expression expr = parseExpression();
-                parser.match(SQLLexer.TokenType.RIGHT_PAREN);
-                return expr;
+                // 这不是子查询，回退并让其他解析方法处理
+                parser.setPos(savedPos);
+                return null;
             }
         }
 

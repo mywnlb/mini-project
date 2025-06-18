@@ -2,14 +2,16 @@ package cn.zhangyis.sql.parser.expression;
 
 import cn.zhangyis.sql.parser.SelectStatement;
 
+import java.util.Collections;
+import java.util.List;
+
 /**
  * 表示表达式中的子查询（例如，WHERE子句中）
  */
-public class SubqueryExpression implements Expression {
+public class SubqueryExpression extends Expression {
     private final SelectStatement subquery;
     private final SubqueryType type;
     private final Expression leftExpression; // 用于IN, ANY, ALL比较
-    private String dataType; // 添加数据类型字段，用于类型推断
 
     public enum SubqueryType {
         SCALAR, EXISTS, IN, ANY, ALL
@@ -40,17 +42,7 @@ public class SubqueryExpression implements Expression {
     }
 
     @Override
-    public String getType() {
-        return dataType;
-    }
-
-    @Override
-    public void setType(String type) {
-        this.dataType = type;
-    }
-
-    @Override
-    public ExpressionType getExpressionType() {
+    public ExpressionType getType() {
         return ExpressionType.SUBQUERY;
     }
 
@@ -70,5 +62,17 @@ public class SubqueryExpression implements Expression {
             default:
                 return "(" + subquery + ")";
         }
+    }
+
+    /**
+     * 获取所有子表达式
+     * 子查询表达式不包含常规子表达式，因为子查询是通过特殊方式处理的
+     * 
+     * @return 空列表
+     */
+    @Override
+    public List<Expression> getChildExpressions() {
+        // 子查询不通过常规的子表达式机制处理，而是通过registerQuery专门处理
+        return Collections.emptyList();
     }
 }

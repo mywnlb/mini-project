@@ -1,6 +1,7 @@
 package cn.zhangyis.sql.planner.semantic;
 
 import cn.zhangyis.sql.parser.*;
+import cn.zhangyis.sql.parser.enums.LiteralType;
 import cn.zhangyis.sql.parser.expression.ColumnExpression;
 import cn.zhangyis.sql.parser.expression.ComparisonExpression;
 import cn.zhangyis.sql.parser.expression.Expression;

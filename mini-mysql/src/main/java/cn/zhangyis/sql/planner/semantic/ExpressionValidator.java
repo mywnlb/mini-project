@@ -2,6 +2,7 @@ package cn.zhangyis.sql.planner.semantic;
 
 
 
+import cn.zhangyis.sql.parser.expression.BinaryExpression;
 import cn.zhangyis.sql.parser.expression.Expression;
 import cn.zhangyis.storage.catalog.CatalogManager;
 

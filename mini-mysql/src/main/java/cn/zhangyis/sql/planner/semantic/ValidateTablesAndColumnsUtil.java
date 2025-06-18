@@ -1,7 +1,10 @@
 package cn.zhangyis.sql.planner.semantic;
 
 import cn.zhangyis.sql.parser.*;
+import cn.zhangyis.sql.parser.enums.ArithmeticOperator;
+import cn.zhangyis.sql.parser.enums.LiteralType;
 import cn.zhangyis.sql.parser.expression.*;
+import cn.zhangyis.sql.parser.expression.InListExpression;
 import cn.zhangyis.storage.catalog.CatalogManager;
 import cn.zhangyis.storage.catalog.Column;
 import cn.zhangyis.storage.catalog.Table;
@@ -10,6 +13,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+
+import static cn.zhangyis.sql.planner.semantic.TypeSystem.isNumericType;
+import static cn.zhangyis.sql.planner.semantic.TypeSystem.isTypeCompatible;
 
 /**
  * 验证表名和列名的语义正确性工具类
@@ -404,14 +410,37 @@ public class ValidateTablesAndColumnsUtil {
             inferExpressionType(binExpr.getLeft(), scope);
             inferExpressionType(binExpr.getRight(), scope);
 
-            // 推导二元表达式的类型
-            Expression.ExpressionType leftType = binExpr.getLeft().getType();
-            Expression.ExpressionType rightType = binExpr.getRight().getType();
-            if (leftType != null && rightType != null) {
-                // 使用类型系统推导结果类型
-                String resultType = TypeSystem.deriveBinaryExpressionType(
-                        binExpr.getOperator(), leftType, rightType);
-                binExpr.setType(resultType);
+            // 比较表达式的结果类型始终为布尔型
+            binExpr.setType(ExpressionType.COMPARISON);
+        } else if (expr instanceof LogicalExpression) {
+            LogicalExpression logExpr = (LogicalExpression) expr;
+            
+            // 递归推导子表达式的类型
+            inferExpressionType(logExpr.getLeft(), scope);
+            inferExpressionType(logExpr.getRight(), scope);
+            
+            // 逻辑表达式的结果类型始终为布尔型
+            logExpr.setType(ExpressionType.LOGICAL);
+        } else if (expr instanceof ArithmeticExpression) {
+            ArithmeticExpression arithExpr = (ArithmeticExpression) expr;
+            
+            // 递归推导子表达式的类型
+            inferExpressionType(arithExpr.getLeft(), scope);
+            inferExpressionType(arithExpr.getRight(), scope);
+            
+            // 推导算术表达式的结果类型
+            // 如果两个操作数都是数值类型，结果也是数值类型
+            // 如果涉及除法，结果可能是浮点型
+            if (arithExpr.getOperator() == ArithmeticOperator.DIVIDE) {
+                arithExpr.setType(ExpressionType.ARITHMETIC);
+            } else {
+                // 其他算术运算，保留最高精度的类型
+                ExpressionType leftType = arithExpr.getLeft().getType();
+                ExpressionType rightType = arithExpr.getRight().getType();
+                
+                if (leftType != null && rightType != null) {
+                    arithExpr.setType(ExpressionType.ARITHMETIC);
+                }
             }
         } else if (expr instanceof FunctionExpression) {
             FunctionExpression funcExpr = (FunctionExpression) expr;
@@ -420,32 +449,73 @@ public class ValidateTablesAndColumnsUtil {
             Expression arg = funcExpr.getArgument();
             if (arg != null) {
                 inferExpressionType(arg, scope);
-
-                // 推导函数返回类型
-                List<String> argTypes = new ArrayList<>();
-                argTypes.add(arg.getType());
-                String returnType = TypeSystem.deriveFunctionType(funcExpr.getFunctionName(), argTypes);
-                funcExpr.setType(returnType);
             }
+            
+            // 设置函数返回类型
+            funcExpr.setType(inferFunctionReturnType(funcExpr));
         } else if (expr instanceof LiteralExpression) {
             LiteralExpression literal = (LiteralExpression) expr;
             // 字面量的类型根据其值确定
             if (literal.isNumber()) {
-                String value = literal.getValue().toString();
-                if (value.contains(".")) {
-                    literal.setType("DOUBLE");
-                } else {
-                    literal.setType("BIGINT");
-                }
+                literal.setType(ExpressionType.LITERAL);
             } else if (literal.isString()) {
-                literal.setType("VARCHAR");
+                literal.setType(ExpressionType.LITERAL);
             } else if (literal.isBoolean()) {
-                literal.setType("BOOLEAN");
+                literal.setType(ExpressionType.LITERAL);
             } else if (literal.isNull()) {
-                literal.setType("NULL");
+                literal.setType(ExpressionType.LITERAL);
+            }
+        } else if (expr instanceof InListExpression) {
+            InListExpression inExpr = (InListExpression) expr;
+            
+            // 递归推导子表达式的类型
+            inferExpressionType(inExpr.getLeft(), scope);
+            for (Expression valueExpr : inExpr.getValueList()) {
+                inferExpressionType(valueExpr, scope);
+            }
+            
+            // IN表达式的结果类型始终为布尔型
+            inExpr.setType(ExpressionType.IN_LIST);
+        } else if (expr instanceof SubqueryExpression) {
+            SubqueryExpression subqueryExpr = (SubqueryExpression) expr;
+            
+            // 子查询表达式的类型推导需要特殊处理
+            // 这里简化处理，将其设置为子查询类型
+            subqueryExpr.setType(ExpressionType.SUBQUERY);
+        }
+    }
+    
+    /**
+     * 推导函数的返回类型
+     */
+    private ExpressionType inferFunctionReturnType(FunctionExpression funcExpr) {
+        String funcName = funcExpr.getFunctionName().toUpperCase();
+        
+        // 聚合函数的返回类型
+        if (isAggregateFunction(funcName)) {
+            if (funcName.equals("COUNT")) {
+                return ExpressionType.FUNCTION; // COUNT返回整数
+            } else if (funcName.equals("SUM") || funcName.equals("AVG")) {
+                // SUM和AVG的返回类型取决于参数类型
+                Expression arg = funcExpr.getArgument();
+                if (arg != null && arg.getType() != null) {
+                    return ExpressionType.FUNCTION;
+                }
+                return ExpressionType.FUNCTION; // 默认为数值类型
+            } else if (funcName.equals("MIN") || funcName.equals("MAX")) {
+                // MIN和MAX的返回类型与参数类型相同
+                Expression arg = funcExpr.getArgument();
+                if (arg != null && arg.getType() != null) {
+                    return arg.getType();
+                }
+                return ExpressionType.FUNCTION;
             }
         }
-        // TODO: 处理其他类型的表达式 (SubqueryExpression, InListExpression等)
+        
+        // 其他函数的返回类型
+        // 这里可以添加更多函数的类型推导逻辑
+        
+        return ExpressionType.FUNCTION; // 默认返回类型
     }
 
     /**
@@ -482,10 +552,10 @@ public class ValidateTablesAndColumnsUtil {
             validateExpressionSemantics(compExpr.getRight(), scope);
 
             // 验证类型兼容性
-            String leftType = compExpr.getLeft().getType();
-            String rightType = compExpr.getRight().getType();
+            ExpressionType leftType = compExpr.getLeft().getType();
+            ExpressionType rightType = compExpr.getRight().getType();
             if (leftType != null && rightType != null) {
-                if (!TypeSystem.isTypeCompatible(leftType, rightType)) {
+                if (!isTypeCompatible(leftType.toString(), rightType.toString())) {
                     throw new SemanticException.TypeIncompatibleException(leftType, rightType);
                 }
             }
@@ -497,16 +567,77 @@ public class ValidateTablesAndColumnsUtil {
             validateExpressionSemantics(logExpr.getRight(), scope);
 
             // 逻辑表达式要求操作数为布尔类型
-            String leftType = logExpr.getLeft().getType();
-            String rightType = logExpr.getRight().getType();
+            ExpressionType leftType = logExpr.getLeft().getType();
+            ExpressionType rightType = logExpr.getRight().getType();
             if (leftType != null && !"BOOLEAN".equals(leftType)) {
                 throw new SemanticException("Left operand of logical expression must be boolean, got: " + leftType);
             }
             if (rightType != null && !"BOOLEAN".equals(rightType)) {
                 throw new SemanticException("Right operand of logical expression must be boolean, got: " + rightType);
             }
+        } else if (expr instanceof ArithmeticExpression) {
+            ArithmeticExpression arithExpr = (ArithmeticExpression) expr;
+            
+            // 递归验证子表达式
+            validateExpressionSemantics(arithExpr.getLeft(), scope);
+            validateExpressionSemantics(arithExpr.getRight(), scope);
+            
+            // 算术表达式要求操作数为数值类型
+            ExpressionType leftType = arithExpr.getLeft().getType();
+            ExpressionType rightType = arithExpr.getRight().getType();
+            
+            if (leftType != null && !isNumericType(leftType.toString())) {
+                throw new SemanticException("Left operand of arithmetic expression must be numeric, got: " + leftType);
+            }
+            
+            if (rightType != null && !isNumericType(rightType.toString())) {
+                throw new SemanticException("Right operand of arithmetic expression must be numeric, got: " + rightType);
+            }
+            
+            // 特殊处理除法和取模运算 - 防止除零
+            if (arithExpr.getOperator() == ArithmeticOperator.DIVIDE ||
+                arithExpr.getOperator() == ArithmeticOperator.MODULO) {
+                
+                // 如果右操作数是常量，检查除零错误
+                if (arithExpr.getRight() instanceof LiteralExpression) {
+                    LiteralExpression rightLit = (LiteralExpression) arithExpr.getRight();
+                    if (rightLit.isNumber() && Double.parseDouble(rightLit.getValue().toString()) == 0) {
+                        throw new SemanticException("Division by zero");
+                    }
+                }
+            }
+        } else if (expr instanceof InListExpression) {
+            InListExpression inExpr = (InListExpression) expr;
+            
+            // 验证左侧表达式
+            validateExpressionSemantics(inExpr.getLeft(), scope);
+            
+            // 验证值列表中的每个表达式
+            for (Expression valueExpr : inExpr.getValueList()) {
+                validateExpressionSemantics(valueExpr, scope);
+                
+                // 验证类型兼容性
+                if (valueExpr.getType() != null && inExpr.getLeft().getType() != null) {
+                    if (!isTypeCompatible(inExpr.getLeft().getType().toString(), valueExpr.getType().toString())) {
+                        throw new SemanticException.TypeIncompatibleException(
+                            inExpr.getLeft().getType().name(), valueExpr.getType().name());
+                    }
+                }
+            }
+        } else if (expr instanceof FunctionExpression) {
+            FunctionExpression funcExpr = (FunctionExpression) expr;
+            
+            // 验证函数参数
+            if (funcExpr.getArgument() != null) {
+                validateExpressionSemantics(funcExpr.getArgument(), scope);
+                
+                // 可以添加更多函数特定的验证逻辑
+                // 例如：验证函数参数类型是否符合函数要求
+            }
+        } else if (expr instanceof SubqueryExpression) {
+            // 子查询的验证应该在其他地方处理
+            // 这里可以添加一些额外的子查询验证逻辑
         }
-        // TODO: 处理其他表达式类型的语义验证（算术表达式等）
     }
 
     /**
@@ -597,6 +728,10 @@ public class ValidateTablesAndColumnsUtil {
             LogicalExpression logExpr = (LogicalExpression) expr;
             validateExpression(logExpr.getLeft(), scope);
             validateExpression(logExpr.getRight(), scope);
+        } else if (expr instanceof ArithmeticExpression) {
+            ArithmeticExpression arithExpr = (ArithmeticExpression) expr;
+            validateExpression(arithExpr.getLeft(), scope);
+            validateExpression(arithExpr.getRight(), scope);
         } else if (expr instanceof FunctionExpression) {
             FunctionExpression funcExpr = (FunctionExpression) expr;
             if (funcExpr.getArgument() != null) {
@@ -608,12 +743,11 @@ public class ValidateTablesAndColumnsUtil {
             // 这里可以做一些额外的子查询验证
         } else if (expr instanceof InListExpression) {
             InListExpression inExpr = (InListExpression) expr;
-            validateExpression(inExpr.getLeftExpression(), scope);
+            validateExpression(inExpr.getLeft(), scope);
             for (Expression valueExpr : inExpr.getValueList()) {
                 validateExpression(valueExpr, scope);
             }
         }
-        // TODO: 处理其他类型的表达式（算术表达式等）
     }
 
     /**
@@ -674,31 +808,82 @@ public class ValidateTablesAndColumnsUtil {
      * 支持算术运算、逻辑运算、字符串连接等常量计算
      */
     private Expression foldExpressionConstants(Expression expr, SqlValidatorScope scope) throws SemanticException {
-        if (expr instanceof BinaryExpression) {
-            BinaryExpression binExpr = (BinaryExpression) expr;
+        if (expr instanceof ArithmeticExpression) {
+            ArithmeticExpression arithExpr = (ArithmeticExpression) expr;
 
             // 递归折叠子表达式
-            Expression left = foldExpressionConstants(binExpr.getLeft(), scope);
-            Expression right = foldExpressionConstants(binExpr.getRight(), scope);
+            Expression left = foldExpressionConstants(arithExpr.getLeft(), scope);
+            Expression right = foldExpressionConstants(arithExpr.getRight(), scope);
 
             // 如果两个操作数都是字面量，则计算表达式
             if (left instanceof LiteralExpression && right instanceof LiteralExpression) {
                 LiteralExpression leftLit = (LiteralExpression) left;
                 LiteralExpression rightLit = (LiteralExpression) right;
 
-                LiteralExpression result = evaluateBinaryExpression(leftLit, binExpr.getOperator(), rightLit);
+                // 使用操作符的枚举名称
+                String operatorName = arithExpr.getOperator().name();
+                LiteralExpression result = evaluateBinaryExpression(leftLit, operatorName, rightLit);
                 if (result != null) {
                     // 保持原表达式的类型信息
-                    result.setType(binExpr.getType());
+                    result.setType(arithExpr.getType());
                     return result;
                 }
             }
 
-            // 创建新的二元表达式（子表达式可能已被折叠）
-            BinaryExpression newBinExpr = new BinaryExpression(left, binExpr.getOperator(), right);
-            newBinExpr.setType(binExpr.getType());
-            return newBinExpr;
+            // 创建新的算术表达式（子表达式可能已被折叠）
+            ArithmeticExpression newExpr = new ArithmeticExpression(left, arithExpr.getOperator(), right);
+            newExpr.setType(arithExpr.getType());
+            return newExpr;
+        } else if (expr instanceof ComparisonExpression) {
+            ComparisonExpression compExpr = (ComparisonExpression) expr;
 
+            // 递归折叠子表达式
+            Expression left = foldExpressionConstants(compExpr.getLeft(), scope);
+            Expression right = foldExpressionConstants(compExpr.getRight(), scope);
+
+            // 如果两个操作数都是字面量，则计算表达式
+            if (left instanceof LiteralExpression && right instanceof LiteralExpression) {
+                LiteralExpression leftLit = (LiteralExpression) left;
+                LiteralExpression rightLit = (LiteralExpression) right;
+
+                // 使用操作符的枚举名称
+                String operatorName = compExpr.getOperator().name();
+                LiteralExpression result = evaluateBinaryExpression(leftLit, operatorName, rightLit);
+                if (result != null) {
+                    result.setType(compExpr.getType());
+                    return result;
+                }
+            }
+
+            // 创建新的比较表达式
+            ComparisonExpression newExpr = new ComparisonExpression(left, compExpr.getOperator(), right);
+            newExpr.setType(compExpr.getType());
+            return newExpr;
+        } else if (expr instanceof LogicalExpression) {
+            LogicalExpression logExpr = (LogicalExpression) expr;
+
+            // 递归折叠子表达式
+            Expression left = foldExpressionConstants(logExpr.getLeft(), scope);
+            Expression right = foldExpressionConstants(logExpr.getRight(), scope);
+
+            // 如果两个操作数都是字面量，则计算表达式
+            if (left instanceof LiteralExpression && right instanceof LiteralExpression) {
+                LiteralExpression leftLit = (LiteralExpression) left;
+                LiteralExpression rightLit = (LiteralExpression) right;
+
+                // 使用操作符的枚举名称
+                String operatorName = logExpr.getOperator().name();
+                LiteralExpression result = evaluateBinaryExpression(leftLit, operatorName, rightLit);
+                if (result != null) {
+                    result.setType(logExpr.getType());
+                    return result;
+                }
+            }
+
+            // 创建新的逻辑表达式
+            LogicalExpression newExpr = new LogicalExpression(left, logExpr.getOperator(), right);
+            newExpr.setType(logExpr.getType());
+            return newExpr;
         } else if (expr instanceof FunctionExpression) {
             FunctionExpression funcExpr = (FunctionExpression) expr;
 
@@ -719,6 +904,23 @@ public class ValidateTablesAndColumnsUtil {
                 newFuncExpr.setType(funcExpr.getType());
                 return newFuncExpr;
             }
+        } else if (expr instanceof SubqueryExpression) {
+            // 子查询不进行常量折叠
+            return expr;
+        } else if (expr instanceof InListExpression) {
+            InListExpression inExpr = (InListExpression) expr;
+            
+            // 折叠左侧表达式
+            Expression left = foldExpressionConstants(inExpr.getLeft(), scope);
+            
+            // 折叠值列表中的每个表达式
+            List<Expression> foldedValues = new ArrayList<>();
+            for (Expression valueExpr : inExpr.getValueList()) {
+                foldedValues.add(foldExpressionConstants(valueExpr, scope));
+            }
+            
+            // 创建新的IN列表表达式
+            return new InListExpression(left, foldedValues);
         }
 
         // 其他类型的表达式直接返回
@@ -730,30 +932,44 @@ public class ValidateTablesAndColumnsUtil {
      */
     private LiteralExpression evaluateBinaryExpression(LiteralExpression left, String operator, LiteralExpression right) throws SemanticException {
         try {
+            // 使用SQLLexer.TokenType替代字符串比较
             switch (operator.toUpperCase()) {
                 // 算术运算
                 case "+":
+                case "PLUS":
                     return evaluateArithmeticAdd(left, right);
                 case "-":
+                case "MINUS":
                     return evaluateArithmeticSubtract(left, right);
                 case "*":
+                case "STAR":
                     return evaluateArithmeticMultiply(left, right);
                 case "/":
+                case "DIVIDE":
                     return evaluateArithmeticDivide(left, right);
+                case "%":
+                case "MODULO":
+                    return evaluateArithmeticModulo(left, right);
 
                 // 比较运算
                 case "=":
+                case "EQUALS":
                     return new LiteralExpression(compareValues(left, right) == 0, LiteralType.BOOLEAN);
                 case "!=":
                 case "<>":
+                case "NOT_EQUALS":
                     return new LiteralExpression(compareValues(left, right) != 0, LiteralType.BOOLEAN);
                 case "<":
+                case "LESS":
                     return new LiteralExpression(compareValues(left, right) < 0, LiteralType.BOOLEAN);
                 case "<=":
+                case "LESS_EQUALS":
                     return new LiteralExpression(compareValues(left, right) <= 0, LiteralType.BOOLEAN);
                 case ">":
+                case "GREATER":
                     return new LiteralExpression(compareValues(left, right) > 0, LiteralType.BOOLEAN);
                 case ">=":
+                case "GREATER_EQUALS":
                     return new LiteralExpression(compareValues(left, right) >= 0, LiteralType.BOOLEAN);
 
                 // 逻辑运算
@@ -847,6 +1063,21 @@ public class ValidateTablesAndColumnsUtil {
                 throw new SemanticException("Division by zero");
             }
             double result = getDoubleValue(left) / rightVal;
+            return new LiteralExpression(result, LiteralType.NUMBER);
+        }
+        return null;
+    }
+
+    /**
+     * 算术取模
+     */
+    private LiteralExpression evaluateArithmeticModulo(LiteralExpression left, LiteralExpression right) {
+        if (left.isNumber() && right.isNumber()) {
+            long rightVal = getLongValue(right);
+            if (rightVal == 0) {
+                throw new SemanticException("Division by zero in modulo operation");
+            }
+            long result = getLongValue(left) % rightVal;
             return new LiteralExpression(result, LiteralType.NUMBER);
         }
         return null;
@@ -1056,6 +1287,28 @@ public class ValidateTablesAndColumnsUtil {
             BinaryExpression binExpr = (BinaryExpression) expr;
             return containsAggregateFunction(binExpr.getLeft()) ||
                     containsAggregateFunction(binExpr.getRight());
+        } else if (expr instanceof ArithmeticExpression) {
+            ArithmeticExpression arithExpr = (ArithmeticExpression) expr;
+            return containsAggregateFunction(arithExpr.getLeft()) ||
+                    containsAggregateFunction(arithExpr.getRight());
+        } else if (expr instanceof ComparisonExpression) {
+            ComparisonExpression compExpr = (ComparisonExpression) expr;
+            return containsAggregateFunction(compExpr.getLeft()) ||
+                    containsAggregateFunction(compExpr.getRight());
+        } else if (expr instanceof LogicalExpression) {
+            LogicalExpression logExpr = (LogicalExpression) expr;
+            return containsAggregateFunction(logExpr.getLeft()) ||
+                    containsAggregateFunction(logExpr.getRight());
+        } else if (expr instanceof InListExpression) {
+            InListExpression inExpr = (InListExpression) expr;
+            if (containsAggregateFunction(inExpr.getLeft())) {
+                return true;
+            }
+            for (Expression valueExpr : inExpr.getValueList()) {
+                if (containsAggregateFunction(valueExpr)) {
+                    return true;
+                }
+            }
         }
         return false;
     }

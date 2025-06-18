@@ -9,7 +9,9 @@ public class SQLLexer {
     public enum TokenType {
         SELECT, FROM, WHERE, INSERT, INTO, VALUES, UPDATE, SET, DELETE, CREATE, TABLE, DROP, ALTER, ADD, COLUMN, JOIN, ON, GROUP, BY, ORDER, ASC, DESC, IDENTIFIER, COMMA, STAR, EQUALS, STRING, EOF,
         DOT,COUNT, SUM, AVG, MIN, MAX, INNER, LEFT, RIGHT, PRIMARY, KEY, DEFAULT, NOT, NULL, COMMENT, BIGINT, VARCHAR, INT, DOUBLE, FLOAT, DATETIME, DATE, LEFT_PAREN, RIGHT_PAREN, NUMBER, OR,
-        AND, NOT_EQUALS, LESS_EQUALS, LESS, GREATER_EQUALS, GREATER, SEMICOLON,HAVING
+        AND, NOT_EQUALS, LESS_EQUALS, LESS, GREATER_EQUALS, GREATER, SEMICOLON, HAVING,
+        PLUS, MINUS, DIVIDE, MODULO,
+        IN, EXISTS
     }
 
     public static class Token {
@@ -95,6 +97,12 @@ public class SQLLexer {
         keywords.put(".", TokenType.DOT);
         keywords.put("AND", TokenType.AND);
         keywords.put("HAVING", TokenType.HAVING);
+        keywords.put("+", TokenType.PLUS);
+        keywords.put("-", TokenType.MINUS);
+        keywords.put("/", TokenType.DIVIDE);
+        keywords.put("%", TokenType.MODULO);
+        keywords.put("IN", TokenType.IN);
+        keywords.put("EXISTS", TokenType.EXISTS);
     }
 
     public SQLLexer(String input) {
@@ -118,8 +126,20 @@ public class SQLLexer {
             } else if (current == '=') {
                 tokens.add(new Token(TokenType.EQUALS, "="));
                 pos++;
-            }else if (current == '.') {
+            } else if (current == '.') {
                 tokens.add(new Token(TokenType.DOT, "."));
+                pos++;
+            } else if (current == '+') {
+                tokens.add(new Token(TokenType.PLUS, "+"));
+                pos++;
+            } else if (current == '-') {
+                tokens.add(new Token(TokenType.MINUS, "-"));
+                pos++;
+            } else if (current == '/') {
+                tokens.add(new Token(TokenType.DIVIDE, "/"));
+                pos++;
+            } else if (current == '%') {
+                tokens.add(new Token(TokenType.MODULO, "%"));
                 pos++;
             } else if (current == '!') {
                 if (peek() == '=') {

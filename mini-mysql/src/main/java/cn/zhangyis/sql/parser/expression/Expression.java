@@ -1,30 +1,45 @@
 package cn.zhangyis.sql.parser.expression;
 
+import java.util.Collections;
+import java.util.List;
+
 /**
  * SQL表达式接口
  * 所有类型的表达式都实现此接口
  */
-public interface Expression {
-    /**
-     * 获取表达式的类型
-     * @return 表达式类型
-     */
-    ExpressionType getType();
+public abstract class Expression {
+    protected ExpressionType type;
 
     /**
-     * 表达式类型枚举
+     * 获取表达式的类型
+     *
+     * @return 表达式类型
      */
-    public enum ExpressionType {
-        COLUMN,     // 列引用
-        LITERAL,    // 字面量
-        COMPARISON, // 比较表达式
-        LOGICAL,    // 逻辑表达式
-        ORDER_BY,   // 排序表达式
-        GROUP_BY,    // 分组表达式
-        FUNCTION,    // 函数表达式
-        IN_LIST,    // IN列表表达式
-        ARITHMETIC,  // 算术表达式
-        SUBQUERY    // 子查询表达式
+    public abstract ExpressionType getType();
+
+    /**
+     * 设置表达式的类型
+     *
+     * @param type 表达式类型
+     */
+    public void setType(ExpressionType type) {
+        this.type = type;
+    }
+
+    /**
+     * 获取表达式的字符串表示
+     */
+    @Override
+    public abstract String toString();
+
+    /**
+     * 获取所有子表达式
+     * 用于支持递归处理表达式树
+     *
+     * @return 子表达式列表，如果没有子表达式则返回空列表
+     */
+    public List<Expression> getChildExpressions() {
+        return Collections.emptyList();
     }
 }
 
