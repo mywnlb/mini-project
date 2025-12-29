@@ -1,5 +1,7 @@
 package cn.zhangyis.sql.parser.enums;
 
+import cn.zhangyis.exceptions.ArithmeticException;
+
 /**
  * 算术运算符枚举
  */
@@ -37,7 +39,7 @@ public enum ArithmeticOperator {
             case "%":
                 return MODULO;
             default:
-                throw new IllegalArgumentException("Unknown arithmetic operator: " + operator);
+                throw new ArithmeticException("Unknown arithmetic operator: " + operator);
         }
     }
 }

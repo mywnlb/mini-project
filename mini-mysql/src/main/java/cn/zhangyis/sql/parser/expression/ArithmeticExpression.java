@@ -9,7 +9,7 @@ public class ArithmeticExpression extends BinaryExpression {
     private final ArithmeticOperator operator;
 
     public ArithmeticExpression(Expression left, ArithmeticOperator operator, Expression right) {
-        super();
+        super(left, right);
         this.left = left;
         this.operator = operator;
         this.right = right;

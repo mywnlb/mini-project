@@ -16,12 +16,21 @@ public class FunctionExpression extends Expression {
     private boolean isAggregate;
     private boolean isDistinct;
 
+    /**
+     * 创建函数表达式
+     * 
+     * @param name 函数名
+     * @param arguments 函数参数列表
+     * @param isAggregate 是否是聚合函数
+     * @param isDistinct 是否使用了DISTINCT关键字
+     */
     public FunctionExpression(String name, List<Expression> arguments, boolean isAggregate, boolean isDistinct) {
         this.name = name;
         this.arguments = arguments != null ? arguments : new ArrayList<>();
         this.isAggregate = isAggregate;
         this.isDistinct = isDistinct;
     }
+
 
     @Override
     public ExpressionType getType() {
@@ -43,14 +52,15 @@ public class FunctionExpression extends Expression {
     public boolean isDistinct() {
         return isDistinct;
     }
+    
+    public void setDistinct(boolean distinct) {
+        isDistinct = distinct;
+    }
 
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder(name);
         sb.append("(");
-        if (isDistinct) {
-            sb.append("DISTINCT ");
-        }
         for (int i = 0; i < arguments.size(); i++) {
             if (i > 0) {
                 sb.append(", ");

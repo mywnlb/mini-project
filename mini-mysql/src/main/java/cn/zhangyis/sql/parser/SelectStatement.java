@@ -1,9 +1,11 @@
 package cn.zhangyis.sql.parser;
 
+import cn.zhangyis.sql.parser.enums.JoinType;
 import cn.zhangyis.sql.parser.expression.Expression;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * SQL SELECT 语句表示
@@ -76,6 +78,10 @@ public class SelectStatement extends SQLStatement {
         return distinct;
     }
 
+    public Integer getOffset() {
+        return offset;
+    }
+
     // Setters
     public void setSelectItems(List<SelectItem> selectItems) {
         this.selectItems = selectItems != null ? selectItems : new ArrayList<>();
@@ -137,7 +143,6 @@ public class SelectStatement extends SQLStatement {
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder("SELECT ");
-        if (distinct) sb.append("DISTINCT ");
 
         // 选择项
         for (int i = 0; i < selectItems.size(); i++) {
@@ -203,7 +208,12 @@ public class SelectStatement extends SQLStatement {
 
         // LIMIT
         if (limit != null) {
-            sb.append(" LIMIT ").append(limit);
+            if (Objects.nonNull(offset)) {
+                sb.append(" OFFSET ").append(offset);
+            } else {
+                sb.append(" OFFSET 0");
+            }
+            sb.append(" get ").append(limit);
         }
 
         return sb.toString();
@@ -234,6 +244,10 @@ public class SelectStatement extends SQLStatement {
         @Override
         public String toString() {
             return alias != null ? expression + " AS " + alias : expression.toString();
+        }
+
+        public String getAliasOrName() {
+            return alias != null ? alias : expression.toString();
         }
     }
 
@@ -347,7 +361,6 @@ public class SelectStatement extends SQLStatement {
     }
 
     public static class JoinClause {
-        public enum JoinType {INNER, LEFT, RIGHT}
 
         private JoinType joinType;
         private TableReference joinTable;

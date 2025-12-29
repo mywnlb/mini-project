@@ -1,31 +1,24 @@
 package cn.zhangyis.sql.planner.semantic;
 
-
-import cn.zhangyis.sql.parser.expression.ColumnExpression;
 import cn.zhangyis.sql.parser.SQLStatement;
 import cn.zhangyis.sql.parser.SelectStatement;
-import cn.zhangyis.sql.planner.logical.LogicalFilter;
-import cn.zhangyis.sql.planner.logical.LogicalProject;
-import cn.zhangyis.sql.planner.logical.LogicalScan;
 import cn.zhangyis.sql.planner.logical.RelNode;
+import cn.zhangyis.sql.planner.semantic.scope.SemanticAnalyzerScopeUtil;
+import cn.zhangyis.sql.planner.semantic.scope.SqlValidatorScope;
 import cn.zhangyis.storage.catalog.CatalogManager;
-import cn.zhangyis.storage.catalog.Column;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * 默认语义分析器实现
  * 负责将SQL语句转换为逻辑计划
  * 参考 Apache Calcite 的语义分析流程
- * 
+ *
  * 职责：
  * 1. 协调整个语义分析流程
  * 2. 调用SQL重写器进行AST标准化
  * 3. 构建命名空间和作用域
  * 4. 执行语义验证（委托给ValidateTablesAndColumnsUtil）
  * 5. 生成逻辑计划
- * 
+ *
  * 设计原则：
  * - 单一职责：专注于语义分析流程协调
  * - 依赖注入：使用外部的重写器和验证器
@@ -36,12 +29,14 @@ public class DefaultSemanticAnalyzer implements SemanticAnalyzer {
     private final SqlRewriter sqlRewriter;
     private SemanticValidator validator;
     private SemanticOptimizer optimizer;
+    private final SqlToLogicalPlanConverter sqlToLogicalPlanConverter;
 
     public DefaultSemanticAnalyzer(CatalogManager catalogManager) {
         this.catalogManager = catalogManager;
         this.sqlRewriter = new SqlRewriter(catalogManager);
-        this.validator = new DefaultSemanticValidator(catalogManager);
-        this.optimizer = new DefaultSemanticOptimizer();
+        this.sqlToLogicalPlanConverter = new SqlToLogicalPlanConverter(catalogManager);
+        // this.validator = new DefaultSemanticValidator(catalogManager);
+        // this.optimizer = new DefaultSemanticOptimizer();
     }
 
     /**
@@ -50,15 +45,16 @@ public class DefaultSemanticAnalyzer implements SemanticAnalyzer {
     public DefaultSemanticAnalyzer(CatalogManager catalogManager, SqlRewriter sqlRewriter) {
         this.catalogManager = catalogManager;
         this.sqlRewriter = sqlRewriter;
-        this.validator = new DefaultSemanticValidator(catalogManager);
-        this.optimizer = new DefaultSemanticOptimizer();
+        this.sqlToLogicalPlanConverter = new SqlToLogicalPlanConverter(catalogManager);
+        // this.validator = new DefaultSemanticValidator(catalogManager);
+        // this.optimizer = new DefaultSemanticOptimizer();
     }
 
     @Override
     public RelNode analyze(SQLStatement statement) throws SemanticException {
         // === Apache Calcite 标准语义分析流程 ===
         // 参考: https://calcite.apache.org/docs/tutorial.html
-        
+
         // 初始化顶级作用域
         SqlValidatorScope rootScope = new SqlValidatorScope(null, SqlValidatorScope.ScopeType.TOP_LEVEL);
 
@@ -77,25 +73,30 @@ public class DefaultSemanticAnalyzer implements SemanticAnalyzer {
             // 包括：
             // - 表名和列名验证
             // - 星号表达式展开 (expandStarColumns)
-            // - 类型推断 (inferTypes/DeriveTypeVisitor) 
+            // - 类型推断 (inferTypes/DeriveTypeVisitor)
             // - 常量折叠 (foldConstants)
             // - 表达式验证
             // 参考: https://zhuanlan.zhihu.com/p/58139279
-            ValidateTablesAndColumnsUtil.validate(statement, rootScope, catalogManager);
+            // ValidateTablesAndColumnsUtil.validate(statement, rootScope, catalogManager);
 
             // ====== 阶段3: 逻辑计划构建 ======
-            // 将已验证的 AST 转换为逻辑关系代数表达式 (RelNode)
-            // 这相当于 Apache Calcite 中的 SqlToRelConverter 步骤
-            RelNode logicalPlan = buildLogicalPlan(statement, rootScope);
+            // 使用SqlToLogicalPlanConverter将已验证的AST转换为逻辑关系代数表达式(RelNode)
+            RelNode logicalPlan = sqlToLogicalPlanConverter.convert(statement, rootScope);
 
             // ====== 阶段4: 逻辑计划验证 ======
             // 验证生成的逻辑计划的正确性
-            validator.validate(logicalPlan);
+            if (validator != null) {
+                validator.validate(logicalPlan);
+            }
 
             // ====== 阶段5: 语义层优化 ======
             // 应用语义层面的优化规则（如常量折叠、谓词简化等）
             // 注意：这里只是语义层优化，物理优化在其他组件中进行
-            return optimizer.optimize(logicalPlan);
+            if (optimizer != null) {
+                return optimizer.optimize(logicalPlan);
+            }
+
+            return logicalPlan;
 
         } catch (SemanticException e) {
             // 重新抛出语义异常
@@ -133,51 +134,4 @@ public class DefaultSemanticAnalyzer implements SemanticAnalyzer {
     private SQLStatement performUnconditionalRewrites(SQLStatement statement) throws SemanticException {
         return sqlRewriter.rewrite(statement);
     }
-
-    /**
-     * 构建逻辑计划
-     */
-    private RelNode buildLogicalPlan(SQLStatement statement, SqlValidatorScope scope) throws SemanticException {
-        if (statement instanceof SelectStatement) {
-            return buildSelectPlan((SelectStatement) statement, scope);
-        }
-        throw new SemanticException("Unsupported statement type: " + statement.getClass().getName());
-    }
-
-    /**
-     * 构建SELECT语句的逻辑计划
-     */
-    private RelNode buildSelectPlan(SelectStatement select, SqlValidatorScope scope) throws SemanticException {
-        // 1. 构建表扫描节点
-        RelNode plan = buildTableScan(select.getFrom().get(0), scope);
-
-        // 2. 添加过滤节点
-        if (select.getWhere() != null) {
-            plan = new LogicalFilter(select.getWhere(), plan);
-        }
-
-        // 3. 添加投影节点
-        List<Column> outputColumns = new ArrayList<>();
-        for (SelectStatement.SelectItem item : select.getSelectItems()) {
-            if (item.getExpression() instanceof ColumnExpression) {
-                ColumnExpression col = (ColumnExpression) item.getExpression();
-                outputColumns.add(new Column(col.getColumnName(), col.getType()));
-            }
-        }
-        plan = new LogicalProject(outputColumns, plan);
-
-        return plan;
-    }
-
-    /**
-     * 构建表扫描节点
-     */
-    private RelNode buildTableScan(SelectStatement.TableReference ref, SqlValidatorScope scope) throws SemanticException {
-        if (ref instanceof SelectStatement.TableName) {
-            SelectStatement.TableName tableName = (SelectStatement.TableName) ref;
-            Table table = catalogManager.getTable(tableName.getName());
-            return new LogicalScan(table);
-        }
-        throw new SemanticException("Unsupported table reference type: " + ref.getClass().getName());
-    }
-} 
+}

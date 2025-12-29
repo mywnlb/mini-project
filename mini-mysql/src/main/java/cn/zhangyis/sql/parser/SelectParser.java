@@ -1,8 +1,10 @@
 package cn.zhangyis.sql.parser;
 
 import cn.zhangyis.exceptions.SQLParseException;
+import cn.zhangyis.sql.parser.enums.JoinType;
 import cn.zhangyis.sql.parser.expression.ColumnExpression;
 import cn.zhangyis.sql.parser.expression.Expression;
+import cn.zhangyis.sql.parser.expression.FunctionExpression;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,20 +20,17 @@ public class SelectParser extends SQLParser {
         this.expressionParser = new ExpressionParser(this);
     }
 
-    @Override
+        @Override
     public SQLStatement parse() {
         // 解析SELECT关键字
         match(SQLLexer.TokenType.SELECT);
 
-        // 检查是否有DISTINCT
-        boolean distinct = false;
-        if (peek() != null && peek().getValue().equalsIgnoreCase("DISTINCT")) {
-            consume();
-            distinct = true;
-        }
-
-        // 解析选择项
+        // 解析选择项（DISTINCT由ExpressionParser处理）
         List<SelectStatement.SelectItem> selectItems = parseSelectItems();
+
+        // 根据解析结果判断是否有DISTINCT
+        boolean distinct = selectItems.stream().anyMatch(item -> item.getExpression() instanceof FunctionExpression &&
+                                                   ((FunctionExpression)item.getExpression()).isDistinct());
 
         // 解析FROM子句
         List<SelectStatement.TableReference> fromTables = new ArrayList<>();
@@ -84,7 +83,7 @@ public class SelectParser extends SQLParser {
         // 解析LIMIT子句  limt 5 or limt 5,10
         Integer offset = null;
         Integer limit = null;
-        if (peek() != null && peek().getValue().equalsIgnoreCase("LIMIT")) {
+        if (peek() != null && peek().getValue().equalsIgnoreCase(SQLLexer.TokenType.LIMIT.name())) {
             consume();
             // 检查是否有可选的LIMIT值
             if (peek() != null && peek().getType() == SQLLexer.TokenType.NUMBER) {
@@ -112,7 +111,7 @@ public class SelectParser extends SQLParser {
 
         return new SelectStatement(
                 selectItems, fromTables, joins, whereCondition,
-                groupByColumns, havingCondition, orderByItems, limit,offset, distinct
+                groupByColumns, havingCondition, orderByItems, limit, offset, distinct
         );
     }
 
@@ -171,7 +170,7 @@ public class SelectParser extends SQLParser {
             // 处理简单的 "*" 通配符
             else if (peek() != null && peek().getType() == SQLLexer.TokenType.STAR) {
                 consume();
-                Expression starExpr = new ColumnExpression("*", true);
+                Expression starExpr = new ColumnExpression(null, true);
                 items.add(new SelectStatement.SelectItem(starExpr, null));
             }
             // 处理常规表达式 (列、函数等)
@@ -182,7 +181,7 @@ public class SelectParser extends SQLParser {
 
                 // 处理别名 - 支持有或没有 AS 关键字
                 if (peek() != null && !isClauseKeyword(peek())) {
-                    if (peek().getValue().equalsIgnoreCase("AS")) {
+                    if (peek().getType() == SQLLexer.TokenType.AS) {
                         consume(); // 跳过 AS 关键字
                         alias = expectIdentifierOrString();
                     } else if (peek().getType() == SQLLexer.TokenType.IDENTIFIER &&
@@ -200,24 +199,14 @@ public class SelectParser extends SQLParser {
     }
     // 检查是否是SQL保留关键字
     private boolean isReservedKeyword(String word) {
-        String upper = word.toUpperCase();
-        return upper.equals("FROM") || upper.equals("WHERE") || upper.equals("GROUP") ||
-                upper.equals("ORDER") || upper.equals("HAVING") || upper.equals("LIMIT") ||
-                upper.equals("JOIN") || upper.equals("ON") || upper.equals("AND") ||
-                upper.equals("OR") || upper.equals("IN") || upper.equals("NOT") ||
-                upper.equals("BETWEEN") || upper.equals("LIKE") || upper.equals("IS") ||
-                upper.equals("NULL") || upper.equals("TRUE") || upper.equals("FALSE") ||
-                upper.equals("ASC") || upper.equals("DESC") || upper.equals("UNION") ||
-                upper.equals("INTERSECT") || upper.equals("EXCEPT") || upper.equals("CASE") ||
-                upper.equals("WHEN") || upper.equals("THEN") || upper.equals("ELSE") ||
-                upper.equals("END") || upper.equals("EXISTS");
+        return SQLLexer.isReservedKeyword(word);
     }
 
     // 检查是否是子句开始关键字（FROM、WHERE 等）
     private boolean isClauseKeyword(SQLLexer.Token token) {
         if (token == null) return false;
         String upper = token.getValue().toUpperCase();
-        return upper.equals("FROM") ;
+        return upper.equals(SQLLexer.TokenType.FROM.name()) ;
     }
 
 
@@ -284,14 +273,14 @@ public class SelectParser extends SQLParser {
 
     private SelectStatement.JoinClause parseJoin() {
         // 确定连接类型
-        SelectStatement.JoinClause.JoinType joinType = SelectStatement.JoinClause.JoinType.INNER;
+        JoinType joinType = JoinType.INNER;
 
         if (peek().getType() == SQLLexer.TokenType.LEFT) {
             consume();
-            joinType = SelectStatement.JoinClause.JoinType.LEFT;
+            joinType = JoinType.LEFT;
         } else if (peek().getType() == SQLLexer.TokenType.RIGHT) {
             consume();
-            joinType = SelectStatement.JoinClause.JoinType.RIGHT;
+            joinType = JoinType.RIGHT;
         } else if (peek().getType() == SQLLexer.TokenType.INNER) {
             consume();
         }

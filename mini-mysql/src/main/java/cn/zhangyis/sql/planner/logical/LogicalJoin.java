@@ -1,83 +1,83 @@
 package cn.zhangyis.sql.planner.logical;
 
-import cn.zhangyis.sql.Column;
-import cn.zhangyis.sql.expression.Expression;
-import java.util.ArrayList;
-import java.util.List;
+import cn.zhangyis.sql.parser.enums.JoinType;
+import cn.zhangyis.sql.parser.expression.Expression;
 
 /**
- * 连接节点
- * 表示对两个输入进行连接操作
+ * 逻辑连接节点
+ * 表示JOIN操作
  */
-public class LogicalJoin implements RelNode {
-    private final JoinType joinType;
+public class LogicalJoin extends AbstractRelNode {
+    private final RelNode left;
+    private final RelNode right;
     private final Expression condition;
-    private final List<RelNode> inputs;
-    private RelTraitSet traitSet;
-    
-    public LogicalJoin(JoinType joinType, Expression condition, RelNode left, RelNode right) {
-        this.joinType = joinType;
+    private final JoinType joinType;
+
+    public LogicalJoin(RelNode left, RelNode right, Expression condition, JoinType joinType) {
+        super();
+        this.left = left;
+        this.right = right;
         this.condition = condition;
-        this.inputs = new ArrayList<>();
-        this.inputs.add(left);
-        this.inputs.add(right);
-        this.traitSet = new RelTraitSet();
+        this.joinType = joinType;
+
+        addInput(left);
+        addInput(right);
+        deriveOutput();
     }
-    
-    @Override
-    public List<Column> getOutputColumns() {
-        List<Column> columns = new ArrayList<>();
-        columns.addAll(inputs.get(0).getOutputColumns());
-        columns.addAll(inputs.get(1).getOutputColumns());
-        return columns;
-    }
-    
-    @Override
-    public List<RelNode> getInputs() {
-        return inputs;
-    }
-    
-    @Override
-    public void setInputs(List<RelNode> inputs) {
-        this.inputs.clear();
-        this.inputs.addAll(inputs);
-    }
-    
+
     @Override
     public RelNodeType getType() {
         return RelNodeType.JOIN;
     }
-    
+
     @Override
-    public RelTraitSet getTraitSet() {
-        return traitSet;
+    protected void deriveOutput() {
+        // JOIN操作合并左右两侧的输出
+        outputExpressions.clear();
+        outputNames.clear();
+
+        // 添加左侧输出
+        outputExpressions.addAll(left.getOutputExpressions());
+        outputNames.addAll(left.getOutputNames());
+
+        // 添加右侧输出
+        outputExpressions.addAll(right.getOutputExpressions());
+        outputNames.addAll(right.getOutputNames());
     }
-    
-    @Override
-    public void setTraitSet(RelTraitSet traitSet) {
-        this.traitSet = traitSet;
+
+    /**
+     * 获取左侧输入
+     */
+    public RelNode getLeft() {
+        return left;
     }
-    
-    @Override
-    public RelNode copy(RelTraitSet traitSet, List<RelNode> inputs) {
-        return new LogicalJoin(joinType, condition, inputs.get(0), inputs.get(1));
+
+    /**
+     * 获取右侧输入
+     */
+    public RelNode getRight() {
+        return right;
     }
-    
-    public JoinType getJoinType() {
-        return joinType;
-    }
-    
+
+    /**
+     * 获取连接条件
+     */
     public Expression getCondition() {
         return condition;
     }
-    
+
     /**
-     * 连接类型枚举
+     * 获取连接类型
      */
-    public enum JoinType {
-        INNER,
-        LEFT,
-        RIGHT,
-        FULL
+    public JoinType getJoinType() {
+        return joinType;
     }
-} 
+
+
+
+    @Override
+    public String toString() {
+        return "LogicalJoin(type=" + joinType +
+                ", condition=" + (condition != null ? condition : "CROSS") + ")";
+    }
+}

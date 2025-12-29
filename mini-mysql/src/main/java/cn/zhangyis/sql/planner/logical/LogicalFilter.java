@@ -1,63 +1,43 @@
 package cn.zhangyis.sql.planner.logical;
 
-import cn.zhangyis.sql.Column;
-import cn.zhangyis.sql.expression.Expression;
-import java.util.ArrayList;
-import java.util.List;
+import cn.zhangyis.sql.parser.expression.Expression;
 
 /**
- * 过滤节点
- * 表示对输入进行条件过滤操作
+ * 逻辑过滤节点
+ * 表示WHERE或HAVING子句的过滤操作
  */
-public class LogicalFilter implements RelNode {
+public class LogicalFilter extends AbstractRelNode {
     private final Expression condition;
-    private final List<RelNode> inputs;
-    private RelTraitSet traitSet;
-    
+
     public LogicalFilter(Expression condition, RelNode input) {
+        super();
         this.condition = condition;
-        this.inputs = new ArrayList<>();
-        this.inputs.add(input);
-        this.traitSet = new RelTraitSet();
+        addInput(input);
+        deriveOutput();
     }
-    
-    @Override
-    public List<Column> getOutputColumns() {
-        return inputs.get(0).getOutputColumns();
-    }
-    
-    @Override
-    public List<RelNode> getInputs() {
-        return inputs;
-    }
-    
-    @Override
-    public void setInputs(List<RelNode> inputs) {
-        this.inputs.clear();
-        this.inputs.addAll(inputs);
-    }
-    
+
     @Override
     public RelNodeType getType() {
         return RelNodeType.FILTER;
     }
-    
+
     @Override
-    public RelTraitSet getTraitSet() {
-        return traitSet;
+    protected void deriveOutput() {
+        // 过滤操作不改变输出结构，直接继承输入的输出
+        RelNode input = inputs.get(0);
+        outputExpressions.addAll(input.getOutputExpressions());
+        outputNames.addAll(input.getOutputNames());
     }
-    
-    @Override
-    public void setTraitSet(RelTraitSet traitSet) {
-        this.traitSet = traitSet;
-    }
-    
-    @Override
-    public RelNode copy(RelTraitSet traitSet, List<RelNode> inputs) {
-        return new LogicalFilter(condition, inputs.get(0));
-    }
-    
+
+    /**
+     * 获取过滤条件
+     */
     public Expression getCondition() {
         return condition;
     }
-} 
+
+    @Override
+    public String toString() {
+        return "LogicalFilter(condition=" + condition + ")";
+    }
+}

@@ -1,5 +1,7 @@
 package cn.zhangyis.sql.parser.expression;
 
+import cn.zhangyis.enums.FiledType;
+
 import java.util.Collections;
 import java.util.List;
 
@@ -9,9 +11,8 @@ import java.util.List;
 public class ColumnExpression extends Expression {
     private String tableName;  // 表名，可以为null（表示无限定名）
     private String columnName; // 列名
-    private String columnType = null; // 用于存储列类型，默认为null
     private boolean isAll = false;
-
+    private String alias; // 列别名（向后兼容）
     /**
      * 创建无表名限定的列表达式
      * 
@@ -36,6 +37,14 @@ public class ColumnExpression extends Expression {
         this.tableName = tableName;
         this.columnName = null;
         this.isAll = isAll;
+    }
+
+
+    public ColumnExpression(String tableName, String columnName, boolean isAll, String alias) {
+        this.tableName = tableName;
+        this.columnName = columnName;
+        this.isAll = isAll;
+        this.alias = alias;
     }
 
     @Override
@@ -80,11 +89,11 @@ public class ColumnExpression extends Expression {
         return isAll;
     }
 
-    public String getColumnType() {
+    public FiledType getColumnType() {
         return columnType;
     }
 
-    public void setColumnType(String columnType) {
+    public void setColumnType(FiledType columnType) {
         this.columnType = columnType;
     }
 

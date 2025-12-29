@@ -9,9 +9,8 @@ public class LogicalExpression extends BinaryExpression {
     private final LogicalOperator operator;
 
     public LogicalExpression(Expression left, LogicalOperator operator, Expression right) {
-        this.left = left;
+        super(left, right);
         this.operator = operator;
-        this.right = right;
     }
 
     public Expression getLeft() {

@@ -1,7 +1,7 @@
-package cn.zhangyis.sql.planner.semantic;
+package cn.zhangyis.sql.planner.semantic.scope;
 
-import cn.zhangyis.storage.catalog.Table;
 import cn.zhangyis.storage.catalog.Column;
+import cn.zhangyis.storage.catalog.Table;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -18,56 +18,45 @@ public class TableNamespace implements SqlValidatorNamespace {
     private final String alias;
     private final Map<String, Column> columnMap;
     private boolean validated = false;
-    
+
     public TableNamespace(Table table, String alias) {
         this.table = table;
         this.alias = alias;
         this.columnMap = new HashMap<>();
         initializeColumnMap();
     }
-    
+
     @Override
     public String getName() {
         return alias != null ? alias : table.getName();
     }
-    
+
     @Override
     public NamespaceType getType() {
         return NamespaceType.TABLE;
     }
-    
+
     @Override
     public Column findColumn(String columnName) {
         return columnMap.get(columnName.toLowerCase());
     }
-    
+
     @Override
     public List<Column> getColumns() {
         return new ArrayList<>(table.getColumns());
     }
-    
+
     @Override
     public boolean hasColumn(String columnName) {
         return columnMap.containsKey(columnName.toLowerCase());
     }
-    
+
     @Override
     public int getColumnCount() {
         return table.getColumns().size();
     }
-    
-    @Override
-    public void validate() throws SemanticException {
-        // 表命名空间通常已经通过目录管理器验证
-        // 这里可以执行额外的验证逻辑
-        validated = true;
-    }
-    
-    @Override
-    public boolean isValidated() {
-        return validated;
-    }
-    
+
+
     /**
      * 初始化列映射
      */
@@ -76,28 +65,28 @@ public class TableNamespace implements SqlValidatorNamespace {
             columnMap.put(column.getName().toLowerCase(), column);
         }
     }
-    
+
     /**
      * 获取底层的表对象
      */
     public Table getTable() {
         return table;
     }
-    
+
     /**
      * 获取别名
      */
     public String getAlias() {
         return alias;
     }
-    
+
     /**
      * 检查是否有别名
      */
     public boolean hasAlias() {
         return alias != null && !alias.trim().isEmpty();
     }
-    
+
     @Override
     public String toString() {
         return "TableNamespace{" +

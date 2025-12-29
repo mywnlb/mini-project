@@ -1,5 +1,7 @@
 package cn.zhangyis.sql.parser.expression;
 
+import cn.zhangyis.enums.FiledType;
+
 import java.util.Collections;
 import java.util.List;
 
@@ -9,6 +11,7 @@ import java.util.List;
  */
 public abstract class Expression {
     protected ExpressionType type;
+    protected FiledType columnType = null; // 用于存储列类型，默认为null
 
     /**
      * 获取表达式的类型
@@ -40,6 +43,14 @@ public abstract class Expression {
      */
     public List<Expression> getChildExpressions() {
         return Collections.emptyList();
+    }
+
+    public FiledType getColumnType() {
+        return columnType;
+    }
+
+    public void setColumnType(FiledType columnType) {
+        this.columnType = columnType;
     }
 }
 

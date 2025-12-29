@@ -9,12 +9,19 @@ public enum ComparisonOperator {
     GREATER(">"),
     GREATER_EQUALS(">="),
     LESS("<"),
-    LESS_EQUALS("<=");
-
+    LESS_EQUALS("<="),
+    LIKE("LIKE"),
+    NOT_LIKE("NOT LIKE"),
+    IS_NULL("IS NULL"),
+    IS_NOT_NULL("IS NOT NULL");
     private final String symbol;
 
     ComparisonOperator(String symbol) {
         this.symbol = symbol;
+    }
+
+    public String getSymbol() {
+        return symbol;
     }
 
     @Override

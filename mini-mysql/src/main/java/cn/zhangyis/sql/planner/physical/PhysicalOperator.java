@@ -1,6 +1,7 @@
 package cn.zhangyis.sql.planner.physical;
 
-import cn.zhangyis.sql.Column;
+import cn.zhangyis.storage.catalog.Column;
+
 import java.util.List;
 
 /**

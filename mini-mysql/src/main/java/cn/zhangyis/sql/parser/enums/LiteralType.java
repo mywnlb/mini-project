@@ -8,4 +8,5 @@ public enum LiteralType {
     STRING,
     BOOLEAN,
     NULL
+
 }
