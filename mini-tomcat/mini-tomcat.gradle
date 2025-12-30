@@ -1,5 +1,0 @@
-description = "mini tomcat"
-dependencies {
-// https://mvnrepository.com/artifact/javax.servlet/javax.servlet-api
-    implementation group: 'javax.servlet', name: 'javax.servlet-api', version: '4.0.1'
-}

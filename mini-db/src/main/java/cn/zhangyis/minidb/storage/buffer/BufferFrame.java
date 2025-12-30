@@ -1,7 +1,7 @@
 package cn.zhangyis.minidb.storage.buffer;
 
-import com.minidb.storage.page.Page;
-import com.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.page.Page;
+import cn.zhangyis.minidb.storage.page.PageId;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantReadWriteLock;

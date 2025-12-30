@@ -1,10 +1,6 @@
 rootProject.name = 'miniproject'
 
-include 'mini-mysql'
-include 'mini-spring'
-include 'mini-tomcat'
-include 'mini-nyadbbyjava'
-include 'mini-simplebookdb'
+
 include 'mini-db'
 
 
