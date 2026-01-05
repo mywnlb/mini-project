@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is `mini-db`, a Java implementation of an InnoDB-like relational database kernel. It's an educational project designed to demonstrate core database internals including storage engines, buffer management, transactions, and query processing.
+This is mini-db, a Java implementation of an InnoDB-like relational database kernel. It's an enterprise-grade database kernel project aimed at modeling, validating, and evolving core database internals such as storage engines, buffer pool management, transaction systems, and query execution frameworks.
 
 ## Key Architecture Documents
 
