@@ -1,5 +1,8 @@
 package cn.zhangyis.minidb.storage.space;
 
+import cn.zhangyis.minidb.common.exception.MiniDbException;
+import cn.zhangyis.minidb.common.exception.MtrStateException;
+import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
@@ -59,11 +62,14 @@ public class FspHeaderPage extends Page {
      * @param pageId 页面ID（必须是page 0）
      */
     public FspHeaderPage(PageId pageId) {
-        super(pageId, PageType.FIL_PAGE_TYPE_FSP_HDR);
+        super(pageId);
 
         if (pageId.getPageNo() != 0) {
             throw new IllegalArgumentException("FSP_HDR must be page 0, got: " + pageId.getPageNo());
         }
+
+        // 设置页面类型为 FSP_HDR
+        setPageType(PageType.FIL_PAGE_TYPE_FSP_HDR);
     }
 
     /**
@@ -72,7 +78,7 @@ public class FspHeaderPage extends Page {
      * @param page 现有页面
      */
     public FspHeaderPage(Page page) {
-        super(page.getBuffer(), page.getPageId());
+        super(page.getPageId(), page.getBuffer());
 
         if (page.getPageNo() != 0) {
             throw new IllegalArgumentException("FSP_HDR must be page 0, got: " + page.getPageNo());
@@ -90,11 +96,11 @@ public class FspHeaderPage extends Page {
     /**
      * 构造函数：从 ByteBuffer 创建
      *
-     * @param buffer 页面数据
      * @param pageId 页面ID
+     * @param buffer 页面数据
      */
-    public FspHeaderPage(ByteBuffer buffer, PageId pageId) {
-        super(buffer, pageId);
+    public FspHeaderPage(PageId pageId, ByteBuffer buffer) {
+        super(pageId, buffer);
 
         if (pageId.getPageNo() != 0) {
             throw new IllegalArgumentException("FSP_HDR must be page 0");
@@ -117,8 +123,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr     Mini-Transaction
      * @param spaceId 表空间ID
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setFspSpaceId(MiniTransaction mtr, int spaceId) {
+    public void setFspSpaceId(MiniTransaction mtr, int spaceId)
+            throws PageNotManagedByMtrException, MtrStateException {
         putInt(FSP_SPACE_ID, spaceId);
         mtr.markDirty(this);
     }
@@ -137,8 +146,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr  Mini-Transaction
      * @param size 总页数
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setSize(MiniTransaction mtr, int size) {
+    public void setSize(MiniTransaction mtr, int size)
+            throws PageNotManagedByMtrException, MtrStateException {
         putInt(FSP_SIZE, size);
         mtr.markDirty(this);
     }
@@ -157,8 +169,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr       Mini-Transaction
      * @param freeLimit 已初始化页数
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setFreeLimit(MiniTransaction mtr, int freeLimit) {
+    public void setFreeLimit(MiniTransaction mtr, int freeLimit)
+            throws PageNotManagedByMtrException, MtrStateException {
         putInt(FSP_FREE_LIMIT, freeLimit);
         mtr.markDirty(this);
     }
@@ -177,8 +192,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr   Mini-Transaction
      * @param flags 标志位
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setSpaceFlags(MiniTransaction mtr, int flags) {
+    public void setSpaceFlags(MiniTransaction mtr, int flags)
+            throws PageNotManagedByMtrException, MtrStateException {
         putInt(FSP_SPACE_FLAGS, flags);
         mtr.markDirty(this);
     }
@@ -197,8 +215,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr   Mini-Transaction
      * @param count 已使用页数
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setFragNUsed(MiniTransaction mtr, int count) {
+    public void setFragNUsed(MiniTransaction mtr, int count)
+            throws PageNotManagedByMtrException, MtrStateException {
         putInt(FSP_FRAG_N_USED, count);
         mtr.markDirty(this);
     }
@@ -217,8 +238,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr       Mini-Transaction
      * @param segmentId Segment ID
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setNextSegmentId(MiniTransaction mtr, long segmentId) {
+    public void setNextSegmentId(MiniTransaction mtr, long segmentId)
+            throws PageNotManagedByMtrException, MtrStateException {
         putLong(FSP_SEG_ID, segmentId);
         mtr.markDirty(this);
     }
@@ -228,8 +252,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr Mini-Transaction
      * @return 新分配的 Segment ID
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public long allocateSegmentId(MiniTransaction mtr) {
+    public long allocateSegmentId(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         long currentId = getNextSegmentId();
         setNextSegmentId(mtr, currentId + 1);
         return currentId;
@@ -316,10 +343,13 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr     Mini-Transaction
      * @param spaceId 表空间ID
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initialize(MiniTransaction mtr, int spaceId) {
+    public void initialize(MiniTransaction mtr, int spaceId)
+            throws PageNotManagedByMtrException, MtrStateException {
         // 设置页面类型
-        setPageType(mtr, PageType.FIL_PAGE_TYPE_FSP_HDR);
+        setPageType(PageType.FIL_PAGE_TYPE_FSP_HDR);
 
         // 初始化 FSP Header 字段
         setFspSpaceId(mtr, spaceId);
@@ -332,15 +362,18 @@ public class FspHeaderPage extends Page {
         // 初始化所有链表为空
         initExtentLists(mtr);
 
-        mtr.markDirty(this);
+        // 页面已通过各个 setter 方法标记为脏页，此处无需重复标记
     }
 
     /**
      * 初始化所有 Extent 链表为空
      *
      * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initExtentLists(MiniTransaction mtr) {
+    public void initExtentLists(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         getFreeList().initialize(mtr);
         getFreeFragList().initialize(mtr);
         getFullFragList().initialize(mtr);
@@ -353,8 +386,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr    Mini-Transaction
      * @param extent Extent 描述符
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void addToFreeList(MiniTransaction mtr, ExtentDescriptor extent) {
+    public void addToFreeList(MiniTransaction mtr, ExtentDescriptor extent)
+            throws MiniDbException {
         FlstBaseNode freeList = getFreeList();
         Page extentPage = extent.getListNode().getPage();
         int extentOffset = extent.getListNode().getOffset();
@@ -366,8 +402,9 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr Mini-Transaction
      * @return 被移除的 Extent 的 PageId，如果链表为空返回 null
+     * @throws MiniDbException 如果操作失败
      */
-    public PageId removeFirstFromFreeList(MiniTransaction mtr) {
+    public PageId removeFirstFromFreeList(MiniTransaction mtr) throws MiniDbException {
         FlstBaseNode freeList = getFreeList();
         return freeList.removeFirst(mtr);
     }
@@ -377,8 +414,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr    Mini-Transaction
      * @param extent Extent 描述符
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void addToFreeFragList(MiniTransaction mtr, ExtentDescriptor extent) {
+    public void addToFreeFragList(MiniTransaction mtr, ExtentDescriptor extent)
+            throws MiniDbException {
         FlstBaseNode freeFragList = getFreeFragList();
         Page extentPage = extent.getListNode().getPage();
         int extentOffset = extent.getListNode().getOffset();
@@ -390,8 +430,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr    Mini-Transaction
      * @param extent Extent 描述符
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void addToFullFragList(MiniTransaction mtr, ExtentDescriptor extent) {
+    public void addToFullFragList(MiniTransaction mtr, ExtentDescriptor extent)
+            throws MiniDbException {
         FlstBaseNode fullFragList = getFullFragList();
         Page extentPage = extent.getListNode().getPage();
         int extentOffset = extent.getListNode().getOffset();
@@ -403,8 +446,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr       Mini-Transaction
      * @param inodePage INODE Page
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void addToInodesFreeList(MiniTransaction mtr, Page inodePage) {
+    public void addToInodesFreeList(MiniTransaction mtr, Page inodePage)
+            throws MiniDbException {
         FlstBaseNode inodesFreeList = getInodesFreeList();
         // INODE Page 的链表节点位于 FIL_HEADER 之后
         int nodeOffset = FIL_HEADER_SIZE;
@@ -416,8 +462,11 @@ public class FspHeaderPage extends Page {
      *
      * @param mtr       Mini-Transaction
      * @param inodePage INODE Page
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void addToInodesFullList(MiniTransaction mtr, Page inodePage) {
+    public void addToInodesFullList(MiniTransaction mtr, Page inodePage)
+            throws MiniDbException {
         FlstBaseNode inodesFullList = getInodesFullList();
         int nodeOffset = FIL_HEADER_SIZE;
         inodesFullList.addLast(mtr, inodePage, nodeOffset);

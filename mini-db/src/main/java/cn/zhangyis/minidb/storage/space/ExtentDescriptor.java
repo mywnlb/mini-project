@@ -1,5 +1,7 @@
 package cn.zhangyis.minidb.storage.space;
 
+import cn.zhangyis.minidb.common.exception.MtrStateException;
+import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 
@@ -117,8 +119,11 @@ public class ExtentDescriptor {
      *
      * @param mtr       Mini-Transaction
      * @param segmentId Segment ID
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setSegmentId(MiniTransaction mtr, long segmentId) {
+    public void setSegmentId(MiniTransaction mtr, long segmentId)
+            throws PageNotManagedByMtrException, MtrStateException {
         page.putLong(offset + XDES_ID, segmentId);
         mtr.markDirty(page);
     }
@@ -138,8 +143,11 @@ public class ExtentDescriptor {
      *
      * @param mtr   Mini-Transaction
      * @param state 新的状态
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setState(MiniTransaction mtr, ExtentState state) {
+    public void setState(MiniTransaction mtr, ExtentState state)
+            throws PageNotManagedByMtrException, MtrStateException {
         page.putInt(offset + XDES_STATE, state.getValue());
         mtr.markDirty(page);
     }
@@ -189,8 +197,11 @@ public class ExtentDescriptor {
      *
      * @param mtr        Mini-Transaction
      * @param pageOffset 页面在 Extent 中的偏移 (0-63)
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void allocatePage(MiniTransaction mtr, int pageOffset) {
+    public void allocatePage(MiniTransaction mtr, int pageOffset)
+            throws PageNotManagedByMtrException, MtrStateException {
         validatePageOffset(pageOffset);
         if (!isPageFree(pageOffset)) {
             throw new IllegalStateException("Page " + pageOffset + " is already allocated");
@@ -203,8 +214,11 @@ public class ExtentDescriptor {
      *
      * @param mtr        Mini-Transaction
      * @param pageOffset 页面在 Extent 中的偏移 (0-63)
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void freePage(MiniTransaction mtr, int pageOffset) {
+    public void freePage(MiniTransaction mtr, int pageOffset)
+            throws PageNotManagedByMtrException, MtrStateException {
         validatePageOffset(pageOffset);
         if (isPageFree(pageOffset)) {
             throw new IllegalStateException("Page " + pageOffset + " is already free");
@@ -216,8 +230,11 @@ public class ExtentDescriptor {
      * 初始化 Bitmap（设置所有页面为空闲）
      *
      * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initBitmap(MiniTransaction mtr) {
+    public void initBitmap(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         int bitmapOffset = offset + XDES_BITMAP;
         // 设置所有 bits 为 1（所有页面空闲）
         for (int i = 0; i < 16; i++) {
@@ -309,8 +326,11 @@ public class ExtentDescriptor {
      * @param mtr        Mini-Transaction
      * @param pageOffset 页面偏移 (0-63)
      * @param bitIndex   位索引 (0=FREE, 1=CLEAN)
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    private void setBit(MiniTransaction mtr, int pageOffset, int bitIndex) {
+    private void setBit(MiniTransaction mtr, int pageOffset, int bitIndex)
+            throws PageNotManagedByMtrException, MtrStateException {
         int bitPosition = pageOffset * 2 + bitIndex;
         int byteOffset = offset + XDES_BITMAP + (bitPosition / 8);
         int bitOffset = bitPosition % 8;
@@ -327,8 +347,11 @@ public class ExtentDescriptor {
      * @param mtr        Mini-Transaction
      * @param pageOffset 页面偏移 (0-63)
      * @param bitIndex   位索引 (0=FREE, 1=CLEAN)
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    private void clearBit(MiniTransaction mtr, int pageOffset, int bitIndex) {
+    private void clearBit(MiniTransaction mtr, int pageOffset, int bitIndex)
+            throws PageNotManagedByMtrException, MtrStateException {
         int bitPosition = pageOffset * 2 + bitIndex;
         int byteOffset = offset + XDES_BITMAP + (bitPosition / 8);
         int bitOffset = bitPosition % 8;

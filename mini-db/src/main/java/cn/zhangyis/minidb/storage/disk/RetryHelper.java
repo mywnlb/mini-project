@@ -147,7 +147,7 @@ public class RetryHelper {
                 // 非 IOException: 不重试，直接包装抛出
                 logger.error("I/O operation failed with unexpected exception: operation={}, context={}, error={}",
                     operationName, context, e.getMessage(), e);
-                throw new DiskIOException(DiskIOException.ERR_UNKNOWN,
+                throw new DiskIOException(DiskIOException.ERR_READ_EOF,
                     "Unexpected error during " + operationName + ": " + context, e);
             }
         }
@@ -210,7 +210,7 @@ public class RetryHelper {
         } else if (cause.getMessage() != null && cause.getMessage().contains("write")) {
             errorCode = DiskIOException.ERR_WRITE_FAILED;
         } else {
-            errorCode = DiskIOException.ERR_UNKNOWN;
+            errorCode = DiskIOException.ERR_READ_EOF;
         }
 
         return new DiskIOException(errorCode, message, cause);

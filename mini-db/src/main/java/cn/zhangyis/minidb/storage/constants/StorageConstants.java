@@ -497,6 +497,62 @@ public final class StorageConstants {
      */
     public static final int FLST_NODE_SIZE = 12;
 
+    // FLST_BASE_NODE 字段偏移
+    /**
+     * FLST_BASE_NODE: Length 字段偏移 (0)
+     * <p>链表中节点的总数量 (4 字节)</p>
+     */
+    public static final int FLST_LEN = 0;
+
+    /**
+     * FLST_BASE_NODE: First Page Number 字段偏移 (4)
+     * <p>第一个节点所在的页号 (4 字节)</p>
+     */
+    public static final int FLST_FIRST_PAGE_NO = 4;
+
+    /**
+     * FLST_BASE_NODE: First Offset 字段偏移 (8)
+     * <p>第一个节点在页面中的偏移 (2 字节)</p>
+     */
+    public static final int FLST_FIRST_OFFSET = 8;
+
+    /**
+     * FLST_BASE_NODE: Last Page Number 字段偏移 (10)
+     * <p>最后一个节点所在的页号 (4 字节)</p>
+     */
+    public static final int FLST_LAST_PAGE_NO = 10;
+
+    /**
+     * FLST_BASE_NODE: Last Offset 字段偏移 (14)
+     * <p>最后一个节点在页面中的偏移 (2 字节)</p>
+     */
+    public static final int FLST_LAST_OFFSET = 14;
+
+    // FLST_NODE 字段偏移
+    /**
+     * FLST_NODE: Prev Page Number 字段偏移 (0)
+     * <p>前一个节点所在的页号 (4 字节)</p>
+     */
+    public static final int FLST_PREV_PAGE_NO = 0;
+
+    /**
+     * FLST_NODE: Prev Offset 字段偏移 (4)
+     * <p>前一个节点在页面中的偏移 (2 字节)</p>
+     */
+    public static final int FLST_PREV_OFFSET = 4;
+
+    /**
+     * FLST_NODE: Next Page Number 字段偏移 (6)
+     * <p>下一个节点所在的页号 (4 字节)</p>
+     */
+    public static final int FLST_NEXT_PAGE_NO = 6;
+
+    /**
+     * FLST_NODE: Next Offset 字段偏移 (10)
+     * <p>下一个节点在页面中的偏移 (2 字节)</p>
+     */
+    public static final int FLST_NEXT_OFFSET = 10;
+
     // ==================== Buffer Pool 相关常量 ====================
     
     /**

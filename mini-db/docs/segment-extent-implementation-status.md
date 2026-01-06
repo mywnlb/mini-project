@@ -1,17 +1,18 @@
 # Segment & Extent 空间管理实现状态
 
-> **最后更新时间**: 2026-01-05
-> **当前阶段**: 阶段1 - 基础数据结构（进行中）
+> **最后更新时间**: 2026-01-06
+> **当前阶段**: 阶段1 - 基础数据结构（已完成 ✅）
+> **最新完成**: 所有基础数据结构实现及完整测试覆盖
 
 ---
 
 ## 一、总体进度概览
 
 ```
-[████████░░░░░░░░░░░░░░░░░░░░] 20% 完成
+[████████████████████████████] 100% 阶段1完成
 
 ✅ 阶段0: 规划设计（已完成）
-🔄 阶段1: 基础数据结构（进行中 - 2/7）
+✅ 阶段1: 基础数据结构（已完成 - 7/7 实现类 + 7/7 测试类）
 ⏳ 阶段2: ExtentManager（待开始）
 ⏳ 阶段3: SegmentManager（待开始）
 ⏳ 阶段4: SpaceManager（待开始）
@@ -35,7 +36,7 @@
 **输出文档**：
 - 完整实现计划：`C:\Users\李波\.claude\plans\immutable-inventing-horizon.md`
 
-### ✅ 阶段1: 基础数据结构（部分完成 - 2/7）
+### ✅ 阶段1: 基础数据结构（已完成 - 7/7）
 
 #### 1. StorageConstants（已完成 ✅）
 
@@ -108,258 +109,320 @@ FREE → FSEG_FREE → FSEG (Segment路径)
 FREE → FREE_FRAG → FULL_FRAG (碎片页路径)
 ```
 
----
+### ✅ 辅助类实现（已完成 - 2/2）
 
-## 三、待实现的工作
+#### 1. FlstNode（已完成 ✅）
 
-### 🔄 阶段1: 基础数据结构（剩余 5/7）
+**文件路径**: `mini-db/src/main/java/cn/zhangyis/minidb/storage/space/FlstNode.java`
 
-#### 3. FspHeaderPage（待实现 ⏳）
+**核心职责**：
+- 封装 FLST_NODE (12字节) 的读写操作
+- 管理双向链表节点的前驱和后继指针
+- 提供节点状态查询（isHead, isTail, isIsolated）
+
+**物理结构**（12字节）：
+```
+Offset  Size  Field
+------  ----  -----
+0       4     Prev Page Number - 前一个节点所在页号
+4       2     Prev Offset - 前一个节点在页内的偏移
+6       4     Next Page Number - 后一个节点所在页号
+10      2     Next Offset - 后一个节点在页内的偏移
+```
+
+**核心方法**：
+```java
+// 前驱节点访问
+int getPrevPageNo()
+int getPrevOffset()
+PageId getPrevNode()
+void setPrevNode(MiniTransaction mtr, int pageNo, int nodeOffset)
+
+// 后继节点访问
+int getNextPageNo()
+int getNextOffset()
+PageId getNextNode()
+void setNextNode(MiniTransaction mtr, int pageNo, int nodeOffset)
+
+// 初始化和状态查询
+void initialize(MiniTransaction mtr)
+boolean hasPrev()
+boolean hasNext()
+boolean isIsolated()
+
+// 节点移除
+void remove(MiniTransaction mtr, Page prevPage, int prevOffset,
+            Page nextPage, int nextOffset)
+```
+
+**测试覆盖**：✅ FlstNodeTest.java (16个测试用例)
+- 构造函数参数验证
+- 初始化测试
+- 前驱/后继节点读写
+- 状态查询（isHead, isTail, isIsolated）
+- 双节点链表连接
+
+#### 2. FlstBaseNode（已完成 ✅）
+
+**文件路径**: `mini-db/src/main/java/cn/zhangyis/minidb/storage/space/FlstBaseNode.java`
+
+**核心职责**：
+- 封装 FLST_BASE_NODE (16字节) 的读写操作
+- 管理双向链表的头部元数据（长度、首节点、尾节点）
+- 提供链表操作（addFirst, addLast, removeFirst）
+
+**物理结构**（16字节）：
+```
+Offset  Size  Field
+------  ----  -----
+0       4     Length - 链表中节点的数量
+4       4     First Page Number - 首节点所在页号
+8       2     First Offset - 首节点在页内的偏移
+10      4     Last Page Number - 尾节点所在页号
+14      2     Last Offset - 尾节点在页内的偏移
+```
+
+**核心方法**：
+```java
+// 长度管理
+int getLength()
+void setLength(MiniTransaction mtr, int length)
+boolean isEmpty()
+
+// 首节点访问
+PageId getFirstNode()
+int getFirstNodeOffset()
+void setFirstNode(MiniTransaction mtr, int pageNo, int nodeOffset)
+
+// 尾节点访问
+PageId getLastNode()
+int getLastNodeOffset()
+void setLastNode(MiniTransaction mtr, int pageNo, int nodeOffset)
+
+// 链表操作
+void initialize(MiniTransaction mtr)
+void addFirst(MiniTransaction mtr, Page nodePage, int nodeOffset)
+void addLast(MiniTransaction mtr, Page nodePage, int nodeOffset)
+PageId removeFirst(MiniTransaction mtr)
+```
+
+**实现要点**：
+- addFirst/addLast: 自动更新旧节点的指针，保持链表一致性
+- removeFirst: 清除旧首节点的指针，更新新首节点
+- 空链表和单节点链表的特殊处理
+
+**测试覆盖**：✅ FlstBaseNodeTest.java (15个测试用例)
+- 构造函数和初始化
+- 长度管理
+- 首节点/尾节点读写
+- addFirst 到空链表和非空链表
+- addLast 到空链表和非空链表
+- removeFirst 从空、单节点、多节点链表
+- 混合操作（addFirst + addLast + removeFirst）
+
+**常量补充**：✅ StorageConstants.java
+- 新增 FLST_BASE_NODE 和 FLST_NODE 字段偏移常量
+- FLST_LEN, FLST_FIRST_PAGE_NO, FLST_FIRST_OFFSET
+- FLST_LAST_PAGE_NO, FLST_LAST_OFFSET
+- FLST_PREV_PAGE_NO, FLST_PREV_OFFSET
+- FLST_NEXT_PAGE_NO, FLST_NEXT_OFFSET
+
+### ✅ 核心数据结构实现（已完成 - 5/5）
+
+#### 3. FspHeaderPage（已完成 ✅）
 
 **文件路径**: `mini-db/src/main/java/cn/zhangyis/minidb/storage/space/FspHeaderPage.java`
-
-**继承关系**: `extends Page`
 
 **核心职责**：
 - 封装 FSP_HDR Page (page 0) 的读写操作
 - 提供 FSP Header 各字段的 getter/setter
 - 管理6个Extent链表（FREE, FREE_FRAG, FULL_FRAG, SEG_INODES_FREE, SEG_INODES_FULL）
-- 提供访问 XDES Array 的方法
+- 提供访问 XDES Array 的方法（前256个Extent）
 
-**关键方法设计**：
+**核心方法**：
 ```java
-public class FspHeaderPage extends Page {
-    // 构造函数
-    public FspHeaderPage(PageId pageId);
-    public FspHeaderPage(Page page);
+// 构造函数（3种）
+FspHeaderPage(PageId pageId)
+FspHeaderPage(Page page)
+FspHeaderPage(PageId pageId, ByteBuffer buffer)
 
-    // FSP Header 字段访问
-    public int getSpaceId();
-    public void setSpaceId(MiniTransaction mtr, int spaceId);
+// FSP Header 字段访问
+int getFspSpaceId() / setFspSpaceId(MiniTransaction mtr, int)
+int getSize() / setSize(MiniTransaction mtr, int)
+int getFreeLimit() / setFreeLimit(MiniTransaction mtr, int)
+long getSegId() / setSegId(MiniTransaction mtr, long)
+long allocateSegmentId(MiniTransaction mtr)  // 原子递增
 
-    public int getSize();
-    public void setSize(MiniTransaction mtr, int size);
+// 链表访问（返回 FlstBaseNode）
+FlstBaseNode getFreeExtentList()
+FlstBaseNode getFreeFragExtentList()
+FlstBaseNode getFullFragExtentList()
+FlstBaseNode getSegInodesFreeList()
+FlstBaseNode getSegInodesFullList()
 
-    public int getFreeLimit();
-    public void setFreeLimit(MiniTransaction mtr, int freeLimit);
+// XDES Array 访问
+int getXdesEntryOffset(int extentNo)
+ExtentDescriptor getXdesEntry(int extentNo)
 
-    public long getNextSegmentId();
-    public long allocateSegmentId(MiniTransaction mtr);  // 原子递增
-
-    // XDES Array 访问（0-255号Extent）
-    public int getXdesEntryOffset(int extentNo);
-    public ExtentDescriptor getXdesEntry(MiniTransaction mtr, int extentNo);
-
-    // 链表操作（通过FlstBaseNode封装）
-    public void initExtentLists(MiniTransaction mtr);
-    public void addToFreeList(MiniTransaction mtr, ExtentDescriptor extent);
-    public ExtentDescriptor popFromFreeList(MiniTransaction mtr);
-
-    // ... 其他链表操作方法
-}
+// 初始化
+void initialize(MiniTransaction mtr, int spaceId)
+void initExtentLists(MiniTransaction mtr)
 ```
 
-**物理布局**：
-```
-[FIL Header 38B]
-[FSP Header 112B]
-  ├─ FSP_SIZE (4B)
-  ├─ FSP_FREE_LIMIT (4B)
-  ├─ FSP_SEG_ID (8B)
-  ├─ FSP_FREE (16B FLST_BASE_NODE)
-  ├─ FSP_FREE_FRAG (16B)
-  ├─ FSP_FULL_FRAG (16B)
-  ├─ FSP_SEG_INODES_FREE (16B)
-  └─ FSP_SEG_INODES_FULL (16B)
-[XDES Array 10240B = 256 × 40B]
-[Unused]
-[FIL Trailer 8B]
-```
+**测试覆盖**：✅ FspHeaderPageTest.java (20+个测试用例)
+- 三种构造函数验证（包括类型验证）
+- FSP Header 字段的 get/set 操作
+- 原子 Segment ID 分配
+- 六个链表的访问方法
+- XDES Array 访问（0-255范围验证）
+- 初始化和链表初始化
+- 完整工作流集成测试
 
-**实现注意事项**：
-1. 所有修改操作必须通过 MTR 标记 dirty
-2. 需要实现链表操作的辅助类（FlstBaseNode, FlstNode）
-3. XDES Array 只能访问前256个Extent（0-255）
-
-#### 4. XdesPage（待实现 ⏳）
+#### 4. XdesPage（已完成 ✅）
 
 **文件路径**: `mini-db/src/main/java/cn/zhangyis/minidb/storage/space/XdesPage.java`
 
-**继承关系**: `extends Page`
-
 **核心职责**：
 - 封装独立的 XDES Page (page 16384, 32768, ...) 的读写
-- 与 FspHeaderPage 共享 XDES Entry 访问逻辑
 - 支持超大表空间（超过256MB）
+- 提供静态工具方法计算 XDES Page 位置
 
-**关键方法设计**：
+**核心方法**：
 ```java
-public class XdesPage extends Page {
-    public XdesPage(PageId pageId);
-    public XdesPage(Page page);
+// 构造函数（3种，带页号验证）
+XdesPage(PageId pageId)
+XdesPage(Page page)
+XdesPage(PageId pageId, ByteBuffer buffer)
 
-    // 计算XDES Page位置
-    public static int getXdesPageNo(int extentNo);  // = (extentNo / 256) * 16384
+// 静态工具方法
+static int getXdesPageNo(int extentNo)
+static int getXdesEntryOffset(int extentNo)
+static boolean isXdesPage(int pageNo)
+static int[] getExtentRange(int extentNo)
 
-    // 计算Extent在XDES Page中的偏移
-    public static int getXdesEntryOffset(int extentNo);  // = 38 + (extentNo % 256) * 40
+// XDES Entry 访问
+ExtentDescriptor getXdesEntry(int extentNo)
+int[] getLocalExtentRange()
 
-    // XDES Entry 访问
-    public ExtentDescriptor getXdesEntry(MiniTransaction mtr, int extentNo);
-
-    // 初始化（创建新XDES Page时调用）
-    public void initialize(MiniTransaction mtr);
-}
+// 初始化
+void initialize(MiniTransaction mtr)
+void initializeRange(MiniTransaction mtr, int startExtentNo, int endExtentNo)
 ```
 
-**物理布局**：
-```
-[FIL Header 38B]
-[XDES Array 10240B = 256 × 40B]
-[Unused 6098B]
-[FIL Trailer 8B]
-```
+**测试覆盖**：✅ XdesPageTest.java (25+个测试用例)
+- 构造函数验证（页号必须是16384的倍数，不能为0）
+- 静态工具方法测试（getXdesPageNo, getXdesEntryOffset, isXdesPage, getExtentRange）
+- XDES Entry 访问（验证属于正确页面）
+- Local extent 范围计算
+- 初始化和批量初始化
+- 边界条件测试
+- 完整工作流集成测试
 
-**XDES Page 位置规律**：
-```
-extentNo     XDES Page位置
-0-255     →  page 0 (FSP_HDR)
-256-511   →  page 16384
-512-767   →  page 32768
-768-1023  →  page 49152
-...
-```
-
-**实现注意事项**：
-1. XDES Page 不包含 FSP Header，直接从 FIL Header 后开始 XDES Array
-2. 需要与 FspHeaderPage 共享 XDES Entry 解析逻辑（考虑提取公共基类或工具类）
-
-#### 5. InodePage（待实现 ⏳）
+#### 5. InodePage（已完成 ✅）
 
 **文件路径**: `mini-db/src/main/java/cn/zhangyis/minidb/storage/space/InodePage.java`
-
-**继承关系**: `extends Page`
 
 **核心职责**：
 - 封装 INODE Page 的读写操作
 - 管理85个 INODE Entry
 - 提供 Segment 的元数据访问
+- 提供 Entry 查找和分配功能
 
-**关键方法设计**：
+**核心方法**：
 ```java
-public class InodePage extends Page {
-    public InodePage(PageId pageId);
-    public InodePage(Page page);
+// 构造函数（3种）
+InodePage(PageId pageId)
+InodePage(Page page)
+InodePage(PageId pageId, ByteBuffer buffer)
 
-    // INODE Page Header
-    public void setMagicNumber(MiniTransaction mtr, int magic);
-    public int getNextPageNo();
-    public void setNextPageNo(MiniTransaction mtr, int pageNo);
+// INODE Page Header
+FlstNode getListNode()
 
-    // INODE Entry 访问
-    public int getInodeEntryOffset(int entryIndex);  // 0-84
-    public SegmentDescriptor getInodeEntry(MiniTransaction mtr, int entryIndex);
+// INODE Entry 访问
+int getInodeEntryOffset(int entryIndex)
+SegmentDescriptor getInodeEntry(int entryIndex)
 
-    // 查找空闲 Entry
-    public int findFreeInodeEntry(MiniTransaction mtr);
+// Entry 查找
+int findFreeEntry()
+int findEntryBySegmentId(long segmentId)
+int getUsedEntryCount()
+boolean isFull()
+boolean isEmpty()
 
-    // 初始化（创建新INODE Page时调用）
-    public void initialize(MiniTransaction mtr);
-    public void initAllEntries(MiniTransaction mtr);  // 将85个Entry的SegmentID设为0
-}
+// Entry 分配和释放
+int allocateEntry(MiniTransaction mtr, long segmentId)
+void freeEntry(MiniTransaction mtr, int entryIndex)
+void initEntry(MiniTransaction mtr, int entryIndex)
+
+// 初始化
+void initialize(MiniTransaction mtr)
+void initAllEntries(MiniTransaction mtr)
+
+// 统计
+long[] getAllSegmentIds()
 ```
 
-**物理布局**：
-```
-[FIL Header 38B]
-[INODE Header 12B]
-  ├─ INODE_PAGE_LIST (12B FLST_NODE)
-[INODE Entry #0 192B]
-[INODE Entry #1 192B]
-...
-[INODE Entry #84 192B]
-[Unused 6B]
-[FIL Trailer 8B]
+**测试覆盖**：✅ InodePageTest.java (30+个测试用例)
+- 构造函数验证（包括类型验证）
+- INODE Page Header 访问（链表节点）
+- INODE Entry 访问和偏移计算（0-84范围验证）
+- Entry 查找（空闲、按ID查找）
+- Entry 分配和释放
+- 统计和状态查询（isFull, isEmpty, getUsedEntryCount）
+- 初始化操作
+- 边界条件测试
+- 完整分配释放工作流集成测试
 
-总计: 38 + 12 + 192×85 + 6 + 8 = 16384
-```
-
-**实现注意事项**：
-1. 每个 INODE Page 包含85个 Entry（硬编码）
-2. INODE Entry 的 SegmentID = 0 表示未分配
-3. INODE Page 通过链表连接（FSP_SEG_INODES_FREE/FULL）
-
-#### 6. ExtentDescriptor（待实现 ⏳）
+#### 6. ExtentDescriptor（已完成 ✅）
 
 **文件路径**: `mini-db/src/main/java/cn/zhangyis/minidb/storage/space/ExtentDescriptor.java`
 
 **核心职责**：
 - 封装 XDES Entry (40字节) 的读写操作
 - 提供 Bitmap 操作（分配/释放页面）
-- 管理 Extent 状态转移
+- 管理 Extent 状态
+- 提供空闲页查找
 
-**关键方法设计**：
+**核心方法**：
 ```java
-public class ExtentDescriptor {
-    private final Page page;         // XDES Entry 所在的页面（FSP_HDR或XDES Page）
-    private final int offset;        // XDES Entry 在页面中的偏移
-    private final int extentNo;      // Extent 编号
-    private final int startPageNo;   // Extent 起始页号 = extentNo * 64
+// 构造函数
+ExtentDescriptor(Page page, int offset, int extentNo)
 
-    public ExtentDescriptor(Page page, int offset, int extentNo);
+// 基本字段访问
+long getSegmentId() / setSegmentId(MiniTransaction mtr, long)
+ExtentState getState() / setState(MiniTransaction mtr, ExtentState)
+int getExtentNo()
+int getStartPageNo()
 
-    // 基本字段访问
-    public long getSegmentId();
-    public void setSegmentId(MiniTransaction mtr, long segmentId);
+// Bitmap 操作
+boolean isPageFree(int pageOffset)
+void allocatePage(MiniTransaction mtr, int pageOffset)
+void freePage(MiniTransaction mtr, int pageOffset)
+void initBitmap(MiniTransaction mtr)
 
-    public ExtentState getState();
-    public void setState(MiniTransaction mtr, ExtentState state);
+// 空闲页查找
+int findFreePage()
 
-    public int getExtentNo();
-    public int getStartPageNo();
+// 状态查询
+boolean isFull()
+boolean isEmpty()
+int getFreePageCount()
+int getUsedPageCount()
 
-    // Bitmap 操作（每页2 bits）
-    public boolean isPageFree(int pageOffset);  // pageOffset: 0-63
-    public void allocatePage(MiniTransaction mtr, int pageOffset);
-    public void freePage(MiniTransaction mtr, int pageOffset);
-    public void initBitmap(MiniTransaction mtr);  // 设置所有页为FREE
-
-    // 查找空闲页
-    public int findFreePage();  // 返回0-63，-1表示无空闲
-
-    // 状态查询
-    public boolean isFull();
-    public boolean isEmpty();
-    public int getUsedPageCount();
-
-    // 链表操作（FLST_NODE）
-    public void setNextExtent(MiniTransaction mtr, int pageNo, int offset);
-    public void setPrevExtent(MiniTransaction mtr, int pageNo, int offset);
-}
+// 链表节点访问
+FlstNode getListNode()
 ```
 
-**XDES Entry 结构**（40字节）：
-```
-Offset  Size  Field
-------  ----  -----
-0       8     XDES_ID (Segment ID)
-8       12    XDES_FLST_NODE (链表节点)
-20      4     XDES_STATE (状态)
-24      16    XDES_BITMAP (64页×2bits=128bits)
-```
+**测试覆盖**：✅ ExtentDescriptorTest.java (24+个测试用例)
+- 构造函数参数验证
+- Segment ID 和状态管理
+- Bitmap 操作（分配、释放、重复操作检测）
+- 空闲页查找（全空、部分空、全满、有间隙）
+- 状态查询（isEmpty, isFull, getUsedPageCount, getFreePageCount）
+- 链表节点访问
+- 边界条件测试（页偏移0-63）
 
-**Bitmap 编码**（每页2 bits）：
-```
-Bit 0: FREE (1=空闲, 0=已分配)
-Bit 1: CLEAN (1=干净, 0=脏页) [简化版可忽略]
-```
-
-**实现注意事项**：
-1. Bitmap 操作需要位运算（注意字节序）
-2. 每次修改都要调用 page.markDirty(mtr)
-3. 状态转移需要同步更新链表
-
-#### 7. SegmentDescriptor（待实现 ⏳）
+#### 7. SegmentDescriptor（已完成 ✅）
 
 **文件路径**: `mini-db/src/main/java/cn/zhangyis/minidb/storage/space/SegmentDescriptor.java`
 
@@ -367,66 +430,63 @@ Bit 1: CLEAN (1=干净, 0=脏页) [简化版可忽略]
 - 封装 INODE Entry (192字节) 的读写操作
 - 管理3个 Extent 链表（FREE, NOT_FULL, FULL）
 - 管理碎片页数组（32个页号）
+- 提供 Segment 初始化和清除功能
 
-**关键方法设计**：
+**核心方法**：
 ```java
-public class SegmentDescriptor {
-    private final InodePage inodePage;  // INODE Entry 所在的 INODE Page
-    private final int offset;            // INODE Entry 在页面中的偏移
+// 构造函数
+SegmentDescriptor(Page page, int offset)
 
-    public SegmentDescriptor(InodePage inodePage, int offset);
+// 基本字段访问
+long getSegmentId() / setSegmentId(MiniTransaction mtr, long)
+int getNotFullNUsed() / setNotFullNUsed(MiniTransaction mtr, int)
+int getMagicNumber()
 
-    // 基本字段访问
-    public long getSegmentId();
-    public void setSegmentId(MiniTransaction mtr, long segmentId);
+// 碎片页数组操作
+int getFragArrayPage(int index)
+void setFragArrayPage(MiniTransaction mtr, int index, int pageNo)
+int findFreeFragSlot()
+int getFragUsedCount()
 
-    public int getNotFullNUsed();
-    public void setNotFullNUsed(MiniTransaction mtr, int count);
+// 链表访问
+FlstBaseNode getFreeList()
+FlstBaseNode getNotFullList()
+FlstBaseNode getFullList()
 
-    public int getMagicNumber();
-    public void setMagicNumber(MiniTransaction mtr, int magic);
+// 初始化和清除
+void initialize(MiniTransaction mtr, long segmentId)
+void clear(MiniTransaction mtr)
 
-    // 碎片页数组操作
-    public int getFragPageNo(int index);  // index: 0-31
-    public void setFragPageNo(MiniTransaction mtr, int index, int pageNo);
-    public int findFreeFragSlot();  // 返回0-31，-1表示数组已满
-    public int getFragUsedCount();
-
-    // 链表访问（返回 FlstBaseNode 对象）
-    public FlstBaseNode getFreeList();
-    public FlstBaseNode getNotFullList();
-    public FlstBaseNode getFullList();
-
-    // 高层次操作
-    public ExtentDescriptor getFirstFreeExtent(MiniTransaction mtr);
-    public ExtentDescriptor getFirstPartialExtent(MiniTransaction mtr);
-
-    // 初始化
-    public void initialize(MiniTransaction mtr, long segmentId);
-}
+// 统计
+int getTotalExtentCount()
+int getEstimatedPageCount()
 ```
 
-**INODE Entry 结构**（192字节）：
-```
-Offset  Size  Field
-------  ----  -----
-0       8     INODE_SEGMENT_ID
-8       4     INODE_NOT_FULL_N_USED
-12      16    INODE_FREE (FLST_BASE_NODE)
-28      16    INODE_NOT_FULL (FLST_BASE_NODE)
-44      16    INODE_FULL (FLST_BASE_NODE)
-60      4     INODE_MAGIC_N
-64      128   INODE_FRAG_ARRAY (32 × 4B)
-```
+**测试覆盖**：✅ SegmentDescriptorTest.java (20+个测试用例)
+- 构造函数参数验证
+- Segment ID 和字段管理
+- NOT_FULL_N_USED 计数器
+- 碎片页数组操作（getFragArrayPage, setFragArrayPage, findFreeFragSlot）
+- 三个链表访问（Free, NotFull, Full）
+- Initialize 和 clear 操作
+- 统计方法（getTotalExtentCount, getEstimatedPageCount）
+- 魔数验证
 
-**实现注意事项**：
-1. SegmentID = 0 表示 INODE Entry 未分配
-2. 碎片页数组：PageNo = FIL_NULL (0xFFFFFFFF) 表示未分配
-3. 需要实现链表操作的辅助类（FlstBaseNode）
+### ✅ 测试基础设施（已完成）
+
+**BaseStorageTest.java**：✅ 测试基类
+- 自动创建和销毁 DiskManager、BufferPool
+- 自动调用 diskManager.createTablespace()
+- 提供统一的测试环境（SPACE_ID, SPACE_NAME等常量）
+- 所有空间管理测试继承此类
 
 ---
 
-### ⏳ 阶段2: ExtentManager（待开始）
+## 三、待实现的工作
+
+### ⏳ 阶段2: ExtentManager（下一步）
+
+**说明**：阶段1（基础数据结构）已全部完成，现在可以开始实现阶段2。
 
 **文件清单**：
 1. `ExtentManager.java` (接口)
@@ -848,29 +908,36 @@ public class FlstNode {
 
 ## 六、实现优先级建议
 
-### 高优先级（必须实现）
+### ✅ 已完成（阶段1）
 
 1. ✅ StorageConstants（已完成）
 2. ✅ ExtentState（已完成）
-3. ⏳ FlstBaseNode / FlstNode（链表基础设施，优先实现）
-4. ⏳ FspHeaderPage（表空间核心）
-5. ⏳ XdesPage（支持大表空间）
-6. ⏳ ExtentDescriptor（Extent 操作核心）
+3. ✅ FlstBaseNode / FlstNode（链表基础设施，已完成）
+4. ✅ FspHeaderPage（表空间核心，已完成）
+5. ✅ XdesPage（支持大表空间，已完成）
+6. ✅ ExtentDescriptor（Extent 操作核心，已完成）
+7. ✅ InodePage（已完成）
+8. ✅ SegmentDescriptor（已完成）
+9. ✅ 所有单元测试（BaseStorageTest + 7个测试类）
 
-### 中优先级（核心功能）
+### 高优先级（阶段2 - 下一步）
 
-7. ⏳ InodePage
-8. ⏳ SegmentDescriptor
-9. ⏳ ExtentManager
-10. ⏳ SegmentManager（3阶段算法）
-11. ⏳ SpaceManager
+10. ⏳ ExtentManager（接口 + 实现）
+11. ⏳ ExtentManagerTest（单元测试）
+
+### 中优先级（阶段3-4）
+
+12. ⏳ SegmentManager（3阶段分配算法）
+13. ⏳ SegmentManagerTest
+14. ⏳ SpaceManager
+15. ⏳ SpaceManagerTest
 
 ### 低优先级（集成和优化）
 
-12. ⏳ TablespaceFile 修改
-13. ⏳ 单元测试
-14. ⏳ 集成测试
-15. ⏳ 性能优化
+16. ⏳ TablespaceFile 修改（扩展表空间）
+17. ⏳ DiskManager 集成
+18. ⏳ 集成测试（SpaceIntegrationTest）
+19. ⏳ 性能测试
 
 ---
 
@@ -880,33 +947,59 @@ public class FlstNode {
 
 1. **查看本文档**: `mini-db/docs/segment-extent-implementation-status.md`
 2. **查看计划**: `C:\Users\李波\.claude\plans\immutable-inventing-horizon.md`
-3. **查看已完成代码**:
-   - `StorageConstants.java` (新增常量)
-   - `ExtentState.java` (枚举)
+3. **查看已完成代码**（阶段1）:
+   - `StorageConstants.java` - 所有常量定义
+   - `ExtentState.java` - Extent状态枚举
+   - `FlstNode.java` / `FlstBaseNode.java` - 链表基础设施
+   - `FspHeaderPage.java` - FSP_HDR Page封装
+   - `XdesPage.java` - XDES Page封装
+   - `InodePage.java` - INODE Page封装
+   - `ExtentDescriptor.java` - Extent描述符
+   - `SegmentDescriptor.java` - Segment描述符
+   - 所有测试类：7个Test类，共120+测试用例
+
+### 🎉 阶段1完成总结
+
+**已实现组件**：
+- ✅ 2个基础类（StorageConstants, ExtentState）
+- ✅ 2个辅助类（FlstNode, FlstBaseNode）
+- ✅ 3个Page类（FspHeaderPage, XdesPage, InodePage）
+- ✅ 2个描述符类（ExtentDescriptor, SegmentDescriptor）
+- ✅ 1个测试基类（BaseStorageTest）
+- ✅ 7个单元测试类（120+测试用例）
+
+**测试覆盖率**：
+- 所有核心方法均有单元测试
+- 包含边界条件和异常情况测试
+- 包含集成工作流测试
 
 ### 下一步建议
 
-**选项1：继续阶段1（推荐）**
+**选项1：开始阶段2 - ExtentManager（推荐）**
 ```
-继续实现阶段1的剩余组件：
-1. FlstBaseNode / FlstNode（链表基础）
-2. FspHeaderPage（FSP_HDR页）
-3. XdesPage（XDES页）
-4. ExtentDescriptor（Extent描述符）
-5. InodePage（INODE页）
-6. SegmentDescriptor（Segment描述符）
-```
-
-**选项2：先实现链表基础设施**
-```
-优先实现链表相关的工具类（FlstBaseNode/FlstNode），
-因为后续所有页面都依赖链表操作。
+实现 ExtentManager 接口和实现类：
+1. 创建 ExtentManager.java 接口
+2. 实现 ExtentManagerImpl.java
+3. 核心功能：
+   - getExtentDescriptor(spaceId, extentNo)
+   - allocatePageInExtent(extent)
+   - freePageInExtent(extent, pageOffset)
+   - initializeExtent(extent)
+4. 创建 ExtentManagerTest.java（单元测试）
 ```
 
-**选项3：分支实现**
+**选项2：完善文档和代码审查**
 ```
-创建功能分支 feature/segment-extent，
-可以并行开发而不影响主分支。
+在进入阶段2之前：
+1. 代码审查：检查所有实现是否符合规范
+2. 文档完善：添加更多使用示例
+3. 性能分析：分析Bitmap操作的性能
+```
+
+**选项3：分支管理**
+```
+创建功能分支进行开发：
+git checkout -b feature/extent-manager
 ```
 
 ### 启动命令示例
@@ -918,12 +1011,19 @@ cd C:/coding/java/self/miniproject/miniproject/mini-db
 # 查看实现状态文档
 cat docs/segment-extent-implementation-status.md
 
-# 查看待办事项
-# （如果使用 Git 分支）
-git checkout -b feature/segment-extent
+# 运行阶段1的所有单元测试
+gradle :mini-db:test --tests "*space*"
 
-# 继续实现
-# 例如: 创建 FlstBaseNode.java
+# 查看测试覆盖率
+gradle :mini-db:test :mini-db:jacocoTestReport
+
+# 创建阶段2开发分支（可选）
+git checkout -b feature/extent-manager
+
+# 开始实现 ExtentManager
+# 创建接口文件: mini-db/src/main/java/cn/zhangyis/minidb/storage/space/ExtentManager.java
+# 创建实现文件: mini-db/src/main/java/cn/zhangyis/minidb/storage/space/ExtentManagerImpl.java
+# 创建测试文件: mini-db/src/test/java/cn/zhangyis/minidb/storage/space/ExtentManagerTest.java
 ```
 
 ---
@@ -953,5 +1053,38 @@ git checkout -b feature/segment-extent
 
 ---
 
+---
+
+## 九、更新历史
+
+### 2026-01-06 - 阶段1完成 ✅
+
+**本次更新内容**：
+- ✅ 完成所有7个核心数据结构的实现
+- ✅ 完成所有7个单元测试类（120+测试用例）
+- ✅ 完成 BaseStorageTest 测试基类
+- ✅ 更新实现状态文档，阶段1进度从30%提升至100%
+
+**新增文件清单**（本次会话）：
+1. `ExtentDescriptorTest.java` - 24个测试用例
+2. `SegmentDescriptorTest.java` - 20个测试用例
+3. `FspHeaderPageTest.java` - 20个测试用例
+4. `XdesPageTest.java` - 25个测试用例
+5. `InodePageTest.java` - 30个测试用例
+
+**测试覆盖**：
+- 构造函数验证
+- 字段的 get/set 操作
+- Bitmap 和数组操作
+- 链表节点访问
+- 初始化和状态管理
+- 查找和分配算法
+- 边界条件和异常处理
+- 完整工作流集成测试
+
+**下一步**：开始实现阶段2 - ExtentManager
+
+---
+
 **文档结束**
-**下次更新**: 实现阶段1剩余组件后更新本文档
+**下次更新**: 实现阶段2（ExtentManager）后更新本文档

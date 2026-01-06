@@ -1,5 +1,8 @@
 package cn.zhangyis.minidb.storage.space;
 
+import cn.zhangyis.minidb.common.exception.MiniDbException;
+import cn.zhangyis.minidb.common.exception.MtrStateException;
+import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 
@@ -104,8 +107,11 @@ public class SegmentDescriptor {
      *
      * @param mtr       Mini-Transaction
      * @param segmentId Segment ID
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setSegmentId(MiniTransaction mtr, long segmentId) {
+    public void setSegmentId(MiniTransaction mtr, long segmentId)
+            throws PageNotManagedByMtrException, MtrStateException {
         page.putLong(offset + INODE_SEGMENT_ID, segmentId);
         mtr.markDirty(page);
     }
@@ -124,8 +130,11 @@ public class SegmentDescriptor {
      *
      * @param mtr   Mini-Transaction
      * @param count 已使用页数
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setNotFullNUsed(MiniTransaction mtr, int count) {
+    public void setNotFullNUsed(MiniTransaction mtr, int count)
+            throws PageNotManagedByMtrException, MtrStateException {
         page.putInt(offset + INODE_NOT_FULL_N_USED, count);
         mtr.markDirty(page);
     }
@@ -144,8 +153,11 @@ public class SegmentDescriptor {
      *
      * @param mtr   Mini-Transaction
      * @param magic 魔数
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setMagicNumber(MiniTransaction mtr, int magic) {
+    public void setMagicNumber(MiniTransaction mtr, int magic)
+            throws PageNotManagedByMtrException, MtrStateException {
         page.putInt(offset + INODE_MAGIC_N, magic);
         mtr.markDirty(page);
     }
@@ -207,8 +219,11 @@ public class SegmentDescriptor {
      * @param mtr    Mini-Transaction
      * @param index  索引（0-31）
      * @param pageNo 页号（FIL_NULL 表示清空）
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setFragPageNo(MiniTransaction mtr, int index, int pageNo) {
+    public void setFragPageNo(MiniTransaction mtr, int index, int pageNo)
+            throws PageNotManagedByMtrException, MtrStateException {
         validateFragIndex(index);
         page.putInt(offset + INODE_FRAG_ARRAY + index * 4, pageNo);
         mtr.markDirty(page);
@@ -256,8 +271,11 @@ public class SegmentDescriptor {
      * 清空碎片页数组（设置所有槽位为 FIL_NULL）
      *
      * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void clearFragArray(MiniTransaction mtr) {
+    public void clearFragArray(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         for (int i = 0; i < INODE_FRAG_ARRAY_PAGES; i++) {
             setFragPageNo(mtr, i, FIL_NULL);
         }
@@ -270,8 +288,11 @@ public class SegmentDescriptor {
      *
      * @param mtr       Mini-Transaction
      * @param segmentId Segment ID
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initialize(MiniTransaction mtr, long segmentId) {
+    public void initialize(MiniTransaction mtr, long segmentId)
+            throws PageNotManagedByMtrException, MtrStateException {
         if (segmentId == 0) {
             throw new IllegalArgumentException("Segment ID cannot be 0");
         }
@@ -298,8 +319,11 @@ public class SegmentDescriptor {
      * 清除 INODE Entry（设置为未分配状态）
      *
      * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void clear(MiniTransaction mtr) {
+    public void clear(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         // 设置 Segment ID 为 0（表示未分配）
         setSegmentId(mtr, 0);
 

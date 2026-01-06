@@ -1,5 +1,8 @@
 package cn.zhangyis.minidb.storage.space;
 
+import cn.zhangyis.minidb.common.exception.MiniDbException;
+import cn.zhangyis.minidb.common.exception.MtrStateException;
+import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
@@ -84,8 +87,11 @@ public class FlstBaseNode {
      *
      * @param mtr    Mini-Transaction
      * @param length 新的链表长度
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setLength(MiniTransaction mtr, int length) {
+    public void setLength(MiniTransaction mtr, int length)
+            throws PageNotManagedByMtrException, MtrStateException {
         page.putInt(offset + 0, length);
         mtr.markDirty(page);
     }
@@ -125,8 +131,11 @@ public class FlstBaseNode {
      * @param mtr        Mini-Transaction
      * @param pageNo     首节点所在页号（FIL_NULL 表示空）
      * @param nodeOffset 首节点在页内的偏移
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setFirstNode(MiniTransaction mtr, int pageNo, int nodeOffset) {
+    public void setFirstNode(MiniTransaction mtr, int pageNo, int nodeOffset)
+            throws PageNotManagedByMtrException, MtrStateException {
         page.putInt(offset + 4, pageNo);
         page.putShort(offset + 8, (short) nodeOffset);
         mtr.markDirty(page);
@@ -167,8 +176,11 @@ public class FlstBaseNode {
      * @param mtr        Mini-Transaction
      * @param pageNo     尾节点所在页号（FIL_NULL 表示空）
      * @param nodeOffset 尾节点在页内的偏移
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void setLastNode(MiniTransaction mtr, int pageNo, int nodeOffset) {
+    public void setLastNode(MiniTransaction mtr, int pageNo, int nodeOffset)
+            throws PageNotManagedByMtrException, MtrStateException {
         page.putInt(offset + 10, pageNo);
         page.putShort(offset + 14, (short) nodeOffset);
         mtr.markDirty(page);
@@ -178,8 +190,11 @@ public class FlstBaseNode {
      * 初始化为空链表
      *
      * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initialize(MiniTransaction mtr) {
+    public void initialize(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         setLength(mtr, 0);
         setFirstNode(mtr, FIL_NULL, 0);
         setLastNode(mtr, FIL_NULL, 0);
@@ -200,8 +215,10 @@ public class FlstBaseNode {
      * @param mtr        Mini-Transaction
      * @param nodePage   节点所在页面
      * @param nodeOffset 节点在页内的偏移
+     * @throws MiniDbException 如果操作失败
      */
-    public void addFirst(MiniTransaction mtr, Page nodePage, int nodeOffset) {
+    public void addFirst(MiniTransaction mtr, Page nodePage, int nodeOffset)
+            throws MiniDbException {
         FlstNode newNode = new FlstNode(nodePage, nodeOffset);
 
         int length = getLength();
@@ -218,12 +235,16 @@ public class FlstBaseNode {
             int oldFirstPageNo = page.getInt(offset + 4);
             int oldFirstOffset = page.getShort(offset + 8) & 0xFFFF;
 
+            // 设置新节点的指针
             newNode.setPrevNode(mtr, FIL_NULL, 0);
             newNode.setNextNode(mtr, oldFirstPageNo, oldFirstOffset);
 
-            // 更新旧首节点的 prev 指针
-            // 注意：这里假设旧首节点在同一个 MTR 中可访问
-            // 实际实现中可能需要通过 mtr.getPage() 获取
+            // 加载旧首节点并更新其 prev 指针
+            Page oldFirstPage = mtr.getPage(new PageId(page.getSpaceId(), oldFirstPageNo));
+            FlstNode oldFirstNode = new FlstNode(oldFirstPage, oldFirstOffset);
+            oldFirstNode.setPrevNode(mtr, nodePage.getPageNo(), nodeOffset);
+
+            // 更新链表头指针
             setFirstNode(mtr, nodePage.getPageNo(), nodeOffset);
         }
 
@@ -236,8 +257,10 @@ public class FlstBaseNode {
      * @param mtr        Mini-Transaction
      * @param nodePage   节点所在页面
      * @param nodeOffset 节点在页内的偏移
+     * @throws MiniDbException 如果操作失败
      */
-    public void addLast(MiniTransaction mtr, Page nodePage, int nodeOffset) {
+    public void addLast(MiniTransaction mtr, Page nodePage, int nodeOffset)
+            throws MiniDbException {
         FlstNode newNode = new FlstNode(nodePage, nodeOffset);
 
         int length = getLength();
@@ -254,9 +277,16 @@ public class FlstBaseNode {
             int oldLastPageNo = page.getInt(offset + 10);
             int oldLastOffset = page.getShort(offset + 14) & 0xFFFF;
 
+            // 设置新节点的指针
             newNode.setPrevNode(mtr, oldLastPageNo, oldLastOffset);
             newNode.setNextNode(mtr, FIL_NULL, 0);
 
+            // 加载旧尾节点并更新其 next 指针
+            Page oldLastPage = mtr.getPage(new PageId(page.getSpaceId(), oldLastPageNo));
+            FlstNode oldLastNode = new FlstNode(oldLastPage, oldLastOffset);
+            oldLastNode.setNextNode(mtr, nodePage.getPageNo(), nodeOffset);
+
+            // 更新链表尾指针
             setLastNode(mtr, nodePage.getPageNo(), nodeOffset);
         }
 
@@ -268,8 +298,9 @@ public class FlstBaseNode {
      *
      * @param mtr Mini-Transaction
      * @return 被移除节点的位置 (pageNo, offset)，如果链表为空返回 null
+     * @throws MiniDbException 如果操作失败
      */
-    public PageId removeFirst(MiniTransaction mtr) {
+    public PageId removeFirst(MiniTransaction mtr) throws MiniDbException {
         if (isEmpty()) {
             return null;
         }
@@ -283,8 +314,24 @@ public class FlstBaseNode {
             initialize(mtr);
         } else {
             // 多个节点：移除首节点，更新链表头
-            // 注意：实际实现需要通过 mtr.getPage() 获取首节点页面
-            // 这里简化处理，假设调用者会处理节点的清理
+            // 加载首节点页面
+            Page firstPage = mtr.getPage(new PageId(page.getSpaceId(), firstPageNo));
+            FlstNode firstNode = new FlstNode(firstPage, firstOffset);
+
+            // 获取新的首节点位置（旧首节点的next）
+            int newFirstPageNo = firstNode.getNextPageNo();
+            int newFirstOffset = firstNode.getNextOffset();
+
+            // 加载新首节点并清除其 prev 指针
+            Page newFirstPage = mtr.getPage(new PageId(page.getSpaceId(), newFirstPageNo));
+            FlstNode newFirstNode = new FlstNode(newFirstPage, newFirstOffset);
+            newFirstNode.setPrevNode(mtr, FIL_NULL, 0);
+
+            // 清除旧首节点的指针（将其隔离）
+            firstNode.initialize(mtr);
+
+            // 更新链表头指针
+            setFirstNode(mtr, newFirstPageNo, newFirstOffset);
             setLength(mtr, length - 1);
         }
 

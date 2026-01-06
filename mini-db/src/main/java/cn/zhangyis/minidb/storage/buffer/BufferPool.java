@@ -3,7 +3,10 @@ package cn.zhangyis.minidb.storage.buffer;
 import cn.zhangyis.minidb.common.exception.BufferExhaustedException;
 import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
-import cn.zhangyis.minidb.storage.page.*;
+import cn.zhangyis.minidb.storage.page.IndexPage;
+import cn.zhangyis.minidb.storage.page.Page;
+import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.page.PageType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,8 +14,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -22,10 +23,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Buffer Pool 缓冲池
- * 
+ *
  * <p>Buffer Pool 是 InnoDB 存储引擎最核心的内存组件，负责缓存数据页和索引页。
  * 通过减少磁盘 I/O 来显著提升数据库性能。</p>
- * 
+ *
  * <h2>核心功能</h2>
  * <ul>
  *   <li><b>页面缓存</b>: 将磁盘页面缓存在内存中</li>
@@ -33,7 +34,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  *   <li><b>脏页管理</b>: 跟踪修改过的页面，支持延迟刷盘</li>
  *   <li><b>并发控制</b>: 支持多线程并发访问</li>
  * </ul>
- * 
+ *
  * <h2>核心数据结构</h2>
  * <pre>
  * +------------------------------------------------------------------+
@@ -46,7 +47,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * |  flushList       - 脏页链表 (按 LSN 排序)                        |
  * +------------------------------------------------------------------+
  * </pre>
- * 
+ *
  * <h2>页面获取流程 (getPage)</h2>
  * <pre>
  *                    ┌─────────────┐
@@ -82,17 +83,17 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  *                    │ pin++, 返回 Frame      │
  *                    └─────────────────────────┘
  * </pre>
- * 
+ *
  * <h2>并发控制策略</h2>
  * <ul>
  *   <li><b>poolLock</b>: 读写锁保护 pageHash 和链表结构</li>
  *   <li><b>frame.pageLock</b>: 每个帧独立的读写锁保护页面内容</li>
  *   <li><b>pin/unpin</b>: 原子计数器防止正在使用的页面被淘汰</li>
  * </ul>
- * 
+ *
  * <h2>InnoDB 对应</h2>
  * <p>对应 InnoDB 的 buf_pool_t 结构和 buf0buf.cc 中的实现。</p>
- * 
+ *
  * @author MiniDB
  * @version 1.0
  * @see BufferFrame
@@ -109,7 +110,7 @@ public class BufferPool {
     private static final Logger logger = LoggerFactory.getLogger(BufferPool.class);
 
     // ==================== 页面获取模式 ====================
-    
+
     /**
      * 页面获取模式
      */
@@ -119,35 +120,35 @@ public class BufferPool {
          * <p>从磁盘加载页面数据。如果页面不存在会抛出异常。</p>
          */
         READ_EXISTING,
-        
+
         /**
          * 创建新页面
          * <p>不从磁盘读取，直接初始化一个空页面。</p>
          */
         NEW_PAGE
     }
-    
+
     // ==================== 核心字段 ====================
-    
+
     /**
      * Buffer Pool 大小 (页数)
      */
     private final int poolSize;
-    
+
     /**
      * 磁盘管理器
      * <p>用于页面的物理读写。</p>
      */
     private final DiskManager diskManager;
-    
+
     /**
      * 页帧数组
-     * 
+     *
      * <p>固定大小的数组，每个元素是一个 BufferFrame。
      * 帧的索引在整个生命周期中不变。</p>
      */
     private final BufferFrame[] frames;
-    
+
     /**
      * Page Hash 分段数组 (优化: 分段锁机制)
      *
@@ -162,39 +163,39 @@ public class BufferPool {
      * </ul>
      */
     private final PageHashSegment[] segments;
-    
+
     /**
      * LRU 链表
-     * 
+     *
      * <p>实现改进的 LRU 算法 (Young-Old 分区)。
      * 管理页面的淘汰顺序。</p>
      */
     private final LRUList lruList;
-    
+
     /**
      * 空闲帧链表
-     * 
+     *
      * <p>存储未被使用的帧索引。
      * 新页面优先从这里获取帧。</p>
      */
     private final FreeList freeList;
-    
+
     /**
      * 脏页链表
-     * 
+     *
      * <p>按 oldest_modification LSN 排序存储脏页。
      * 用于 Checkpoint 和崩溃恢复。</p>
      */
     private final FlushList flushList;
-    
+
     /**
      * Buffer Pool 全局锁
-     * 
+     *
      * <p>读锁: 访问现有页面
      * 写锁: 加载新页面、淘汰页面</p>
      */
     private final ReentrantReadWriteLock poolLock;
-    
+
     // ==================== 性能监控 ====================
 
     /**
@@ -207,19 +208,27 @@ public class BufferPool {
 
     // ==================== 统计计数器 (兼容旧代码) ====================
 
-    /** 缓存命中次数 (已弃用，使用 metrics.pageHits) */
+    /**
+     * 缓存命中次数 (已弃用，使用 metrics.pageHits)
+     */
     @Deprecated
     private final AtomicLong hitCount = new AtomicLong(0);
 
-    /** 缓存未命中次数 (已弃用，使用 metrics.pageMisses) */
+    /**
+     * 缓存未命中次数 (已弃用，使用 metrics.pageMisses)
+     */
     @Deprecated
     private final AtomicLong missCount = new AtomicLong(0);
 
-    /** 磁盘读取次数 (已弃用) */
+    /**
+     * 磁盘读取次数 (已弃用)
+     */
     @Deprecated
     private final AtomicLong readCount = new AtomicLong(0);
 
-    /** 磁盘写入次数 (已弃用) */
+    /**
+     * 磁盘写入次数 (已弃用)
+     */
     @Deprecated
     private final AtomicLong writeCount = new AtomicLong(0);
 
@@ -283,8 +292,8 @@ public class BufferPool {
      *   <li>启动 LRU 后台整理线程</li>
      * </ol>
      *
-     * @param config       BufferPool 配置对象
-     * @param diskManager  磁盘管理器
+     * @param config      BufferPool 配置对象
+     * @param diskManager 磁盘管理器
      */
     public BufferPool(BufferPoolConfig config, DiskManager diskManager) {
         this.poolSize = config.getPoolSize();
@@ -326,18 +335,18 @@ public class BufferPool {
 
         // 使用配置的重排间隔
         lruReorderScheduler.scheduleAtFixedRate(
-            this::reorderLruBackground,
-            lruReorderIntervalMs,  // 初始延迟
-            lruReorderIntervalMs,  // 执行间隔
-            TimeUnit.MILLISECONDS
+                this::reorderLruBackground,
+                lruReorderIntervalMs,  // 初始延迟
+                lruReorderIntervalMs,  // 执行间隔
+                TimeUnit.MILLISECONDS
         );
 
         // 记录初始化信息
         logger.info("BufferPool initialized with config: {}", config);
         logger.info("BufferPool initialized: size={} pages ({} MB), segments={}, lruReorderInterval={}ms",
-            poolSize, poolSize * 16 / 1024, segmentCount, lruReorderIntervalMs);
+                poolSize, poolSize * 16 / 1024, segmentCount, lruReorderIntervalMs);
         logger.debug("BufferPool LRU configuration: oldRatio={}, oldBlockTimeMs={}",
-            config.getOldBlockRatio(), config.getOldBlockTimeMs());
+                config.getOldBlockRatio(), config.getOldBlockTimeMs());
     }
 
     /**
@@ -365,13 +374,13 @@ public class BufferPool {
 
             if (adjustedCount > 0) {
                 logger.debug("LRU reorder completed: adjusted={} pages, elapsed={}ms, precision={:.2f}%",
-                    adjustedCount, elapsedMs, precision * 100);
+                        adjustedCount, elapsedMs, precision * 100);
             }
 
             // 检查LRU精确度，如果过低发出警告
             if (precision < 0.8) {
                 logger.warn("LRU precision is low: {:.2f}%, consider increasing reorder frequency",
-                    precision * 100);
+                        precision * 100);
             }
         } catch (Exception e) {
             // 捕获所有异常，防止后台线程崩溃
@@ -399,14 +408,14 @@ public class BufferPool {
         int segmentIndex = (hash >>> 26) & segmentMask;
         return segments[segmentIndex];
     }
-    
+
     // ==================== 核心方法: 页面获取 ====================
-    
+
     /**
      * 获取页面 (核心方法)
-     * 
+     *
      * <p>这是 Buffer Pool 最重要的方法，实现了页面的缓存访问。</p>
-     * 
+     *
      * <h3>执行流程</h3>
      * <ol>
      *   <li><b>Fast Path (读锁)</b>:
@@ -425,10 +434,10 @@ public class BufferPool {
      *       </ul>
      *   </li>
      * </ol>
-     * 
+     *
      * <h3>并发说明</h3>
      * <p>返回的 BufferFrame 已经被 pin，调用者必须在使用完后调用 unpinPage()。</p>
-     * 
+     *
      * @param pageId 页面标识
      * @param mode   获取模式 (READ_EXISTING 或 NEW_PAGE)
      * @return BufferFrame (已 pin，使用后必须 unpin)
@@ -467,10 +476,10 @@ public class BufferPool {
         metrics.recordPageMiss();     // 新的 metrics 系统
         return loadPage(pageId, mode);
     }
-    
+
     /**
      * 从磁盘加载页面 (Slow Path)
-     * 
+     *
      * <h3>执行步骤</h3>
      * <ol>
      *   <li>获取写锁</li>
@@ -486,7 +495,7 @@ public class BufferPool {
      *   <li>加入 Page Hash 和 LRU Old 区</li>
      *   <li>返回帧</li>
      * </ol>
-     * 
+     *
      * @param pageId 页面标识
      * @param mode   获取模式
      * @return BufferFrame
@@ -552,16 +561,16 @@ public class BufferPool {
             segment.writeUnlock();
         }
     }
-    
+
     /**
      * 获取空闲帧
-     * 
+     *
      * <h3>执行步骤</h3>
      * <ol>
      *   <li>尝试从 Free List 获取</li>
      *   <li>如果 Free List 为空，执行 LRU 淘汰</li>
      * </ol>
-     * 
+     *
      * @return 空闲帧索引
      * @throws BufferExhaustedException 如果无法获取空闲帧
      */
@@ -571,11 +580,11 @@ public class BufferPool {
         if (freeIndex != null) {
             return freeIndex;
         }
-        
+
         // Free List 为空，需要淘汰页面
         return evictPage();
     }
-    
+
     /**
      * 淘汰页面以获取空闲帧 (优化版 - 锁外刷盘)
      *
@@ -604,7 +613,7 @@ public class BufferPool {
      */
     private int evictPage() throws MiniDbException {
         logger.debug("Starting page eviction, freePages={}, usedPages={}",
-            freeList.size(), poolSize - freeList.size());
+                freeList.size(), poolSize - freeList.size());
 
         // 尝试最多 poolSize 次
         for (int attempt = 0; attempt < poolSize; attempt++) {
@@ -683,7 +692,7 @@ public class BufferPool {
             metrics.recordPageEviction();
 
             logger.debug("Page evicted successfully: frameIndex={}, pageId={}",
-                victimIndex, oldPageId);
+                    victimIndex, oldPageId);
             return victimIndex;
         }
 
@@ -692,22 +701,22 @@ public class BufferPool {
         logger.error("Buffer pool exhausted: all {} pages are pinned, cannot evict", poolSize);
         throw BufferExhaustedException.allPagesPinned(poolSize);
     }
-    
+
     // ==================== 页面释放 ====================
-    
+
     /**
      * 释放页面 (unpin)
-     * 
+     *
      * <p><b>重要</b>: 每次 getPage() 后必须调用 unpinPage()，
      * 否则页面永远不会被淘汰，导致 Buffer Pool 耗尽。</p>
-     * 
+     *
      * <h3>执行步骤</h3>
      * <ol>
      *   <li>在 Page Hash 中查找帧</li>
      *   <li>减少 pin count</li>
      *   <li>如果标记为脏且之前不是脏页，加入 Flush List</li>
      * </ol>
-     * 
+     *
      * @param pageId  页面标识
      * @param isDirty 是否被修改过
      */
@@ -742,12 +751,12 @@ public class BufferPool {
             flushList.add(frameIndex, lsn > 0 ? lsn : System.nanoTime());
         }
     }
-    
+
     // ==================== 页面刷盘 ====================
-    
+
     /**
      * 刷新单个页面到磁盘
-     * 
+     *
      * @param pageId 页面标识
      * @throws MiniDbException 如果刷盘失败
      */
@@ -769,10 +778,10 @@ public class BufferPool {
 
         flushPageInternal(frameIndex);
     }
-    
+
     /**
      * 内部刷盘方法
-     * 
+     *
      * <h3>执行步骤</h3>
      * <ol>
      *   <li>检查是否为脏页</li>
@@ -781,34 +790,34 @@ public class BufferPool {
      *   <li>清除脏页标记</li>
      *   <li>从 Flush List 移除</li>
      * </ol>
-     * 
+     *
      * @param frameIndex 帧索引
      * @throws MiniDbException 如果写入失败
      */
     private void flushPageInternal(int frameIndex) throws MiniDbException {
         BufferFrame frame = frames[frameIndex];
-        
+
         if (!frame.isDirty()) {
             return; // 不是脏页，无需刷盘
         }
-        
+
         Page page = frame.getPage();
-        
+
         // 准备刷盘 (更新校验和)
         page.prepareForFlush();
-        
+
         // 写入磁盘
         diskManager.writePage(page.getPageId(), page.getBuffer());
         writeCount.incrementAndGet();
-        
+
         // 清除脏页状态
         frame.setDirty(false);
         page.clearDirty();
-        
+
         // 从 Flush List 移除
         flushList.remove(frameIndex);
     }
-    
+
     /**
      * 刷新所有脏页到磁盘 (优化版 - 三阶段执行)
      *
@@ -852,7 +861,7 @@ public class BufferPool {
         }
         long phase1Time = (System.nanoTime() - phase1Start) / 1_000_000;
         logger.debug("Flush phase 1 (collect): collected {} pages in {}ms",
-            dirtyFrames.size(), phase1Time);
+                dirtyFrames.size(), phase1Time);
 
         // ===== 阶段2: 批量刷盘 (无全局锁，使用frame级别锁) =====
         // 这个阶段不持有poolLock，其他线程可以正常读取pages
@@ -883,7 +892,7 @@ public class BufferPool {
             } catch (Exception e) {
                 ioErrors++;
                 logger.warn("Failed to flush page during phase 2: frameIndex={}, error={}",
-                    frameIndex, e.getMessage());
+                        frameIndex, e.getMessage());
                 // 继续处理其他页面，最后再抛出异常
             } finally {
                 frame.readUnlock();
@@ -891,7 +900,7 @@ public class BufferPool {
         }
         long phase2Time = (System.nanoTime() - phase2Start) / 1_000_000;
         logger.debug("Flush phase 2 (I/O): flushed {} pages in {}ms, ioErrors={}",
-            flushedFrames.size(), phase2Time, ioErrors);
+                flushedFrames.size(), phase2Time, ioErrors);
 
         // ===== 阶段3: 清理元数据 (持写锁，但很快) =====
         long phase3Start = System.nanoTime();
@@ -928,10 +937,10 @@ public class BufferPool {
         long phase2Nanos = (System.nanoTime() - (phase2Start + phase2Time * 1_000_000));
         long phase3Nanos = (System.nanoTime() - (phase3Start + phase3Time * 1_000_000));
         metrics.recordFlushAll(
-            phase1Time * 1_000_000,  // 转换为纳秒
-            phase2Time * 1_000_000,
-            phase3Time * 1_000_000,
-            ioErrors
+                phase1Time * 1_000_000,  // 转换为纳秒
+                phase2Time * 1_000_000,
+                phase3Time * 1_000_000,
+                ioErrors
         );
 
         // 记录每次页面刷盘
@@ -940,28 +949,28 @@ public class BufferPool {
         }
 
         logger.info("FlushAllPages completed: flushed={} pages, total={}ms " +
-                "(phase1={}ms, phase2={}ms, phase3={}ms), remainingDirty={}",
-            flushedFrames.size(), totalTime, phase1Time, phase2Time, phase3Time,
-            flushList.size());
+                        "(phase1={}ms, phase2={}ms, phase3={}ms), remainingDirty={}",
+                flushedFrames.size(), totalTime, phase1Time, phase2Time, phase3Time,
+                flushList.size());
 
         // 如果有I/O错误，记录警告
         if (ioErrors > 0) {
             logger.warn("FlushAllPages completed with {} I/O errors, some pages may not be flushed",
-                ioErrors);
+                    ioErrors);
         }
     }
-    
+
     // ==================== 页面分配与删除 ====================
-    
+
     /**
      * 分配新页面
-     * 
+     *
      * <h3>执行步骤</h3>
      * <ol>
      *   <li>调用 DiskManager 分配物理页面</li>
      *   <li>调用 getPage(NEW_PAGE) 创建内存中的页面</li>
      * </ol>
-     * 
+     *
      * @param spaceId 表空间 ID
      * @return BufferFrame (已 pin)
      * @throws MiniDbException 如果分配失败
@@ -970,17 +979,17 @@ public class BufferPool {
         // 在磁盘上分配页面
         int pageNo = diskManager.allocatePage(spaceId);
         PageId pageId = PageId.of(spaceId, pageNo);
-        
+
         // 在 Buffer Pool 中创建页面
         return getPage(pageId, FetchMode.NEW_PAGE);
     }
-    
+
     /**
      * 删除页面
-     * 
+     *
      * <p>将页面从 Buffer Pool 中移除。
      * 注意：这不会删除磁盘上的数据。</p>
-     * 
+     *
      * @param pageId 页面标识
      */
     public void deletePage(PageId pageId) {
@@ -1002,9 +1011,9 @@ public class BufferPool {
             segment.writeUnlock();
         }
     }
-    
+
     // ==================== 生命周期管理 ====================
-    
+
     /**
      * 关闭 Buffer Pool
      *
@@ -1014,7 +1023,7 @@ public class BufferPool {
      */
     public void close() throws MiniDbException {
         logger.info("Closing BufferPool: dirtyPages={}, usedPages={}",
-            flushList.size(), poolSize - freeList.size());
+                flushList.size(), poolSize - freeList.size());
 
         // 停止后台线程
         logger.debug("Shutting down LRU reorder background thread");
@@ -1041,15 +1050,15 @@ public class BufferPool {
         BufferPoolStats stats = getStats();
         logger.info("BufferPool closed. Final stats: {}", stats);
     }
-    
+
     // ==================== 统计信息 ====================
-    
+
     /**
      * 获取缓存命中率
-     * 
+     *
      * <p>命中率 = hitCount / (hitCount + missCount)</p>
      * <p>高命中率 (>95%) 表示 Buffer Pool 大小合适。</p>
-     * 
+     *
      * @return 命中率 (0.0 - 1.0)
      */
     public double getHitRatio() {
@@ -1058,35 +1067,35 @@ public class BufferPool {
         long total = hits + misses;
         return total == 0 ? 0 : (double) hits / total;
     }
-    
+
     /**
      * 获取 Buffer Pool 统计信息
-     * 
+     *
      * @return 统计信息记录
      */
     public BufferPoolStats getStats() {
         return new BufferPoolStats(
-            poolSize,
-            freeList.size(),
-            flushList.size(),
-            lruList.getYoungSize(),
-            lruList.getOldSize(),
-            hitCount.get(),
-            missCount.get(),
-            readCount.get(),
-            writeCount.get(),
-            lruList.getLruPrecision()  // Lock-free LRU 精确度
+                poolSize,
+                freeList.size(),
+                flushList.size(),
+                lruList.getYoungSize(),
+                lruList.getOldSize(),
+                hitCount.get(),
+                missCount.get(),
+                readCount.get(),
+                writeCount.get(),
+                lruList.getLruPrecision()  // Lock-free LRU 精确度
         );
     }
-    
+
     public int getPoolSize() {
         return poolSize;
     }
-    
+
     public int getFreeCount() {
         return freeList.size();
     }
-    
+
     public int getDirtyCount() {
         return flushList.size();
     }
@@ -1111,7 +1120,7 @@ public class BufferPool {
     }
 
     // ==================== 统计信息记录 ====================
-    
+
     /**
      * Buffer Pool 统计信息 (优化版 - 包含 Lock-free LRU 指标)
      *
@@ -1127,43 +1136,43 @@ public class BufferPool {
      * @param lruPrecision LRU 精确度 (0.0-1.0, Lock-free LRU 优化后的指标)
      */
     public record BufferPoolStats(
-        int poolSize,
-        int freePages,
-        int dirtyPages,
-        int youngPages,
-        int oldPages,
-        long hitCount,
-        long missCount,
-        long readCount,
-        long writeCount,
-        double lruPrecision
+            int poolSize,
+            int freePages,
+            int dirtyPages,
+            int youngPages,
+            int oldPages,
+            long hitCount,
+            long missCount,
+            long readCount,
+            long writeCount,
+            double lruPrecision
     ) {
         /**
          * 计算命中率
-         * 
+         *
          * @return 命中率 (0.0 - 1.0)
          */
         public double hitRatio() {
             long total = hitCount + missCount;
             return total == 0 ? 0 : (double) hitCount / total;
         }
-        
+
         /**
          * 获取已使用页数
-         * 
+         *
          * @return poolSize - freePages
          */
         public int usedPages() {
             return poolSize - freePages;
         }
-        
+
         @Override
         public String toString() {
             return String.format(
-                "BufferPoolStats{size=%d, used=%d, free=%d, dirty=%d, young=%d, old=%d, " +
-                "hit=%d, miss=%d, hitRatio=%.2f%%, read=%d, write=%d, lruPrecision=%.2f%%}",
-                poolSize, usedPages(), freePages, dirtyPages, youngPages, oldPages,
-                hitCount, missCount, hitRatio() * 100, readCount, writeCount, lruPrecision * 100);
+                    "BufferPoolStats{size=%d, used=%d, free=%d, dirty=%d, young=%d, old=%d, " +
+                            "hit=%d, miss=%d, hitRatio=%.2f%%, read=%d, write=%d, lruPrecision=%.2f%%}",
+                    poolSize, usedPages(), freePages, dirtyPages, youngPages, oldPages,
+                    hitCount, missCount, hitRatio() * 100, readCount, writeCount, lruPrecision * 100);
         }
     }
 }

@@ -1,8 +1,11 @@
 package cn.zhangyis.minidb.storage.space;
 
+import cn.zhangyis.minidb.common.exception.MtrStateException;
+import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
+import lombok.Data;
 
 import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
 
@@ -56,6 +59,7 @@ import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
  * @author MiniDB
  * @version 1.0
  */
+@Data
 public class FlstNode {
 
     /**
@@ -124,7 +128,7 @@ public class FlstNode {
      * @param pageNo     前一个节点所在页号（FIL_NULL 表示无前驱）
      * @param nodeOffset 前一个节点在页内的偏移
      */
-    public void setPrevNode(MiniTransaction mtr, int pageNo, int nodeOffset) {
+    public void setPrevNode(MiniTransaction mtr, int pageNo, int nodeOffset) throws MtrStateException, PageNotManagedByMtrException {
         page.putInt(offset + 0, pageNo);
         page.putShort(offset + 4, (short) nodeOffset);
         mtr.markDirty(page);
@@ -168,7 +172,7 @@ public class FlstNode {
      * @param pageNo     后一个节点所在页号（FIL_NULL 表示无后继）
      * @param nodeOffset 后一个节点在页内的偏移
      */
-    public void setNextNode(MiniTransaction mtr, int pageNo, int nodeOffset) {
+    public void setNextNode(MiniTransaction mtr, int pageNo, int nodeOffset) throws MtrStateException, PageNotManagedByMtrException {
         page.putInt(offset + 6, pageNo);
         page.putShort(offset + 10, (short) nodeOffset);
         mtr.markDirty(page);
@@ -179,7 +183,7 @@ public class FlstNode {
      *
      * @param mtr Mini-Transaction
      */
-    public void initialize(MiniTransaction mtr) {
+    public void initialize(MiniTransaction mtr) throws MtrStateException, PageNotManagedByMtrException {
         setPrevNode(mtr, FIL_NULL, 0);
         setNextNode(mtr, FIL_NULL, 0);
     }
@@ -224,7 +228,7 @@ public class FlstNode {
      * @param nextOffset  后继节点偏移
      */
     public void remove(MiniTransaction mtr, Page prevPage, int prevOffset,
-                       Page nextPage, int nextOffset) {
+                       Page nextPage, int nextOffset) throws MtrStateException, PageNotManagedByMtrException {
         // 更新前驱节点的 next 指针
         if (prevPage != null) {
             FlstNode prevNode = new FlstNode(prevPage, prevOffset);

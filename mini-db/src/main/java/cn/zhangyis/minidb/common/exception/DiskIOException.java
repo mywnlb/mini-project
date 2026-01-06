@@ -49,6 +49,9 @@ public class DiskIOException extends StorageException {
     /** 错误码：文件删除失败 */
     public static final int ERR_FILE_DELETE = 100106;
 
+    /** 错误码：未知错误 */
+    public static final int ERR_UNKNOWN = 100107;
+
     public DiskIOException(String message) {
         super(message);
     }

@@ -1,5 +1,7 @@
 package cn.zhangyis.minidb.storage.space;
 
+import cn.zhangyis.minidb.common.exception.MtrStateException;
+import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
@@ -63,7 +65,8 @@ public class XdesPage extends Page {
      * @param pageId 页面ID（必须是16384的倍数）
      */
     public XdesPage(PageId pageId) {
-        super(pageId, PageType.FIL_PAGE_TYPE_XDES);
+        super(pageId);
+        setPageType(PageType.FIL_PAGE_TYPE_XDES);
 
         validatePageNo(pageId.getPageNo());
     }
@@ -74,7 +77,7 @@ public class XdesPage extends Page {
      * @param page 现有页面
      */
     public XdesPage(Page page) {
-        super(page.getBuffer(), page.getPageId());
+        super(page.getPageId(), page.getBuffer());
 
         validatePageNo(page.getPageNo());
 
@@ -90,11 +93,11 @@ public class XdesPage extends Page {
     /**
      * 构造函数：从 ByteBuffer 创建
      *
-     * @param buffer 页面数据
      * @param pageId 页面ID
+     * @param buffer 页面数据
      */
-    public XdesPage(ByteBuffer buffer, PageId pageId) {
-        super(buffer, pageId);
+    public XdesPage(PageId pageId, ByteBuffer buffer) {
+        super(pageId, buffer);
 
         validatePageNo(pageId.getPageNo());
     }
@@ -200,10 +203,13 @@ public class XdesPage extends Page {
      * <p>将所有256个 XDES Entry 初始化为 FREE 状态。</p>
      *
      * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initialize(MiniTransaction mtr) {
+    public void initialize(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         // 设置页面类型
-        setPageType(mtr, PageType.FIL_PAGE_TYPE_XDES);
+        setPageType(PageType.FIL_PAGE_TYPE_XDES);
 
         // 初始化256个 XDES Entry
         int[] range = getLocalExtentRange();
@@ -229,8 +235,11 @@ public class XdesPage extends Page {
      * @param mtr            Mini-Transaction
      * @param startExtentNo  起始 Extent 编号
      * @param endExtentNo    结束 Extent 编号（包含）
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initializeRange(MiniTransaction mtr, int startExtentNo, int endExtentNo) {
+    public void initializeRange(MiniTransaction mtr, int startExtentNo, int endExtentNo)
+            throws PageNotManagedByMtrException, MtrStateException {
         for (int extentNo = startExtentNo; extentNo <= endExtentNo; extentNo++) {
             if (getXdesPageNo(extentNo) != this.getPageNo()) {
                 throw new IllegalArgumentException(

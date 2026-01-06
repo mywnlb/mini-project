@@ -1,5 +1,8 @@
 package cn.zhangyis.minidb.storage.space;
 
+import cn.zhangyis.minidb.common.exception.MiniDbException;
+import cn.zhangyis.minidb.common.exception.MtrStateException;
+import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
@@ -71,7 +74,8 @@ public class InodePage extends Page {
      * @param pageId 页面ID
      */
     public InodePage(PageId pageId) {
-        super(pageId, PageType.FIL_PAGE_INODE);
+        super(pageId);
+        setPageType(PageType.FIL_PAGE_INODE);
     }
 
     /**
@@ -80,7 +84,7 @@ public class InodePage extends Page {
      * @param page 现有页面
      */
     public InodePage(Page page) {
-        super(page.getBuffer(), page.getPageId());
+        super(page.getPageId(), page.getBuffer());
 
         // 验证页面类型
         PageType actualType = page.getPageType();
@@ -94,11 +98,11 @@ public class InodePage extends Page {
     /**
      * 构造函数：从 ByteBuffer 创建
      *
-     * @param buffer 页面数据
      * @param pageId 页面ID
+     * @param buffer 页面数据
      */
-    public InodePage(ByteBuffer buffer, PageId pageId) {
-        super(buffer, pageId);
+    public InodePage(PageId pageId, ByteBuffer buffer) {
+        super(pageId, buffer);
     }
 
     // ==================== INODE Page Header ====================
@@ -220,10 +224,13 @@ public class InodePage extends Page {
      * 初始化 INODE Page
      *
      * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initialize(MiniTransaction mtr) {
+    public void initialize(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         // 设置页面类型
-        setPageType(mtr, PageType.FIL_PAGE_INODE);
+        setPageType(PageType.FIL_PAGE_INODE);
 
         // 初始化链表节点为孤立状态
         getListNode().initialize(mtr);
@@ -238,8 +245,11 @@ public class InodePage extends Page {
      * 初始化所有 INODE Entry（设置 Segment ID 为 0）
      *
      * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
      */
-    public void initAllEntries(MiniTransaction mtr) {
+    public void initAllEntries(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
         for (int i = 0; i < INODES_PER_PAGE; i++) {
             int offset = getInodeEntryOffset(i);
 
@@ -272,8 +282,10 @@ public class InodePage extends Page {
      *
      * @param mtr        Mini-Transaction
      * @param entryIndex Entry 索引（0-84）
+     * @throws MiniDbException 如果操作失败
      */
-    public void initEntry(MiniTransaction mtr, int entryIndex) {
+    public void initEntry(MiniTransaction mtr, int entryIndex)
+            throws MiniDbException {
         SegmentDescriptor entry = getInodeEntry(entryIndex);
         entry.clear(mtr);
     }
@@ -284,8 +296,10 @@ public class InodePage extends Page {
      * @param mtr       Mini-Transaction
      * @param segmentId Segment ID
      * @return Entry 索引（0-84），如果没有空闲 Entry 返回 -1
+     * @throws MiniDbException 如果操作失败
      */
-    public int allocateEntry(MiniTransaction mtr, long segmentId) {
+    public int allocateEntry(MiniTransaction mtr, long segmentId)
+            throws MiniDbException {
         if (segmentId == 0) {
             throw new IllegalArgumentException("Segment ID cannot be 0");
         }
@@ -306,8 +320,10 @@ public class InodePage extends Page {
      *
      * @param mtr        Mini-Transaction
      * @param entryIndex Entry 索引（0-84）
+     * @throws MiniDbException 如果操作失败
      */
-    public void freeEntry(MiniTransaction mtr, int entryIndex) {
+    public void freeEntry(MiniTransaction mtr, int entryIndex)
+            throws MiniDbException {
         SegmentDescriptor entry = getInodeEntry(entryIndex);
         entry.clear(mtr);
     }

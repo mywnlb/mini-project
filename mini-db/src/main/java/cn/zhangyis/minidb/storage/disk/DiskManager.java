@@ -85,6 +85,11 @@ public class DiskManager {
 
     // ==================== 构造函数 ====================
 
+    public DiskManager(String string) throws DiskIOException {
+        this(Path.of(string));
+
+    }
+
     /**
      * 创建磁盘管理器 (使用默认重试策略)
      *
@@ -128,6 +133,8 @@ public class DiskManager {
                 "Failed to create data directory: " + dataDir, e);
         }
     }
+
+
 
     // ==================== 表空间管理 ====================
 
