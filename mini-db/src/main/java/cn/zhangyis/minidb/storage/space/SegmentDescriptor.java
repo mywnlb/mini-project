@@ -9,10 +9,10 @@ import cn.zhangyis.minidb.storage.page.Page;
 import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
 
 /**
- * Segment 描述符（段描述符）
+ * Segment 描述符（段描述符）- 物理层
  *
- * <p>SegmentDescriptor 封装了 INODE Entry (192字节) 的读写操作。
- * INODE Entry 描述一个 Segment 的元信息，包括3个 Extent 链表和32个碎片页。</p>
+ * <p>SegmentDescriptor 封装了 INODE Entry (192字节) 的物理读写操作。
+ * 这是纯物理层类，只负责字节级别的 get/put 操作，不包含分配逻辑。</p>
  *
  * <h2>INODE Entry 物理结构（192字节）</h2>
  * <pre>
@@ -38,24 +38,24 @@ import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
  * <p>Segment 的前32个页面单独分配（不占用完整 Extent），避免小表浪费空间。
  * PageNo = FIL_NULL (0xFFFFFFFF) 表示未分配。</p>
  *
+ * <h2>分层设计</h2>
+ * <ul>
+ *   <li>物理层（本类）：负责 get/put/getFragPageNo/setFragPageNo 等底层字段操作</li>
+ *   <li>逻辑层（Segment类）：负责页面分配决策、碎片页搜索算法、32页策略</li>
+ * </ul>
+ *
  * <h2>使用示例</h2>
  * <pre>
- * // 分配 Segment 的页面（3阶段策略）
- * SegmentDescriptor segment = ...;
+ * // 物理层操作示例
+ * SegmentDescriptor descriptor = new SegmentDescriptor(inodePage, offset);
+ * long segId = descriptor.getSegmentId();  // 读取字段
+ * descriptor.setSegmentId(mtr, 123);       // 修改字段
+ * int pageNo = descriptor.getFragPageNo(5); // 读取碎片页数组
+ * descriptor.setFragPageNo(mtr, 5, 100);   // 修改碎片页数组
  *
- * // 阶段1：尝试从碎片数组分配（前32页）
- * if (segment.getFragUsedCount() < 32) {
- *     int freeSlot = segment.findFreeFragSlot();
- *     if (freeSlot != -1) {
- *         segment.setFragPageNo(mtr, freeSlot, newPageNo);
- *     }
- * }
- *
- * // 阶段2：从 Partial Extent 分配
- * ExtentDescriptor partialExt = segment.getFirstPartialExtent(mtr);
- * if (partialExt != null) {
- *     // 分配页面...
- * }
+ * // 逻辑层操作应该使用 Segment 类
+ * Segment segment = new Segment(spaceId, segmentId, descriptor, tableSpace);
+ * Page page = segment.allocatePage(mtr);  // 自动选择碎片页或extent
  * </pre>
  *
  * @author MiniDB
@@ -227,20 +227,6 @@ public class SegmentDescriptor {
         validateFragIndex(index);
         page.putInt(offset + INODE_FRAG_ARRAY + index * 4, pageNo);
         mtr.markDirty(page);
-    }
-
-    /**
-     * 查找第一个空闲的碎片页槽位
-     *
-     * @return 槽位索引（0-31），如果数组已满返回 -1
-     */
-    public int findFreeFragSlot() {
-        for (int i = 0; i < INODE_FRAG_ARRAY_PAGES; i++) {
-            if (getFragPageNo(i) == FIL_NULL) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     /**

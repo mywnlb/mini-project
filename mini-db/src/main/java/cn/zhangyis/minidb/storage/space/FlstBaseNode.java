@@ -74,6 +74,15 @@ public class FlstBaseNode {
     }
 
     /**
+     * 获取基节点在页面中的偏移
+     *
+     * @return 偏移量（字节）
+     */
+    public int getOffset() {
+        return offset;
+    }
+
+    /**
      * 获取链表长度（节点数量）
      *
      * @return 链表中节点的数量
@@ -336,6 +345,89 @@ public class FlstBaseNode {
         }
 
         return new PageId(page.getSpaceId(), firstPageNo);
+    }
+
+    /**
+     * 从链表中移除指定节点
+     *
+     * <p>从双向链表中移除任意位置的节点，更新前后节点的指针和链表元信息。</p>
+     *
+     * <h3>执行步骤</h3>
+     * <ol>
+     *   <li>加载要移除的节点</li>
+     *   <li>获取前后节点位置</li>
+     *   <li>更新前后节点的指针</li>
+     *   <li>如果是首节点或尾节点，更新链表基节点</li>
+     *   <li>清除被移除节点的指针</li>
+     *   <li>减少链表长度</li>
+     * </ol>
+     *
+     * @param mtr        Mini-Transaction
+     * @param nodePage   要移除的节点所在页面
+     * @param nodeOffset 要移除的节点在页内的偏移
+     * @throws MiniDbException 如果操作失败
+     */
+    public void remove(MiniTransaction mtr, Page nodePage, int nodeOffset)
+            throws MiniDbException {
+        if (isEmpty()) {
+            throw new IllegalStateException("Cannot remove from empty list");
+        }
+
+        FlstNode node = new FlstNode(nodePage, nodeOffset);
+        int length = getLength();
+
+        // 获取前后节点位置
+        int prevPageNo = node.getPrevPageNo();
+        int prevOffset = node.getPrevOffset();
+        int nextPageNo = node.getNextPageNo();
+        int nextOffset = node.getNextOffset();
+
+        boolean isFirst = (prevPageNo == FIL_NULL);
+        boolean isLast = (nextPageNo == FIL_NULL);
+
+        if (length == 1) {
+            // 唯一节点：清空链表
+            if (!isFirst || !isLast) {
+                throw new IllegalStateException("Single node must be both first and last");
+            }
+            initialize(mtr);
+        } else if (isFirst) {
+            // 首节点：更新链表头指针
+            Page nextPage = mtr.getPage(new PageId(page.getSpaceId(), nextPageNo));
+            FlstNode nextNode = new FlstNode(nextPage, nextOffset);
+            nextNode.setPrevNode(mtr, FIL_NULL, 0);
+
+            setFirstNode(mtr, nextPageNo, nextOffset);
+            setLength(mtr, length - 1);
+
+            // 清除被移除节点的指针
+            node.initialize(mtr);
+        } else if (isLast) {
+            // 尾节点：更新链表尾指针
+            Page prevPage = mtr.getPage(new PageId(page.getSpaceId(), prevPageNo));
+            FlstNode prevNode = new FlstNode(prevPage, prevOffset);
+            prevNode.setNextNode(mtr, FIL_NULL, 0);
+
+            setLastNode(mtr, prevPageNo, prevOffset);
+            setLength(mtr, length - 1);
+
+            // 清除被移除节点的指针
+            node.initialize(mtr);
+        } else {
+            // 中间节点：连接前后节点
+            Page prevPage = mtr.getPage(new PageId(page.getSpaceId(), prevPageNo));
+            FlstNode prevNode = new FlstNode(prevPage, prevOffset);
+            prevNode.setNextNode(mtr, nextPageNo, nextOffset);
+
+            Page nextPage = mtr.getPage(new PageId(page.getSpaceId(), nextPageNo));
+            FlstNode nextNode = new FlstNode(nextPage, nextOffset);
+            nextNode.setPrevNode(mtr, prevPageNo, prevOffset);
+
+            setLength(mtr, length - 1);
+
+            // 清除被移除节点的指针
+            node.initialize(mtr);
+        }
     }
 
     @Override

@@ -13,10 +13,11 @@ import java.nio.ByteBuffer;
 import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
 
 /**
- * FSP Header Page（表空间头页）
+ * FSP Header Page（表空间头页）- 物理层
  *
  * <p>FSP_HDR Page 是每个表空间的第一个页面（page 0），包含表空间的元信息
- * 和前256个 Extent 的 XDES Entry。</p>
+ * 和前256个 Extent 的 XDES Entry。
+ * 这是纯物理层类，只负责 FSP Header 字段的读写，不包含分配逻辑。</p>
  *
  * <h2>物理布局（16KB）</h2>
  * <pre>
@@ -36,19 +37,23 @@ import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
  * [FIL Trailer 8B]
  * </pre>
  *
+ * <h2>分层设计</h2>
+ * <ul>
+ *   <li>物理层（本类）：负责 get/set FSP Header 字段、链表访问、XDES Entry 访问</li>
+ *   <li>逻辑层（TableSpace类）：负责 Segment ID 分配、Extent 管理、空间扩展</li>
+ * </ul>
+ *
  * <h2>使用示例</h2>
  * <pre>
- * // 初始化新表空间
- * try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
- *     PageId page0Id = new PageId(spaceId, 0);
- *     FspHeaderPage fspHdr = new FspHeaderPage(mtr.newPage(page0Id));
+ * // 物理层操作示例
+ * FspHeaderPage fspHdr = new FspHeaderPage(page);
+ * long nextSegId = fspHdr.getNextSegmentId();  // 读取字段
+ * fspHdr.setNextSegmentId(mtr, nextSegId + 1); // 修改字段
+ * FlstBaseNode freeList = fspHdr.getFreeList(); // 访问链表
  *
- *     fspHdr.initialize(mtr, spaceId);
- *     fspHdr.setSize(mtr, 64);  // 第一个Extent
- *     fspHdr.setFreeLimit(mtr, 64);
- *
- *     mtr.commit();
- * }
+ * // 逻辑层操作应该使用 TableSpace 类
+ * TableSpace tableSpace = new TableSpace(spaceId, bufferPool);
+ * Segment segment = tableSpace.createSegment(mtr);  // 自动分配Segment ID
  * </pre>
  *
  * @author MiniDB
@@ -245,21 +250,6 @@ public class FspHeaderPage extends Page {
             throws PageNotManagedByMtrException, MtrStateException {
         putLong(FSP_SEG_ID, segmentId);
         mtr.markDirty(this);
-    }
-
-    /**
-     * 分配新的 Segment ID（原子递增）
-     *
-     * @param mtr Mini-Transaction
-     * @return 新分配的 Segment ID
-     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
-     * @throws MtrStateException 如果MTR状态不正确
-     */
-    public long allocateSegmentId(MiniTransaction mtr)
-            throws PageNotManagedByMtrException, MtrStateException {
-        long currentId = getNextSegmentId();
-        setNextSegmentId(mtr, currentId + 1);
-        return currentId;
     }
 
     // ==================== 链表访问 ====================

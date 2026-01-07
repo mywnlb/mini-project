@@ -460,6 +460,13 @@ public final class StorageConstants {
     public static final int INODE_FRAG_ARRAY_PAGES = 32;
 
     /**
+     * 碎片页数组大小（常用别名）
+     *
+     * <p>等同于 INODE_FRAG_ARRAY_PAGES，用于业务代码中更简洁的引用。</p>
+     */
+    public static final int FRAG_ARRAY_SIZE = INODE_FRAG_ARRAY_PAGES;
+
+    /**
      * INODE Entry 魔数值 (97937874)
      *
      * <p>用于校验 INODE Entry 的完整性。</p>

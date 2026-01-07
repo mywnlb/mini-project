@@ -8,10 +8,10 @@ import cn.zhangyis.minidb.storage.page.Page;
 import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
 
 /**
- * Extent 描述符（区描述符）
+ * Extent 描述符（区描述符）- 物理层
  *
- * <p>ExtentDescriptor 封装了 XDES Entry (40字节) 的读写操作。
- * XDES Entry 描述一个 Extent (64个连续页面) 的状态、所属 Segment 和页面 Bitmap。</p>
+ * <p>ExtentDescriptor 封装了 XDES Entry (40字节) 的物理读写操作。
+ * 这是纯物理层类，只负责字节级别的 get/put 操作，不包含分配逻辑。</p>
  *
  * <h2>XDES Entry 物理结构（40字节）</h2>
  * <pre>
@@ -30,28 +30,24 @@ import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
  *   <li>Bit 1 (CLEAN): 1=干净, 0=脏页 [简化实现可忽略]</li>
  * </ul>
  *
- * <h2>状态转移</h2>
- * <pre>
- * FREE (完全空闲)
- *   ↓ allocatePage()
- * 部分分配 (1-63 页已使用)
- *   ↓ allocatePage() 64次
- * FULL (完全占满)
- *   ↓ freePage()
- * 部分分配
- *   ↓ freePage() 多次
- * FREE
- * </pre>
+ * <h2>分层设计</h2>
+ * <ul>
+ *   <li>物理层（本类）：负责 get/put/isPageFree/allocatePage 等底层位操作</li>
+ *   <li>逻辑层（Extent类）：负责页面分配决策、搜索算法</li>
+ * </ul>
  *
  * <h2>使用示例</h2>
  * <pre>
- * // 分配 Extent 中的页面
- * ExtentDescriptor extent = extentManager.getExtentDescriptor(mtr, spaceId, extentNo);
- * int pageOffset = extent.findFreePage();  // 返回 0-63
- * if (pageOffset != -1) {
- *     extent.allocatePage(mtr, pageOffset);
- *     int actualPageNo = extent.getStartPageNo() + pageOffset;
- * }
+ * // 物理层操作示例
+ * ExtentDescriptor descriptor = new ExtentDescriptor(xdesPage, offset, extentNo);
+ * long segId = descriptor.getSegmentId();  // 读取字段
+ * descriptor.setSegmentId(mtr, 123);       // 修改字段
+ * boolean free = descriptor.isPageFree(5); // 检查页面5是否空闲
+ * descriptor.allocatePage(mtr, 5);         // 分配页面5（设置bitmap位）
+ *
+ * // 逻辑层操作应该使用 Extent 类
+ * Extent extent = new Extent(spaceId, extentNo, descriptor);
+ * int pageNo = extent.allocatePage(mtr);  // 自动查找并分配
  * </pre>
  *
  * @author MiniDB
@@ -227,6 +223,32 @@ public class ExtentDescriptor {
     }
 
     /**
+     * 初始化 Extent 为 FREE 状态
+     *
+     * <p>完整的初始化操作包括：</p>
+     * <ul>
+     *   <li>设置 Segment ID 为 0（不属于任何段）</li>
+     *   <li>设置状态为 FREE</li>
+     *   <li>初始化 Bitmap（所有页面标记为空闲）</li>
+     * </ul>
+     *
+     * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
+     */
+    public void initialize(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
+        // 1. 设置 Segment ID 为 0
+        setSegmentId(mtr, 0);
+
+        // 2. 设置状态为 FREE
+        setState(mtr, ExtentState.FREE);
+
+        // 3. 初始化 Bitmap
+        initBitmap(mtr);
+    }
+
+    /**
      * 初始化 Bitmap（设置所有页面为空闲）
      *
      * @param mtr Mini-Transaction
@@ -241,20 +263,6 @@ public class ExtentDescriptor {
             page.putByte(bitmapOffset + i, (byte) 0xFF);
         }
         mtr.markDirty(page);
-    }
-
-    /**
-     * 查找第一个空闲页面
-     *
-     * @return 空闲页面的偏移 (0-63)，如果没有空闲页面返回 -1
-     */
-    public int findFreePage() {
-        for (int i = 0; i < EXTENT_SIZE; i++) {
-            if (isPageFree(i)) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     // ==================== 状态查询 ====================

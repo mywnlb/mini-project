@@ -13,10 +13,11 @@ import java.nio.ByteBuffer;
 import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
 
 /**
- * INODE Page（段目录页）
+ * INODE Page（段目录页）- 物理层
  *
  * <p>INODE Page 存储 Segment 的元数据（INODE Entry）。
- * 每个 INODE Page 包含85个 INODE Entry，每个 Entry 描述一个 Segment。</p>
+ * 每个 INODE Page 包含85个 INODE Entry，每个 Entry 描述一个 Segment。
+ * 这是纯物理层类，只负责页面访问和Entry访问，不包含分配逻辑。</p>
  *
  * <h2>物理布局（16KB）</h2>
  * <pre>
@@ -52,15 +53,23 @@ import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
  *   <li>FSP_SEG_INODES_FULL: 全满的 INODE Page（85个Entry都已分配）</li>
  * </ul>
  *
+ * <h2>分层设计</h2>
+ * <ul>
+ *   <li>物理层（本类）：负责 getInodeEntry/getListNode/initialize 等底层页面操作</li>
+ *   <li>逻辑层（TableSpace类）：负责Entry分配逻辑、空闲Entry搜索</li>
+ * </ul>
+ *
  * <h2>使用示例</h2>
  * <pre>
- * // 查找空闲的 INODE Entry
- * InodePage inodePage = ...;
- * int freeIndex = inodePage.findFreeEntry();
- * if (freeIndex != -1) {
- *     SegmentDescriptor segment = inodePage.getInodeEntry(freeIndex);
- *     segment.initialize(mtr, newSegmentId);
- * }
+ * // 物理层操作示例
+ * InodePage inodePage = new InodePage(page);
+ * SegmentDescriptor entry = inodePage.getInodeEntry(5);  // 访问Entry 5
+ * long segId = entry.getSegmentId();  // 读取字段
+ * int usedCount = inodePage.getUsedEntryCount();  // 统计
+ *
+ * // 逻辑层操作应该使用 TableSpace 类
+ * TableSpace tableSpace = new TableSpace(spaceId, bufferPool);
+ * Segment segment = tableSpace.createSegment(mtr);  // 自动分配Entry
  * </pre>
  *
  * @author MiniDB
@@ -145,43 +154,6 @@ public class InodePage extends Page {
     public SegmentDescriptor getInodeEntry(int entryIndex) {
         int offset = getInodeEntryOffset(entryIndex);
         return new SegmentDescriptor(this, offset);
-    }
-
-    /**
-     * 查找第一个空闲的 INODE Entry
-     *
-     * <p>空闲 Entry 的特征：INODE_SEGMENT_ID = 0。</p>
-     *
-     * @return Entry 索引（0-84），如果没有空闲 Entry 返回 -1
-     */
-    public int findFreeEntry() {
-        for (int i = 0; i < INODES_PER_PAGE; i++) {
-            SegmentDescriptor entry = getInodeEntry(i);
-            if (entry.getSegmentId() == 0) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    /**
-     * 查找指定 Segment ID 的 INODE Entry
-     *
-     * @param segmentId Segment ID
-     * @return Entry 索引（0-84），如果未找到返回 -1
-     */
-    public int findEntryBySegmentId(long segmentId) {
-        if (segmentId == 0) {
-            throw new IllegalArgumentException("Segment ID cannot be 0");
-        }
-
-        for (int i = 0; i < INODES_PER_PAGE; i++) {
-            SegmentDescriptor entry = getInodeEntry(i);
-            if (entry.getSegmentId() == segmentId) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     /**
@@ -285,44 +257,6 @@ public class InodePage extends Page {
      * @throws MiniDbException 如果操作失败
      */
     public void initEntry(MiniTransaction mtr, int entryIndex)
-            throws MiniDbException {
-        SegmentDescriptor entry = getInodeEntry(entryIndex);
-        entry.clear(mtr);
-    }
-
-    /**
-     * 分配一个新的 INODE Entry
-     *
-     * @param mtr       Mini-Transaction
-     * @param segmentId Segment ID
-     * @return Entry 索引（0-84），如果没有空闲 Entry 返回 -1
-     * @throws MiniDbException 如果操作失败
-     */
-    public int allocateEntry(MiniTransaction mtr, long segmentId)
-            throws MiniDbException {
-        if (segmentId == 0) {
-            throw new IllegalArgumentException("Segment ID cannot be 0");
-        }
-
-        int freeIndex = findFreeEntry();
-        if (freeIndex == -1) {
-            return -1;  // 没有空闲 Entry
-        }
-
-        SegmentDescriptor entry = getInodeEntry(freeIndex);
-        entry.initialize(mtr, segmentId);
-
-        return freeIndex;
-    }
-
-    /**
-     * 释放一个 INODE Entry
-     *
-     * @param mtr        Mini-Transaction
-     * @param entryIndex Entry 索引（0-84）
-     * @throws MiniDbException 如果操作失败
-     */
-    public void freeEntry(MiniTransaction mtr, int entryIndex)
             throws MiniDbException {
         SegmentDescriptor entry = getInodeEntry(entryIndex);
         entry.clear(mtr);
