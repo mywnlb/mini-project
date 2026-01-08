@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.storage.space;
 
 import cn.zhangyis.minidb.common.exception.MiniDbException;
+import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
@@ -145,7 +146,8 @@ public class Segment {
         if (notFullExtent != null) {
             int pageNo = notFullExtent.allocatePage(mtr);
             if (pageNo != -1) {
-                Page page = mtr.getPage(PageId.of(spaceId, pageNo));
+                // 使用 NEW_PAGE 模式，因为 extent 中的页面可能尚未在 Buffer Pool 中
+                Page page = mtr.getPage(PageId.of(spaceId, pageNo), BufferPool.FetchMode.NEW_PAGE);
 
                 // 如果Extent满了，移到FULL链表
                 if (notFullExtent.isFull()) {
@@ -165,7 +167,8 @@ public class Segment {
             // 从新Extent分配第一个页面
             int pageNo = newExtent.allocatePage(mtr);
             if (pageNo != -1) {
-                return mtr.getPage(PageId.of(spaceId, pageNo));
+                // 使用 NEW_PAGE 模式
+                return mtr.getPage(PageId.of(spaceId, pageNo), BufferPool.FetchMode.NEW_PAGE);
             }
         }
 
@@ -175,6 +178,21 @@ public class Segment {
     /**
      * 释放一个页面
      *
+     * <p>实现完整的页面释放逻辑，包括碎片页释放和Extent链表迁移。</p>
+     *
+     * <h3>碎片页释放</h3>
+     * <p>释放碎片页时需要：</p>
+     * <ol>
+     *   <li>清除碎片数组中的槽位</li>
+     *   <li>调用表空间释放碎片页（清除XDES bitmap并维护FREE_FRAG/FULL_FRAG链表）</li>
+     * </ol>
+     *
+     * <h3>Extent页面释放的迁移规则</h3>
+     * <ul>
+     *   <li>FULL → NOT_FULL: 当满的Extent释放一页后变为部分使用</li>
+     *   <li>NOT_FULL → FREE: 当部分使用的Extent释放最后一页后变为完全空闲</li>
+     * </ul>
+     *
      * @param mtr    Mini-Transaction
      * @param pageNo 要释放的页号
      * @throws MiniDbException 如果操作失败
@@ -183,26 +201,37 @@ public class Segment {
         // 1. 检查是否为碎片页
         for (int i = 0; i < FRAG_ARRAY_SIZE; i++) {
             if (descriptor.getFragPageNo(i) == pageNo) {
-                // 释放碎片页
+                // 释放碎片页：清除槽位并通知表空间释放
                 descriptor.setFragPageNo(mtr, i, FIL_NULL);
+                // 关键修复：调用表空间释放碎片页，清除XDES bitmap
+                tableSpace.freeFragmentPage(mtr, pageNo);
                 return;
             }
         }
 
         // 2. 从Extent中释放
-        int extentNo = pageNo / 64;
+        int extentNo = XdesLocator.pageNoToExtentNo(pageNo);
         Extent extent = tableSpace.getExtent(mtr, extentNo);
+
+        // 验证页面属于此Segment
+        if (extent.getSegmentId() != segmentId) {
+            throw new MiniDbException(
+                    String.format("Page %d (extent %d) does not belong to segment %d",
+                            pageNo, extentNo, segmentId));
+        }
 
         boolean wasFullBefore = extent.isFull();
         extent.freePage(mtr, pageNo);
         boolean isEmptyAfter = extent.isEmpty();
 
-        // 3. 更新链表
+        // 3. 更新链表 - 完整迁移规则
         if (wasFullBefore) {
-            // FULL → NOT_FULL
+            // FULL → NOT_FULL: 满变为部分使用
             moveExtentFromFullToNotFull(mtr, extent);
-        } else if (isEmptyAfter) {
-            // NOT_FULL → FREE（归还给表空间）
+        }
+
+        if (isEmptyAfter) {
+            // NOT_FULL → FREE: 部分使用变为完全空闲，归还给表空间
             removeExtentFromNotFull(mtr, extent);
             tableSpace.returnExtentToFree(mtr, extent);
         }
@@ -224,6 +253,8 @@ public class Segment {
 
     /**
      * 获取NOT_FULL链表的第一个Extent
+     *
+     * <p>使用 XdesLocator 从 FlstNode 地址定位 Extent，消除魔法偏移。</p>
      */
     private Extent getNotFullExtent(MiniTransaction mtr) throws MiniDbException {
         FlstBaseNode notFullList = descriptor.getNotFullList();
@@ -231,22 +262,15 @@ public class Segment {
             return null;
         }
 
-        PageId firstNodePageId = notFullList.getFirstNode();
-        if (firstNodePageId == null) {
+        // 使用 getFirstNodeAddr 获取完整地址
+        FilAddr nodeAddr = notFullList.getFirstNodeAddr();
+        if (nodeAddr.isNull()) {
             return null;
         }
 
-        int firstNodeOffset = notFullList.getFirstNodeOffset();
-
-        // 从FlstNode反推ExtentDescriptor
-        // FlstNode在XDES Entry内偏移8字节
-        int xdesEntryOffset = firstNodeOffset - 8;
-
-        Page xdesPage = mtr.getPage(firstNodePageId);
-        int extentNo = calculateExtentNo(firstNodePageId.getPageNo(), xdesEntryOffset);
-
-        ExtentDescriptor extDesc = new ExtentDescriptor(xdesPage, xdesEntryOffset, extentNo);
-        return new Extent(spaceId, extentNo, extDesc);
+        // 使用 XdesLocator 从 FlstNode 地址定位 Extent
+        XdesLocator locator = XdesLocator.fromNodeAddr(nodeAddr);
+        return locator.getExtent(mtr, spaceId);
     }
 
     /**
@@ -316,16 +340,6 @@ public class Segment {
         Page extentPage = extentNode.getPage();
         int extentNodeOffset = extentNode.getOffset();
         notFullList.remove(mtr, extentPage, extentNodeOffset);
-    }
-
-    /**
-     * 计算Extent编号
-     */
-    private int calculateExtentNo(int xdesPageNo, int xdesEntryOffset) {
-        // 从XDES Page号和Entry偏移计算Extent编号
-        int pageGroup = xdesPageNo / 16384;  // 每16384个页面一组
-        int localIndex = (xdesEntryOffset - FIL_HEADER_SIZE) / 40;  // 每个Entry 40字节
-        return pageGroup * 256 + localIndex;
     }
 
     /**

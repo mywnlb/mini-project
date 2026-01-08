@@ -80,7 +80,14 @@ public class FspHeaderPage extends Page {
     /**
      * 构造函数：从现有 Page 对象创建
      *
-     * @param page 现有页面
+     * <p>此构造函数接受任何页面类型，因为：</p>
+     * <ul>
+     *   <li>新分配的页面可能有默认类型（如 FIL_PAGE_INDEX）</li>
+     *   <li>调用者应随后调用 {@link #initialize(MiniTransaction, int)} 设置正确的页面类型</li>
+     *   <li>对于已初始化的页面，建议使用验证版本 {@link #fromExistingPage(Page)}</li>
+     * </ul>
+     *
+     * @param page 现有页面（必须是 page 0）
      */
     public FspHeaderPage(Page page) {
         super(page.getPageId(), page.getBuffer());
@@ -88,14 +95,30 @@ public class FspHeaderPage extends Page {
         if (page.getPageNo() != 0) {
             throw new IllegalArgumentException("FSP_HDR must be page 0, got: " + page.getPageNo());
         }
+        // 不验证页面类型，允许任何类型的页面（将由 initialize() 设置正确类型）
+    }
 
-        // 验证页面类型
-        PageType actualType = page.getPageType();
-        if (actualType != PageType.FIL_PAGE_TYPE_FSP_HDR &&
-            actualType != PageType.FIL_PAGE_TYPE_ALLOCATED) {
-            throw new IllegalArgumentException(
-                    "Invalid page type for FSP_HDR: " + actualType);
+    /**
+     * 从已存在的 FSP_HDR 页面创建（带类型验证）
+     *
+     * <p>用于从磁盘读取已初始化的 FSP_HDR 页面时，验证页面类型正确。</p>
+     *
+     * @param page 已初始化的 FSP_HDR 页面
+     * @return FspHeaderPage 对象
+     * @throws IllegalArgumentException 如果页面类型不是 FSP_HDR
+     */
+    public static FspHeaderPage fromExistingPage(Page page) {
+        if (page.getPageNo() != 0) {
+            throw new IllegalArgumentException("FSP_HDR must be page 0, got: " + page.getPageNo());
         }
+
+        PageType actualType = page.getPageType();
+        if (actualType != PageType.FIL_PAGE_TYPE_FSP_HDR) {
+            throw new IllegalArgumentException(
+                    "Invalid page type for FSP_HDR: " + actualType + " (expected FSP_HDR)");
+        }
+
+        return new FspHeaderPage(page);
     }
 
     /**

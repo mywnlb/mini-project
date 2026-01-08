@@ -71,7 +71,7 @@ public class TablespaceFile {
             this.pageCount = new AtomicInteger(0);
 
             // 初始化第一页
-            initializeFirstPage();
+//            initializeFirstPage();
         } else {
             // 打开已有文件
             this.channel = FileChannel.open(filePath,

@@ -135,6 +135,22 @@ public class FlstBaseNode {
     }
 
     /**
+     * 获取首节点的完整地址
+     *
+     * <p>返回 FilAddr 对象，包含页号和偏移，避免分离读取导致的混淆。</p>
+     *
+     * @return 首节点的 FilAddr，如果链表为空返回 FilAddr.NULL
+     */
+    public FilAddr getFirstNodeAddr() {
+        int pageNo = page.getInt(offset + 4);
+        if (pageNo == FIL_NULL) {
+            return FilAddr.NULL;
+        }
+        int nodeOffset = page.getShort(offset + 8) & 0xFFFF;
+        return FilAddr.of(pageNo, nodeOffset);
+    }
+
+    /**
      * 设置首节点位置
      *
      * @param mtr        Mini-Transaction
@@ -177,6 +193,22 @@ public class FlstBaseNode {
             return -1;
         }
         return page.getShort(offset + 14) & 0xFFFF;
+    }
+
+    /**
+     * 获取尾节点的完整地址
+     *
+     * <p>返回 FilAddr 对象，包含页号和偏移，避免分离读取导致的混淆。</p>
+     *
+     * @return 尾节点的 FilAddr，如果链表为空返回 FilAddr.NULL
+     */
+    public FilAddr getLastNodeAddr() {
+        int pageNo = page.getInt(offset + 10);
+        if (pageNo == FIL_NULL) {
+            return FilAddr.NULL;
+        }
+        int nodeOffset = page.getShort(offset + 14) & 0xFFFF;
+        return FilAddr.of(pageNo, nodeOffset);
     }
 
     /**
@@ -308,14 +340,54 @@ public class FlstBaseNode {
      * @param mtr Mini-Transaction
      * @return 被移除节点的位置 (pageNo, offset)，如果链表为空返回 null
      * @throws MiniDbException 如果操作失败
+     * @deprecated 使用 {@link #removeFirstAndGetAddr(MiniTransaction)} 代替，
+     *             该方法返回完整的 FilAddr 避免地址混淆
      */
+    @Deprecated
     public PageId removeFirst(MiniTransaction mtr) throws MiniDbException {
-        if (isEmpty()) {
+        FilAddr addr = removeFirstAndGetAddr(mtr);
+        if (addr == null || addr.isNull()) {
             return null;
         }
+        return new PageId(page.getSpaceId(), addr.getPageNo());
+    }
 
+    /**
+     * 从链表头部移除节点并返回完整地址
+     *
+     * <p>这是推荐使用的方法，返回被移除节点的完整 FilAddr（包含页号和偏移），
+     * 避免调用方先 removeFirst() 再 getFirstNodeOffset() 导致的地址混淆问题。</p>
+     *
+     * <h3>错误使用示例（旧方式）</h3>
+     * <pre>
+     * // 错误！removeFirst() 后 getFirstNodeOffset() 返回的是新的首节点偏移
+     * PageId pageId = list.removeFirst(mtr);
+     * int offset = list.getFirstNodeOffset();  // 这是错误的！
+     * </pre>
+     *
+     * <h3>正确使用示例</h3>
+     * <pre>
+     * FilAddr removedAddr = list.removeFirstAndGetAddr(mtr);
+     * if (removedAddr.isValid()) {
+     *     int pageNo = removedAddr.getPageNo();
+     *     int offset = removedAddr.getOffset();  // 正确！
+     * }
+     * </pre>
+     *
+     * @param mtr Mini-Transaction
+     * @return 被移除节点的完整地址 FilAddr，如果链表为空返回 FilAddr.NULL
+     * @throws MiniDbException 如果操作失败
+     */
+    public FilAddr removeFirstAndGetAddr(MiniTransaction mtr) throws MiniDbException {
+        if (isEmpty()) {
+            return FilAddr.NULL;
+        }
+
+        // 在移除前保存被移除节点的完整地址
         int firstPageNo = page.getInt(offset + 4);
         int firstOffset = page.getShort(offset + 8) & 0xFFFF;
+        FilAddr removedAddr = FilAddr.of(firstPageNo, firstOffset);
+
         int length = getLength();
 
         if (length == 1) {
@@ -344,7 +416,54 @@ public class FlstBaseNode {
             setLength(mtr, length - 1);
         }
 
-        return new PageId(page.getSpaceId(), firstPageNo);
+        return removedAddr;
+    }
+
+    /**
+     * 从链表尾部移除节点并返回完整地址
+     *
+     * @param mtr Mini-Transaction
+     * @return 被移除节点的完整地址 FilAddr，如果链表为空返回 FilAddr.NULL
+     * @throws MiniDbException 如果操作失败
+     */
+    public FilAddr removeLastAndGetAddr(MiniTransaction mtr) throws MiniDbException {
+        if (isEmpty()) {
+            return FilAddr.NULL;
+        }
+
+        // 在移除前保存被移除节点的完整地址
+        int lastPageNo = page.getInt(offset + 10);
+        int lastOffset = page.getShort(offset + 14) & 0xFFFF;
+        FilAddr removedAddr = FilAddr.of(lastPageNo, lastOffset);
+
+        int length = getLength();
+
+        if (length == 1) {
+            // 最后一个节点：清空链表
+            initialize(mtr);
+        } else {
+            // 多个节点：移除尾节点，更新链表尾
+            Page lastPage = mtr.getPage(new PageId(page.getSpaceId(), lastPageNo));
+            FlstNode lastNode = new FlstNode(lastPage, lastOffset);
+
+            // 获取新的尾节点位置
+            int newLastPageNo = lastNode.getPrevPageNo();
+            int newLastOffset = lastNode.getPrevOffset();
+
+            // 加载新尾节点并清除其 next 指针
+            Page newLastPage = mtr.getPage(new PageId(page.getSpaceId(), newLastPageNo));
+            FlstNode newLastNode = new FlstNode(newLastPage, newLastOffset);
+            newLastNode.setNextNode(mtr, FIL_NULL, 0);
+
+            // 清除旧尾节点的指针
+            lastNode.initialize(mtr);
+
+            // 更新链表尾指针
+            setLastNode(mtr, newLastPageNo, newLastOffset);
+            setLength(mtr, length - 1);
+        }
+
+        return removedAddr;
     }
 
     /**
