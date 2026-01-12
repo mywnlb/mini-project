@@ -147,7 +147,7 @@ public class FspHeaderPage extends Page {
     }
 
     /**
-     * 设置表空间ID
+     * 设置表空间ID/
      *
      * @param mtr     Mini-Transaction
      * @param spaceId 表空间ID
@@ -375,6 +375,9 @@ public class FspHeaderPage extends Page {
         // 初始化所有链表为空
         initExtentLists(mtr);
 
+        // 初始化 page 0 上的 256 个 XDES entries
+        initXdesEntries(mtr);
+
         // 页面已通过各个 setter 方法标记为脏页，此处无需重复标记
     }
 
@@ -392,6 +395,25 @@ public class FspHeaderPage extends Page {
         getFullFragList().initialize(mtr);
         getInodesFreeList().initialize(mtr);
         getInodesFullList().initialize(mtr);
+    }
+
+    /**
+     * 初始化 page 0 上的 256 个 XDES entries
+     *
+     * <p>FSP_HDR 页面（page 0）包含 256 个 XDES Entry，每个 Entry 描述一个 Extent。
+     * 此方法将所有 Entry 初始化为 FREE 状态，确保不会因垃圾值导致读取异常。</p>
+     *
+     * @param mtr Mini-Transaction
+     * @throws PageNotManagedByMtrException 如果页面不在MTR管理中
+     * @throws MtrStateException 如果MTR状态不正确
+     */
+    public void initXdesEntries(MiniTransaction mtr)
+            throws PageNotManagedByMtrException, MtrStateException {
+        // 初始化所有 256 个 XDES entries
+        for (int i = 0; i < EXTENTS_PER_GROUP; i++) {
+            ExtentDescriptor entry = getXdesEntry(i);
+            entry.initialize(mtr);
+        }
     }
 
     /**

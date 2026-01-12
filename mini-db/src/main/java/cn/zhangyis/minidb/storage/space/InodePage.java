@@ -90,18 +90,37 @@ public class InodePage extends Page {
     /**
      * 构造函数：从现有 Page 对象创建
      *
+     * <p>此构造函数接受任何页面类型，因为：</p>
+     * <ul>
+     *   <li>新分配的页面可能有默认类型（如 FIL_PAGE_INDEX）</li>
+     *   <li>调用者应随后调用 {@link #initialize(MiniTransaction)} 设置正确的页面类型</li>
+     *   <li>对于已初始化的页面，建议使用验证版本 {@link #fromExistingPage(Page)}</li>
+     * </ul>
+     *
      * @param page 现有页面
      */
     public InodePage(Page page) {
         super(page.getPageId(), page.getBuffer());
+        // 不验证页面类型，允许任何类型的页面（将由 initialize() 设置正确类型）
+    }
 
-        // 验证页面类型
+    /**
+     * 从已存在的 INODE 页面创建（带类型验证）
+     *
+     * <p>用于从磁盘读取已初始化的 INODE 页面时，验证页面类型正确。</p>
+     *
+     * @param page 已初始化的 INODE 页面
+     * @return InodePage 对象
+     * @throws IllegalArgumentException 如果页面类型不是 INODE
+     */
+    public static InodePage fromExistingPage(Page page) {
         PageType actualType = page.getPageType();
-        if (actualType != PageType.FIL_PAGE_INODE &&
-            actualType != PageType.FIL_PAGE_TYPE_ALLOCATED) {
+        if (actualType != PageType.FIL_PAGE_INODE) {
             throw new IllegalArgumentException(
-                    "Invalid page type for INODE: " + actualType);
+                    "Invalid page type for INODE: " + actualType + " (expected FIL_PAGE_INODE)");
         }
+
+        return new InodePage(page);
     }
 
     /**
@@ -228,6 +247,9 @@ public class InodePage extends Page {
             // 设置 Segment ID 为 0（表示未分配）
             putLong(offset + INODE_SEGMENT_ID, 0);
 
+            // 设置 NOT_FULL_N_USED 为 0（NOT_FULL链表中已使用的页数）
+            putInt(offset + INODE_NOT_FULL_N_USED, 0);
+
             // 设置魔数
             putInt(offset + INODE_MAGIC_N, INODE_MAGIC_NUMBER);
 
@@ -291,5 +313,13 @@ public class InodePage extends Page {
     public String toString() {
         return String.format("InodePage{pageNo=%d, used=%d/%d, full=%b}",
                 getPageNo(), getUsedEntryCount(), INODES_PER_PAGE, isFull());
+    }
+
+    /**
+     *
+     * @return
+     */
+    public int findFreeEntry() {
+        return 0;
     }
 }

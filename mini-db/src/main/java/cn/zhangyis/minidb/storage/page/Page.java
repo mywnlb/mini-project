@@ -142,33 +142,43 @@ public class Page {
     
     /**
      * 从已有数据创建页面
-     * 
-     * <p>用于从磁盘读取页面后，在内存中重建 Page 对象。
-     * 会复制传入的数据到内部缓冲区。</p>
-     * 
+     *
+     * <p>用于从磁盘读取页面后，在内存中重建 Page 对象，
+     * 或者用于创建包装类（如 FspHeaderPage）。</p>
+     *
+     * <p><b>重要</b>：此构造函数**共享** ByteBuffer，不会复制数据。
+     * 这意味着对此 Page 对象的修改会反映到传入的 ByteBuffer 中。
+     * 这是期望的行为，用于支持包装类和 Buffer Pool 的正确交互。</p>
+     *
      * <h3>处理步骤</h3>
      * <ol>
-     *   <li>分配新的 ByteBuffer</li>
-     *   <li>设置字节序</li>
-     *   <li>复制传入的数据</li>
-     *   <li>标记为非脏页（刚从磁盘读取）</li>
+     *   <li>验证 ByteBuffer 大小</li>
+     *   <li>共享传入的 ByteBuffer（通过 slice）</li>
+     *   <li>设置字节序为 Little Endian</li>
+     *   <li>标记为非脏页（调用者负责后续的脏页标记）</li>
      * </ol>
-     * 
+     *
      * @param pageId 页面标识
-     * @param data   从磁盘读取的原始数据
+     * @param src    页面数据的 ByteBuffer（将被共享）
      */
-    public Page(PageId pageId, ByteBuffer data) {
+    public Page(PageId pageId, ByteBuffer src) {
         this.pageId = pageId;
-        this.buffer = ByteBuffer.allocate(StorageConstants.PAGE_SIZE);
-        this.buffer.order(ByteOrder.LITTLE_ENDIAN);
-        
-        // 复制数据
-        data.rewind();
-        this.buffer.put(data);
-        this.buffer.rewind();
-        
+
+        if (src.remaining() != StorageConstants.PAGE_SIZE) {
+            throw new IllegalArgumentException(
+                    "Page data size mismatch, expect "
+                            + StorageConstants.PAGE_SIZE
+                            + ", actual " + src.remaining()
+            );
+        }
+
+        // 共享 buffer（不复制），但使用独立的 position/limit/mark
+        this.buffer = src.slice().order(ByteOrder.LITTLE_ENDIAN);
+        this.buffer.clear(); // position=0, limit=capacity
+
         this.dirty = false;
     }
+
     
     /**
      * 初始化新页面

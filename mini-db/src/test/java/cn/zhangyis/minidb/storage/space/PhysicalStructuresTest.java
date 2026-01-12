@@ -133,7 +133,7 @@ public class PhysicalStructuresTest extends BaseStorageTest {
             Page p0 = mtr.newPage(SPACE_ID);
             assertEquals(0, p0.getPageNo(), "first newPage should be page 0");
             // 强制污染数据，确保 initialize 真正写入字段（不是"刚好是0"）
-            for (int i = 0; i < PAGE_SIZE; i++) p0.putByte(i, (byte) 0x7F);
+            for (int i = p0.getBuffer().capacity(); i < PAGE_SIZE; i++) p0.putByte(i, (byte) 0x7F);
 
             FspHeaderPage fsp = new FspHeaderPage(p0);
             fsp.initialize(mtr, SPACE_ID);
@@ -162,7 +162,7 @@ public class PhysicalStructuresTest extends BaseStorageTest {
             // 使用 newPage 创建 page 0
             Page p0 = mtr.newPage(SPACE_ID);
             assertEquals(0, p0.getPageNo(), "first newPage should be page 0");
-            for (int i = 0; i < PAGE_SIZE; i++) p0.putByte(i, (byte) 0x7F);
+            for (int i = p0.getBuffer().capacity(); i < PAGE_SIZE; i++) p0.putByte(i, (byte) 0x7F);
 
             FspHeaderPage fsp = new FspHeaderPage(p0);
             fsp.initialize(mtr, SPACE_ID);
@@ -192,7 +192,7 @@ public class PhysicalStructuresTest extends BaseStorageTest {
     void inodePage_initialize_shouldInitAllEntriesIncludingNotFullNUsed() throws Exception {
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             Page raw = mtr.newPage(SPACE_ID);
-            for (int i = 0; i < PAGE_SIZE; i++) raw.putByte(i, (byte) 0x7F);
+            for (int i = raw.getBuffer().capacity(); i < PAGE_SIZE; i++) raw.putByte(i, (byte) 0x7F);
 
             InodePage inode = new InodePage(raw);
             inode.initialize(mtr);

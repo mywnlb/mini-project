@@ -229,6 +229,7 @@ public class ExtentDescriptor {
      * <ul>
      *   <li>设置 Segment ID 为 0（不属于任何段）</li>
      *   <li>设置状态为 FREE</li>
+     *   <li>初始化链表节点为 isolated 状态</li>
      *   <li>初始化 Bitmap（所有页面标记为空闲）</li>
      * </ul>
      *
@@ -244,7 +245,10 @@ public class ExtentDescriptor {
         // 2. 设置状态为 FREE
         setState(mtr, ExtentState.FREE);
 
-        // 3. 初始化 Bitmap
+        // 3. 初始化链表节点为 isolated 状态（prev=FIL_NULL, next=FIL_NULL）
+        getListNode().initialize(mtr);
+
+        // 4. 初始化 Bitmap（所有页面标记为空闲）
         initBitmap(mtr);
     }
 
@@ -307,6 +311,23 @@ public class ExtentDescriptor {
      */
     public int getFreePageCount() {
         return EXTENT_SIZE - getUsedPageCount();
+    }
+
+    /**
+     * 查找第一个空闲页面
+     *
+     * <p>遍历 Bitmap 查找第一个未分配的页面。
+     * 此方法用于页面分配，优先返回编号较小的页面。</p>
+     *
+     * @return 第一个空闲页面的偏移（0-63），如果无空闲页返回 -1
+     */
+    public int findFreePage() {
+        for (int i = 0; i < EXTENT_SIZE; i++) {
+            if (isPageFree(i)) {
+                return i;
+            }
+        }
+        return -1;  // 无空闲页
     }
 
     // ==================== 私有辅助方法 ====================

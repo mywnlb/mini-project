@@ -80,7 +80,7 @@ public class SpaceLogicTest extends BaseStorageTest {
             assertEquals(before - 1, fsp.getFreeList().getLength());
 
             // 关键不变量：被分配的 extent 节点不应仍在 FSP_FREE 链表中
-            assertFalse(listContainsNode(fsp.getFreeList(),
+            assertFalse(listContainsNode(mtr, fsp.getFreeList(),
                     ext.getListNode().getPage().getPageNo(),
                     ext.getListNode().getOffset()));
         }
@@ -200,13 +200,12 @@ public class SpaceLogicTest extends BaseStorageTest {
         FspHeaderPage fsp = new FspHeaderPage(p0);
         fsp.initialize(mtr, spaceId);
 
-        // 初始化 extent 1..N，并加入 FREE 链表
+        // 将 extent 1..N 加入 FREE 链表
+        // 注意：fsp.initialize() 已经初始化了所有 XDES entries，所以这里只需添加到链表
         FlstBaseNode freeList = fsp.getFreeList();
         for (int extentNo = 1; extentNo <= freeExtentCount; extentNo++) {
             ExtentDescriptor ed = fsp.getXdesEntry(extentNo);
-            ed.initialize(mtr);
-            ed.getListNode().initialize(mtr);
-
+            // 不需要再次初始化，fsp.initialize() 已经做了
             freeList.addLast(mtr, p0, ed.getListNode().getOffset());
         }
 
@@ -254,30 +253,42 @@ public class SpaceLogicTest extends BaseStorageTest {
 
     /**
      * 判断一个 FLST_BASE_NODE 链表里是否包含某个节点地址（pageNo, offset）。
+     *
+     * @param mtr          Mini-Transaction（用于读取页面）
+     * @param base         链表基节点
+     * @param targetPageNo 目标节点所在页号
+     * @param targetOffset 目标节点在页内的偏移
+     * @return true 如果链表包含该节点
      */
-    private boolean listContainsNode(FlstBaseNode base, int targetPageNo, int targetOffset) throws MiniDbException {
+    private boolean listContainsNode(MiniTransaction mtr, FlstBaseNode base, int targetPageNo, int targetOffset)
+            throws MiniDbException {
         if (base.isEmpty()) return false;
 
         int curPageNo = base.getFirstNode().getPageNo();
         int curOffset = base.getFirstNodeOffset();
 
-        // 防环：最多走 length 次
+        // 防环：最多走 length + 2 次
         int max = base.getLength() + 2;
         for (int i = 0; i < max; i++) {
-            if (curPageNo == targetPageNo && curOffset == targetOffset) return true;
+            if (curPageNo == targetPageNo && curOffset == targetOffset) {
+                return true;
+            }
 
-            Page curPage = new Page(PageId.of(SPACE_ID, curPageNo)); // 仅用于拿 spaceId/pageNo
-            // 注意：这里不能 new Page 读 buffer；用 mtr.getPage 更稳，但需要 mtr 传入。
-            // 为保持签名简单，这里用更直接的实现：让调用点用 mtr.getPage 版本。
-            return scanListWithMtr(base, targetPageNo, targetOffset);
+            // 加载当前节点，获取下一个节点地址
+            Page curPage = mtr.getPage(PageId.of(SPACE_ID, curPageNo));
+            FlstNode curNode = new FlstNode(curPage, curOffset);
+
+            // 获取下一个节点
+            int nextPageNo = curNode.getNextPageNo();
+            if (nextPageNo == FIL_NULL) {
+                break; // 到达链表尾
+            }
+
+            curPageNo = nextPageNo;
+            curOffset = curNode.getNextOffset();
         }
-        return false;
-    }
 
-    private boolean scanListWithMtr(FlstBaseNode base, int targetPageNo, int targetOffset) throws MiniDbException {
-        // 这个方法需要在调用处可用 mtr，因此把真正扫描逻辑放到 extent/segment 断言里使用更好。
-        // 为了避免误用，这里直接抛异常提醒你在需要时改成接收 mtr 的版本。
-        throw new MiniDbException("listContainsNode requires a mtr-aware scan; implement listContainsNode(mtr, base, ...) in your test harness.");
+        return false;
     }
 
     /**
