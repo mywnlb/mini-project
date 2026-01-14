@@ -21,7 +21,8 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>统计信息</li>
  * </ul>
  *
- * <p><b>注意</b>：由于 SpaceManager 尚未实现，部分测试（如碎片页分配）暂时跳过。</p>
+ * <p><b>注意</b>：此测试类使用手动初始化表空间的方式，
+ * 完整的集成测试（包含碎片页分配）请参见 {@link SpaceIntegrationTest}。</p>
  *
  * @author MiniDB
  * @version 1.0
@@ -29,12 +30,14 @@ import static org.junit.jupiter.api.Assertions.*;
 public class SegmentManagerTest extends BaseStorageTest {
 
     private ExtentManager extentManager;
+    private SpaceManager spaceManager;
     private SegmentManager segmentManager;
 
     @BeforeEach
     void setUpManagers() {
         extentManager = new ExtentManagerImpl(bufferPool);
-        segmentManager = new SegmentManagerImpl(bufferPool, extentManager);
+        spaceManager = new SpaceManagerImpl(bufferPool, extentManager);
+        segmentManager = new SegmentManagerImpl(bufferPool, extentManager, spaceManager);
     }
 
     // ==================== 辅助方法 ====================

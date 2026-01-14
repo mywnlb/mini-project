@@ -28,22 +28,28 @@ public class SegmentManagerImpl implements SegmentManager {
 
     private final BufferPool bufferPool;
     private final ExtentManager extentManager;
+    private final SpaceManager spaceManager;
 
     /**
      * 构造函数
      *
      * @param bufferPool    Buffer Pool 实例
      * @param extentManager Extent Manager 实例
+     * @param spaceManager  Space Manager 实例
      */
-    public SegmentManagerImpl(BufferPool bufferPool, ExtentManager extentManager) {
+    public SegmentManagerImpl(BufferPool bufferPool, ExtentManager extentManager, SpaceManager spaceManager) {
         if (bufferPool == null) {
             throw new IllegalArgumentException("BufferPool cannot be null");
         }
         if (extentManager == null) {
             throw new IllegalArgumentException("ExtentManager cannot be null");
         }
+        if (spaceManager == null) {
+            throw new IllegalArgumentException("SpaceManager cannot be null");
+        }
         this.bufferPool = bufferPool;
         this.extentManager = extentManager;
+        this.spaceManager = spaceManager;
     }
 
     @Override
@@ -90,8 +96,8 @@ public class SegmentManagerImpl implements SegmentManager {
         for (int i = 0; i < INODE_FRAG_ARRAY_PAGES; i++) {
             int pageNo = segment.getFragPageNo(i);
             if (pageNo != FIL_NULL) {
-                // TODO: 将页面归还到表空间 FREE_FRAG 链表
-                // 需要 SpaceManager.freeFragPage()
+                // 归还到表空间 FREE_FRAG 链表
+                spaceManager.freeFragPage(mtr, PageId.of(spaceId, pageNo));
                 segment.setFragPageNo(mtr, i, FIL_NULL);
             }
         }
@@ -153,8 +159,8 @@ public class SegmentManagerImpl implements SegmentManager {
         long segmentId = extent.getSegmentId();
         if (segmentId == 0) {
             // 页面属于表空间碎片页，直接归还
-            // TODO: 调用 SpaceManager.freeFragPage()
-            throw new MiniDbException("Freeing tablespace fragment pages not yet implemented");
+            spaceManager.freeFragPage(mtr, pageId);
+            return;
         }
 
         // Step 3: 加载 Segment 描述符
@@ -176,7 +182,8 @@ public class SegmentManagerImpl implements SegmentManager {
         }
 
         if (isFragPage) {
-            // TODO: 归还到表空间 FREE_FRAG
+            // 归还到表空间 FREE_FRAG
+            spaceManager.freeFragPage(mtr, pageId);
             return;
         }
 
@@ -200,9 +207,13 @@ public class SegmentManagerImpl implements SegmentManager {
 
         // Step 2: 检查表空间 FREE 链表是否为空
         if (fspHdr.getFreeList().isEmpty()) {
-            // 需要扩展表空间
-            // TODO: 调用 SpaceManager.extendTablespace()
-            return null;
+            // 自动扩展表空间（扩展1个 Extent）
+            spaceManager.extendTablespace(mtr, spaceId, 1);
+
+            // 扩展后重新检查
+            if (fspHdr.getFreeList().isEmpty()) {
+                throw new MiniDbException("Failed to extend tablespace, FREE list still empty");
+            }
         }
 
         // Step 3: 从 FREE 链表移除第一个 Extent
@@ -379,10 +390,28 @@ public class SegmentManagerImpl implements SegmentManager {
      */
     private PageId allocateFragmentPageForSegment(MiniTransaction mtr, int spaceId,
                                                    SegmentDescriptor segment) throws MiniDbException {
-        // TODO: 从表空间 FREE_FRAG 链表分配页面
-        // 需要 SpaceManager.allocateFragPage()
-        // 暂时返回 null 表示无法分配碎片页
-        return null;
+        // 从表空间 FREE_FRAG 链表分配页面
+        PageId fragPage = spaceManager.allocateFragPage(mtr, spaceId);
+        if (fragPage == null) {
+            return null;  // 表空间 FREE_FRAG 为空，无法分配碎片页
+        }
+
+        // 将页面记录到 Segment 的碎片页数组
+        boolean added = false;
+        for (int i = 0; i < INODE_FRAG_ARRAY_PAGES; i++) {
+            if (segment.getFragPageNo(i) == FIL_NULL) {
+                segment.setFragPageNo(mtr, i, fragPage.getPageNo());
+                added = true;
+                break;
+            }
+        }
+
+        if (!added) {
+            // 碎片页数组已满（理论上不应该发生，因为调用者会检查 fragUsed < 32）
+            throw new MiniDbException("Fragment array is full but allocateFragmentPageForSegment was called");
+        }
+
+        return fragPage;
     }
 
     /**
@@ -512,7 +541,7 @@ public class SegmentManagerImpl implements SegmentManager {
 
     @Override
     public String toString() {
-        return String.format("SegmentManagerImpl{bufferPool=%s, extentManager=%s}",
-                bufferPool, extentManager);
+        return String.format("SegmentManagerImpl{bufferPool=%s, extentManager=%s, spaceManager=%s}",
+                bufferPool, extentManager, spaceManager);
     }
 }

@@ -4,6 +4,7 @@ import cn.zhangyis.minidb.storage.BaseStorageTest;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.page.PageType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -72,21 +73,36 @@ public class ExtentManagerTest extends BaseStorageTest {
 
     @Test
     void getExtentDescriptor_shouldReturnDescriptorFromPage16384_forExtent256() throws Exception {
+        // 初始化 page 0
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-            // 初始化 page 0
             Page p0 = mtr.newPage(SPACE_ID);
             FspHeaderPage fsp = new FspHeaderPage(p0);
             fsp.initialize(mtr, SPACE_ID);
+            mtr.commit();
+        }
 
-            // 扩展表空间到 page 16384（第二个 XDES Page）
-            // 需要分配页面 1-16383，然后分配 page 16384
-            for (int i = 1; i < 16384; i++) {
-                mtr.newPage(SPACE_ID);
+        // 扩展表空间到 page 16384（第二个 XDES Page）
+        // 分批创建页面以避免 Buffer Pool 耗尽（每批50页，远小于64页的限制）
+        final int BATCH_SIZE = 50;
+        for (int batchStart = 1; batchStart < 16384; batchStart += BATCH_SIZE) {
+            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+                int batchEnd = Math.min(batchStart + BATCH_SIZE, 16384);
+                for (int i = batchStart; i < batchEnd; i++) {
+                    mtr.newPage(SPACE_ID);
+                }
+                mtr.commit();
             }
+        }
 
-            // 初始化 page 16384 为 XDES Page
+        // 初始化 page 16384 为 XDES Page 并测试 Extent 256
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             Page p16384 = mtr.newPage(SPACE_ID);
             assertEquals(16384, p16384.getPageNo());
+
+            // 设置页面类型为 ALLOCATED，以便 XdesPage 构造函数接受
+            p16384.setPageType(PageType.FIL_PAGE_TYPE_ALLOCATED);
+            mtr.markDirty(p16384);
+
             XdesPage xdesPage = new XdesPage(p16384);
             xdesPage.initialize(mtr);
 

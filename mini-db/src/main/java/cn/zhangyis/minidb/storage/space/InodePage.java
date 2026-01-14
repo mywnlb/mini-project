@@ -316,10 +316,19 @@ public class InodePage extends Page {
     }
 
     /**
+     * 查找空闲的 INODE Entry
      *
-     * @return
+     * <p>遍历所有 Entry，返回第一个未分配（segmentId == 0）的索引。</p>
+     *
+     * @return 空闲 Entry 的索引（0-84），如果全满返回 -1
      */
     public int findFreeEntry() {
-        return 0;
+        for (int i = 0; i < INODES_PER_PAGE; i++) {
+            SegmentDescriptor entry = getInodeEntry(i);
+            if (entry.getSegmentId() == 0) {
+                return i;
+            }
+        }
+        return -1;  // No free entry found
     }
 }
