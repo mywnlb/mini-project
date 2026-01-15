@@ -363,9 +363,157 @@ public class Segment {
         return descriptor.getEstimatedPageCount();
     }
 
+    /**
+     * 删除 Segment 并释放所有资源
+     *
+     * <p>释放 Segment 拥有的所有资源：</p>
+     * <ol>
+     *   <li>释放碎片页数组中的所有页面</li>
+     *   <li>释放 FREE 链表中的所有 Extent</li>
+     *   <li>释放 NOT_FULL 链表中的所有 Extent</li>
+     *   <li>释放 FULL 链表中的所有 Extent</li>
+     *   <li>清空 INODE Entry（Segment ID = 0）</li>
+     * </ol>
+     *
+     * @param mtr Mini-Transaction
+     * @throws MiniDbException 如果操作失败
+     */
+    public void drop(MiniTransaction mtr) throws MiniDbException {
+        // 1. 释放碎片页数组中的所有页面
+        for (int i = 0; i < FRAG_ARRAY_SIZE; i++) {
+            int pageNo = descriptor.getFragPageNo(i);
+            if (pageNo != FIL_NULL) {
+                tableSpace.freeFragmentPage(mtr, pageNo);
+                descriptor.setFragPageNo(mtr, i, FIL_NULL);
+            }
+        }
+
+        // 2. 释放 FREE 链表中的所有 Extent
+        releaseExtentList(mtr, descriptor.getFreeList());
+
+        // 3. 释放 NOT_FULL 链表中的所有 Extent
+        releaseExtentList(mtr, descriptor.getNotFullList());
+
+        // 4. 释放 FULL 链表中的所有 Extent
+        releaseExtentList(mtr, descriptor.getFullList());
+
+        // 5. 清空 INODE Entry
+        descriptor.clear(mtr);
+    }
+
+    /**
+     * 释放 Extent 链表中的所有 Extent（归还到表空间 FREE 链表）
+     *
+     * @param mtr        Mini-Transaction
+     * @param extentList Extent 链表
+     * @throws MiniDbException 如果操作失败
+     */
+    private void releaseExtentList(MiniTransaction mtr, FlstBaseNode extentList) throws MiniDbException {
+        while (!extentList.isEmpty()) {
+            // 获取并移除第一个节点
+            FilAddr removedNodeAddr = extentList.removeFirstAndGetAddr(mtr);
+            if (removedNodeAddr.isNull()) {
+                break;
+            }
+
+            // 使用 XdesLocator 定位 Extent
+            XdesLocator locator = XdesLocator.fromNodeAddr(removedNodeAddr);
+            Extent extent = locator.getExtent(mtr, spaceId);
+
+            // 重新初始化为 FREE 状态并归还给表空间
+            extent.initialize(mtr);
+            tableSpace.returnExtentToFree(mtr, extent);
+        }
+    }
+
+    /**
+     * 获取 Segment 统计信息
+     *
+     * @return 统计信息对象
+     */
+    public SegmentStatistics getStatistics() {
+        return new SegmentStatistics(
+                segmentId,
+                descriptor.getFragUsedCount(),
+                descriptor.getFreeList().getLength(),
+                descriptor.getNotFullList().getLength(),
+                descriptor.getFullList().getLength()
+        );
+    }
+
     @Override
     public String toString() {
         return String.format("Segment{spaceId=%d, segmentId=%d, frags=%d, extents=%d, estimatedPages=%d}",
                 spaceId, segmentId, getFragmentPageCount(), getTotalExtentCount(), getEstimatedPageCount());
+    }
+
+    // ==================== 内部类 ====================
+
+    /**
+     * Segment 统计信息
+     *
+     * <p>包含 Segment 的详细使用统计：</p>
+     * <ul>
+     *   <li>碎片页使用数（0-32）</li>
+     *   <li>FREE/NOT_FULL/FULL 链表长度</li>
+     *   <li>总 Extent 数</li>
+     *   <li>估算总页数</li>
+     * </ul>
+     */
+    public static class SegmentStatistics {
+        private final long segmentId;
+        private final int fragPagesUsed;
+        private final int freeExtentCount;
+        private final int notFullExtentCount;
+        private final int fullExtentCount;
+        private final int totalExtentCount;
+        private final int estimatedPageCount;
+
+        public SegmentStatistics(long segmentId, int fragPagesUsed,
+                                 int freeExtentCount, int notFullExtentCount, int fullExtentCount) {
+            this.segmentId = segmentId;
+            this.fragPagesUsed = fragPagesUsed;
+            this.freeExtentCount = freeExtentCount;
+            this.notFullExtentCount = notFullExtentCount;
+            this.fullExtentCount = fullExtentCount;
+            this.totalExtentCount = freeExtentCount + notFullExtentCount + fullExtentCount;
+            this.estimatedPageCount = fragPagesUsed + totalExtentCount * 64;
+        }
+
+        public long getSegmentId() {
+            return segmentId;
+        }
+
+        public int getFragPagesUsed() {
+            return fragPagesUsed;
+        }
+
+        public int getFreeExtentCount() {
+            return freeExtentCount;
+        }
+
+        public int getNotFullExtentCount() {
+            return notFullExtentCount;
+        }
+
+        public int getFullExtentCount() {
+            return fullExtentCount;
+        }
+
+        public int getTotalExtentCount() {
+            return totalExtentCount;
+        }
+
+        public int getEstimatedPageCount() {
+            return estimatedPageCount;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("SegmentStatistics{segmentId=%d, fragPages=%d, " +
+                            "extents=(free=%d, notFull=%d, full=%d), totalPages~=%d}",
+                    segmentId, fragPagesUsed, freeExtentCount, notFullExtentCount,
+                    fullExtentCount, estimatedPageCount);
+        }
     }
 }

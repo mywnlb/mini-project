@@ -156,6 +156,26 @@ public class LsnMapper {
     }
 
     /**
+     * SN → Block-aligned LSN 转换
+     *
+     * <p>将 SN 转换为对应 block 的起始 LSN (block 对齐)。
+     * 这用于写入 log blocks 到文件时定位起始位置。</p>
+     *
+     * <h3>算法</h3>
+     * <pre>
+     * blockNo = sn / 496
+     * blockLsn = blockNo * 512
+     * </pre>
+     *
+     * @param sn Sequence Number
+     * @return Block 对齐的 LSN (总是 512 的倍数)
+     */
+    public static long snToBlockLsn(long sn) {
+        long blockNo = sn / LOG_BLOCK_DATA_SIZE;
+        return blockNo * OS_FILE_LOG_BLOCK_SIZE;
+    }
+
+    /**
      * 将 LSN 向上取整到下一个 block 边界
      *
      * @param lsn Log Sequence Number

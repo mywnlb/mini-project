@@ -114,6 +114,23 @@ public class TableSpace {
     }
 
     /**
+     * 删除 Segment
+     *
+     * <p>释放 Segment 拥有的所有资源并清空 INODE Entry。</p>
+     *
+     * @param mtr       Mini-Transaction
+     * @param segmentId Segment ID
+     * @throws MiniDbException 如果 Segment 不存在或操作失败
+     */
+    public void dropSegment(MiniTransaction mtr, long segmentId) throws MiniDbException {
+        Segment segment = getSegment(mtr, segmentId);
+        if (segment == null) {
+            throw new MiniDbException("Segment not found: " + segmentId);
+        }
+        segment.drop(mtr);
+    }
+
+    /**
      * 获取已存在的Segment
      *
      * @param mtr       Mini-Transaction
@@ -647,8 +664,147 @@ public class TableSpace {
         return -1;
     }
 
+    /**
+     * 初始化新表空间
+     *
+     * <p>创建并初始化一个新的表空间，包括：</p>
+     * <ol>
+     *   <li>初始化 Page 0 (FSP_HDR)，设置表空间元数据</li>
+     *   <li>初始化 XDES Array（Extent 0）</li>
+     *   <li>扩展到第一个 Extent（64页）</li>
+     *   <li>创建第一个 INODE Page（Page 2）</li>
+     *   <li>将 INODE Page 加入 INODES_FREE 链表</li>
+     * </ol>
+     *
+     * @param mtr Mini-Transaction
+     * @throws MiniDbException 如果初始化失败
+     */
+    public void initializeTablespace(MiniTransaction mtr) throws MiniDbException {
+        // Step 1: 初始化 Page 0 (FSP_HDR)
+        Page p0 = mtr.newPage(spaceId);
+        if (p0.getPageNo() != 0) {
+            throw new MiniDbException("First page must be page 0, got: " + p0.getPageNo());
+        }
+
+        FspHeaderPage fsp = new FspHeaderPage(p0);
+        fsp.initialize(mtr, spaceId);
+
+        // Step 2: 初始化 Extent 0 的 XDES Entry
+        ExtentDescriptor ext0 = fsp.getXdesEntry(0);
+        ext0.initialize(mtr);
+        ext0.setState(mtr, ExtentState.FSEG);  // Extent 0 用于系统页，不加入 FREE 链表
+
+        // Step 3: 扩展表空间到第一个完整 Extent（64页）
+        expandTablespace(mtr);
+
+        // Step 4: 创建第一个 INODE Page（Page 2）
+        // Page 0 是 FSP_HDR，Page 1 是 IBUF_BITMAP（占位），Page 2 是第一个 INODE Page
+        Page p1 = mtr.newPage(spaceId);  // Page 1 (占位，暂时未使用)
+        p1.setPageType(cn.zhangyis.minidb.storage.page.PageType.FIL_PAGE_TYPE_ALLOCATED);
+        mtr.markDirty(p1);
+
+        Page p2 = mtr.newPage(spaceId);  // Page 2 (INODE Page)
+        InodePage inodePage = new InodePage(p2);
+        inodePage.initialize(mtr);
+
+        // Step 5: 将 INODE Page 加入 INODES_FREE 链表
+        fsp.getInodesFreeList().addLast(mtr, inodePage, inodePage.getListNode().getOffset());
+
+        mtr.markDirty(fsp);
+    }
+
+    /**
+     * 获取表空间统计信息
+     *
+     * @param mtr Mini-Transaction
+     * @return SpaceStatistics 对象
+     * @throws MiniDbException 如果操作失败
+     */
+    public SpaceStatistics getSpaceStatistics(MiniTransaction mtr) throws MiniDbException {
+        FspHeaderPage fsp = getFspHeaderPage(mtr);
+
+        int totalPages = fsp.getSize();
+        int freeExtents = fsp.getFreeList().getLength();
+        int freeFragExtents = fsp.getFreeFragList().getLength();
+        int fullFragExtents = fsp.getFullFragList().getLength();
+        long nextSegmentId = fsp.getNextSegmentId();
+
+        // 估算已使用页数
+        int usedPages = totalPages - (freeExtents * EXTENT_SIZE);
+
+        return new SpaceStatistics(spaceId, totalPages, freeExtents,
+                freeFragExtents, fullFragExtents, usedPages, nextSegmentId);
+    }
+
     @Override
     public String toString() {
         return String.format("TableSpace{spaceId=%d}", spaceId);
+    }
+
+    // ==================== 内部类 ====================
+
+    /**
+     * 表空间统计信息
+     */
+    public static class SpaceStatistics {
+        private final int spaceId;
+        private final int totalPages;          // 总页数
+        private final int freeExtents;         // FREE 链表中的 Extent 数
+        private final int freeFragExtents;     // FREE_FRAG 链表中的 Extent 数
+        private final int fullFragExtents;     // FULL_FRAG 链表中的 Extent 数
+        private final int usedPages;           // 已使用的页数（估算）
+        private final long nextSegmentId;      // 下一个 Segment ID
+
+        public SpaceStatistics(int spaceId, int totalPages, int freeExtents,
+                               int freeFragExtents, int fullFragExtents,
+                               int usedPages, long nextSegmentId) {
+            this.spaceId = spaceId;
+            this.totalPages = totalPages;
+            this.freeExtents = freeExtents;
+            this.freeFragExtents = freeFragExtents;
+            this.fullFragExtents = fullFragExtents;
+            this.usedPages = usedPages;
+            this.nextSegmentId = nextSegmentId;
+        }
+
+        public int getSpaceId() {
+            return spaceId;
+        }
+
+        public int getTotalPages() {
+            return totalPages;
+        }
+
+        public int getFreeExtents() {
+            return freeExtents;
+        }
+
+        public int getFreeFragExtents() {
+            return freeFragExtents;
+        }
+
+        public int getFullFragExtents() {
+            return fullFragExtents;
+        }
+
+        public int getUsedPages() {
+            return usedPages;
+        }
+
+        public long getNextSegmentId() {
+            return nextSegmentId;
+        }
+
+        public double getUsageRate() {
+            return totalPages > 0 ? (double) usedPages / totalPages : 0.0;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("SpaceStatistics{spaceId=%d, totalPages=%d, usedPages=%d, " +
+                            "usage=%.2f%%, freeExtents=%d, freeFragExtents=%d, fullFragExtents=%d, nextSegId=%d}",
+                    spaceId, totalPages, usedPages, getUsageRate() * 100,
+                    freeExtents, freeFragExtents, fullFragExtents, nextSegmentId);
+        }
     }
 }

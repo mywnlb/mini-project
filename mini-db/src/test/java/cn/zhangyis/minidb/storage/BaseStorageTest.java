@@ -54,9 +54,12 @@ public abstract class BaseStorageTest {
     protected static final String SPACE_NAME = "test_space";
 
     /**
-     * 默认BufferPool大小（64页 = 1MB）
+     * 默认BufferPool大小（1024页 = 16MB）
+     *
+     * <p>MySQL InnoDB 默认 128MB，生产环境通常是系统内存的 70-80%。
+     * 测试环境 16MB 足够大多数集成测试使用。</p>
      */
-    protected static final int BUFFER_POOL_SIZE = 64;
+    protected static final int BUFFER_POOL_SIZE = 4096;
 
     /**
      * 临时测试目录

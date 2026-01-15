@@ -7,9 +7,13 @@ import cn.zhangyis.minidb.storage.buffer.BufferFrame;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.redo.RedoLogManager;
+import cn.zhangyis.minidb.storage.redo.record.RedoRecord;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.Lock;
 
 /**
  * Mini-Transaction (MTR) - 页面操作的原子单元
