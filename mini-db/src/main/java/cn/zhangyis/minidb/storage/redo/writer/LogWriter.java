@@ -219,6 +219,21 @@ public class LogWriter implements Runnable {
     /**
      * 写入一批数据
      *
+     * <p><b>关键修复</b>: 正确处理 partial block 场景。
+     * 当 startSn 不在 block 边界时，从内存 buffer 中读取前缀数据进行合并，
+     * 避免从磁盘读取（性能）和数据丢失（正确性）。</p>
+     *
+     * <h3>Partial Block 处理流程</h3>
+     * <pre>
+     * 场景: startSn=100, Block 边界在 0, 496, 992...
+     *       startSn=100 属于 Block 0，offsetInBlock=100
+     *
+     * 步骤:
+     * 1. 计算 block 起始 SN: blockStartSn = (100 / 496) * 496 = 0
+     * 2. 从 buffer 读取前缀: buffer.getData(0, 100) → 返回 [0, 100) 的数据
+     * 3. 合并前缀 + 新 payload 生成完整 block
+     * </pre>
+     *
      * @param startSn 起始 SN
      * @param endSn 结束 SN
      */
@@ -233,30 +248,62 @@ public class LogWriter implements Runnable {
 
         int payloadSize = payload.remaining();
 
-        // 2. 格式化为 log blocks
-        ByteBuffer blocks = LogBlockFormatter.format(startSn, payload);
+        // 2. 检查是否需要处理 partial block (startSn 不在 block 边界)
+        int offsetInFirstBlock = (int) (startSn % LsnMapper.LOG_BLOCK_DATA_SIZE);
+        byte[] existingBlockData = null;
 
-        // 3. 计算起始 block 的 LSN (SN → block-aligned LSN)
+        if (offsetInFirstBlock > 0) {
+            // startSn 在 block 中间，需要从 buffer 中读取前缀数据
+            // 计算当前 block 的起始 SN
+            long blockStartSn = (startSn / LsnMapper.LOG_BLOCK_DATA_SIZE) * LsnMapper.LOG_BLOCK_DATA_SIZE;
+
+            // 从内存 buffer 读取前缀数据 [blockStartSn, startSn)
+            byte[] prefixData = buffer.getData(blockStartSn, offsetInFirstBlock);
+
+            if (prefixData == null) {
+                // 严重错误: 由于 reserveSpace 的约束，这部分数据必须在 buffer 中
+                // 如果读不到，说明 buffer 或 LSN 逻辑有 bug
+                throw new IOException(String.format(
+                        "FATAL: Cannot read prefix data from buffer. " +
+                        "blockStartSn=%d, offsetInFirstBlock=%d, startSn=%d. " +
+                        "This indicates a bug in buffer management or LSN calculation.",
+                        blockStartSn, offsetInFirstBlock, startSn));
+            }
+
+            // 构建 existingBlockData: 创建一个包含前缀数据的临时 block
+            // LogBlockFormatter 会使用这个 block 作为基础进行合并
+            existingBlockData = new byte[LsnMapper.OS_FILE_LOG_BLOCK_SIZE];
+            // 将前缀数据写入 data 区域 (从 HEADER_SIZE 开始)
+            System.arraycopy(prefixData, 0, existingBlockData, LsnMapper.LOG_BLOCK_HDR_SIZE, prefixData.length);
+
+            logger.trace("Partial block merge: blockStartSn={}, prefixLen={}, startSn={}",
+                    blockStartSn, prefixData.length, startSn);
+        }
+
+        // 3. 格式化为 log blocks (传入已存在的 block 数据用于合并)
+        ByteBuffer blocks = LogBlockFormatter.format(startSn, payload, existingBlockData);
+
+        // 4. 计算起始 block 的 LSN (SN → block-aligned LSN)
         long startLsn = LsnMapper.snToBlockLsn(startSn);
 
-        // 4. 写入文件
+        // 5. 写入文件
         fileSet.writeBlocks(startLsn, blocks);
 
-        // 5. 推进 writeSn
+        // 6. 推进 writeSn
         buffer.advanceWriteSn(endSn);
 
-        // 6. 通知 flusher
+        // 7. 通知 flusher
         if (flusher != null) {
             flusher.notifyNewWrite();
         }
 
-        // 7. 更新统计
+        // 8. 更新统计
         totalBytesWritten += payloadSize;
         totalWriteCount++;
 
         long elapsed = (System.nanoTime() - writeStart) / 1000;
-        logger.debug("LogWriter: wrote {} bytes ({} blocks) in {}μs, sn: {} -> {}, lsn: {}",
-                payloadSize, blocks.limit() / 512, elapsed, startSn, endSn, startLsn);
+        logger.debug("LogWriter: wrote {} bytes ({} blocks) in {}μs, sn: {} -> {}, lsn: {}, partialBlock={}",
+                payloadSize, blocks.limit() / 512, elapsed, startSn, endSn, startLsn, offsetInFirstBlock > 0);
     }
 
     /**

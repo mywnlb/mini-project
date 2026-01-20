@@ -460,6 +460,34 @@ public class RedoLogBuffer {
     }
 
     /**
+     * 获取 writeSn (已写入文件但未 fsync 的位置)
+     *
+     * @return writeSn
+     */
+    public long getWriteSn() {
+        lock.lock();
+        try {
+            return writeSn;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 获取 writeReadySn (数据已 ready 可被 LogWriter 读取的位置)
+     *
+     * @return writeReadySn
+     */
+    public long getWriteReadySn() {
+        lock.lock();
+        try {
+            return writeReadySn;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * 获取待 flush 的数据量 (bytes)
      *
      * @return writeReadySn - flushedSn
@@ -468,6 +496,93 @@ public class RedoLogBuffer {
         lock.lock();
         try {
             return writeReadySn - flushedSn;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    // ==================== 随机读取方法 (用于 Partial Block 处理) ====================
+
+    /**
+     * 从 buffer 中读取指定位置的数据 (用于 Partial Block 合并)
+     *
+     * <p>当 LogWriter 处理非对齐写入时，需要读取已写入的数据以进行合并。
+     * 这个方法从内存 buffer 中读取，避免了从磁盘读取的性能开销。</p>
+     *
+     * <h3>使用场景</h3>
+     * <pre>
+     * 假设:
+     *   - 当前 writeSn = 100 (已写入)
+     *   - 新写入 startSn = 100, length = 50
+     *   - Block 边界: 0, 496, 992, ...
+     *   - startSn=100 在 block 0 (0-495) 内，offsetInBlock = 100
+     *   - 需要获取 [0, 100) 的数据来合并
+     *
+     * 调用: getData(0, 100) 获取前缀数据
+     * </pre>
+     *
+     * <h3>约束</h3>
+     * <p>只能读取 [flushedSn, currentSn) 范围内的数据，因为：
+     * <ul>
+     *   <li>flushedSn 之前的数据可能已被覆盖（环形 buffer）</li>
+     *   <li>currentSn 之后的数据尚未写入</li>
+     * </ul>
+     * </p>
+     *
+     * @param sn     要读取的起始 SN
+     * @param length 要读取的长度
+     * @return 数据副本，如果超出范围则返回 null
+     */
+    public byte[] getData(long sn, int length) {
+        if (length <= 0) {
+            return new byte[0];
+        }
+
+        lock.lock();
+        try {
+            // 检查范围: 必须在 [flushedSn, currentSn) 内
+            // 实际上由于 reserveSpace 的约束，writeReadySn 之前的数据必然还在 buffer 中
+            if (sn < flushedSn || sn + length > currentSn) {
+                logger.warn("getData out of range: sn={}, length={}, flushedSn={}, currentSn={}",
+                        sn, length, flushedSn, currentSn);
+                return null;
+            }
+
+            byte[] data = new byte[length];
+
+            // 复制数据 (支持环形回绕)
+            int offset = (int) (sn % capacity);
+            int remaining = length;
+            int destPos = 0;
+
+            while (remaining > 0) {
+                int chunkSize = Math.min(remaining, capacity - offset);
+                System.arraycopy(buffer, offset, data, destPos, chunkSize);
+
+                destPos += chunkSize;
+                remaining -= chunkSize;
+                offset = (offset + chunkSize) % capacity;
+            }
+
+            logger.trace("getData: sn={}, length={}", sn, length);
+            return data;
+
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 检查指定 SN 范围的数据是否在 buffer 中可用
+     *
+     * @param sn     起始 SN
+     * @param length 长度
+     * @return true 如果数据可用
+     */
+    public boolean isDataAvailable(long sn, int length) {
+        lock.lock();
+        try {
+            return sn >= flushedSn && sn + length <= currentSn;
         } finally {
             lock.unlock();
         }

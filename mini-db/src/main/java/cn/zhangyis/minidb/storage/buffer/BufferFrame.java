@@ -3,6 +3,7 @@ package cn.zhangyis.minidb.storage.buffer;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -72,6 +73,8 @@ public class BufferFrame {
      * <p>使用 AtomicInteger 保证并发安全。</p>
      */
     private final AtomicInteger pinCount;
+
+    private final AtomicBoolean evicting;
     
     /**
      * 脏页标记
@@ -90,6 +93,8 @@ public class BufferFrame {
      * @see LRUList
      */
     private volatile boolean oldBlock;
+
+    private volatile boolean promotionToYoungRequested;
     
     /**
      * 上次访问时间 (毫秒)
@@ -163,6 +168,7 @@ public class BufferFrame {
     public BufferFrame(int frameId) {
         this.frameId = frameId;
         this.pinCount = new AtomicInteger(0);
+        this.evicting = new AtomicBoolean(false);
         this.pageLock = new ReentrantReadWriteLock();
         reset();
     }
@@ -177,8 +183,10 @@ public class BufferFrame {
         this.pageId = null;
         this.page = null;
         this.pinCount.set(0);
+        this.evicting.set(false);
         this.dirty = false;
         this.oldBlock = false;
+        this.promotionToYoungRequested = false;
         this.accessTime = 0;
         this.oldBlockTime = 0;
         this.oldestModification = 0;
@@ -276,6 +284,41 @@ public class BufferFrame {
         pinCount.incrementAndGet();
     }
     
+    public boolean tryPin() {
+        while (true) {
+            if (evicting.get()) {
+                return false;
+            }
+            int cur = pinCount.get();
+            if (pinCount.compareAndSet(cur, cur + 1)) {
+                if (!evicting.get()) {
+                    return true;
+                }
+                unpin();
+                return false;
+            }
+        }
+    }
+
+    public boolean tryAcquireForEviction() {
+        if (!evicting.compareAndSet(false, true)) {
+            return false;
+        }
+        if (!pinCount.compareAndSet(0, 1)) {
+            evicting.set(false);
+            return false;
+        }
+        return true;
+    }
+
+    public void releaseEviction() {
+        evicting.set(false);
+    }
+
+    public boolean isEvicting() {
+        return evicting.get();
+    }
+
     /**
      * 减少 pin count (释放页面)
      * 
@@ -376,6 +419,18 @@ public class BufferFrame {
         return oldBlockTime;
     }
     
+    public void requestPromotionToYoung() {
+        this.promotionToYoungRequested = true;
+    }
+
+    public boolean consumePromotionToYoungRequested() {
+        if (!promotionToYoungRequested) {
+            return false;
+        }
+        promotionToYoungRequested = false;
+        return true;
+    }
+
     // ==================== 锁操作 ====================
     
     /**

@@ -7,8 +7,13 @@ import cn.zhangyis.minidb.storage.buffer.BufferFrame;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.redo.RedoLogConfig;
 import cn.zhangyis.minidb.storage.redo.RedoLogManager;
+import cn.zhangyis.minidb.storage.redo.record.MultiRecEndRecord;
 import cn.zhangyis.minidb.storage.redo.record.RedoRecord;
+import cn.zhangyis.minidb.storage.redo.record.WriteBytesRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -101,6 +106,8 @@ import java.util.concurrent.locks.Lock;
  */
 public class MiniTransaction implements AutoCloseable {
 
+    private static final Logger logger = LoggerFactory.getLogger(MiniTransaction.class);
+
     /**
      * MTR 状态枚举
      */
@@ -124,6 +131,12 @@ public class MiniTransaction implements AutoCloseable {
     private final BufferPool bufferPool;
 
     /**
+     * Redo Log Manager 引用 (可选)
+     * <p>用于写入 redo log。如果为 null，则不生成 redo log (向后兼容)。</p>
+     */
+    private final RedoLogManager redoLogManager;
+
+    /**
      * MTR 当前状态
      */
     private State state;
@@ -136,6 +149,7 @@ public class MiniTransaction implements AutoCloseable {
      *   <li>PageId: 页面标识</li>
      *   <li>isDirty: 是否被修改</li>
      *   <li>page: Page 对象引用（用于快速访问）</li>
+     *   <li>modifications: 页面修改记录列表</li>
      * </ul>
      * </p>
      *
@@ -144,12 +158,10 @@ public class MiniTransaction implements AutoCloseable {
     private final List<MemoSlot> memo;
 
     /**
-     * Redo Log 缓冲区
+     * Redo Log 缓冲区 (旧版接口，保留向后兼容)
      *
-     * <p>存储本 MTR 生成的 redo log 记录。
-     * 在 commit() 时写入全局 redo log。</p>
-     *
-     * <p>TODO: 当前为简化实现，后续需要实现完整的 redo log 系统。</p>
+     * <p>存储本 MTR 生成的 redo log 记录 (byte[] 格式)。
+     * 新代码应使用 logModification() 方法，该字段仅保留兼容性。</p>
      */
     private final List<byte[]> redoLogBuffer;
 
@@ -162,12 +174,25 @@ public class MiniTransaction implements AutoCloseable {
     // ==================== 构造函数 ====================
 
     /**
-     * 创建一个新的 Mini-Transaction
+     * 创建一个新的 Mini-Transaction (无 redo log 支持)
+     *
+     * <p>向后兼容的构造函数，不生成 redo log。</p>
      *
      * @param bufferPool Buffer Pool 实例
      */
     public MiniTransaction(BufferPool bufferPool) {
+        this(bufferPool, null);
+    }
+
+    /**
+     * 创建一个新的 Mini-Transaction (带 redo log 支持)
+     *
+     * @param bufferPool     Buffer Pool 实例
+     * @param redoLogManager Redo Log Manager 实例 (可为 null)
+     */
+    public MiniTransaction(BufferPool bufferPool, RedoLogManager redoLogManager) {
         this.bufferPool = bufferPool;
+        this.redoLogManager = redoLogManager;
         this.state = State.ACTIVE;
         this.memo = new ArrayList<>();
         this.redoLogBuffer = new ArrayList<>();
@@ -290,20 +315,121 @@ public class MiniTransaction implements AutoCloseable {
         redoLogBuffer.add(logRecord);
     }
 
+    /**
+     * 记录页面修改 (用于生成 redo log)
+     *
+     * <p>在修改页面内容时调用此方法，记录修改的偏移和数据。
+     * 这些修改记录会在 commit() 时生成 WriteBytesRecord 并写入 redo log。</p>
+     *
+     * <h3>使用示例</h3>
+     * <pre>
+     * Page page = mtr.getPage(pageId);
+     * int newValue = 100;
+     * page.putInt(offset, newValue);         // 修改页面
+     * mtr.logModification(page, offset, 4);  // 记录修改 (4 bytes for int)
+     * mtr.markDirty(page);                   // 标记为脏页
+     * </pre>
+     *
+     * @param page   被修改的页面
+     * @param offset 页内偏移 (0-16383)
+     * @param length 修改的长度
+     * @throws PageNotManagedByMtrException 如果页面不在 MTR 的 memo 中
+     * @throws MtrStateException 如果 MTR 不在 ACTIVE 状态
+     */
+    public void logModification(Page page, int offset, int length)
+            throws PageNotManagedByMtrException, MtrStateException {
+        checkActive();
+
+        if (redoLogManager == null) {
+            // 无 redo log 支持，跳过记录
+            return;
+        }
+
+        if (length <= 0 || offset < 0 || offset + length > 16384) {
+            throw new IllegalArgumentException(
+                    String.format("Invalid modification: offset=%d, length=%d", offset, length));
+        }
+
+        PageId pageId = page.getPageId();
+
+        // 在 memo 中查找并添加修改记录
+        for (MemoSlot slot : memo) {
+            if (slot.pageId.equals(pageId)) {
+                // 从页面读取修改后的数据
+                byte[] data = new byte[length];
+                page.getBytes(offset, data);
+                slot.addModification(offset, data);
+                logger.trace("Logged modification: page={}, offset={}, length={}", pageId, offset, length);
+                return;
+            }
+        }
+
+        throw PageNotManagedByMtrException.notInMemo(pageId);
+    }
+
+    /**
+     * 记录页面修改 (使用字节数组，用于生成 redo log)
+     *
+     * <p>与 {@link #logModification(Page, int, int)} 类似，但直接接受修改后的数据。
+     * 当数据已经在手边时使用此方法可以避免再次从页面读取。</p>
+     *
+     * @param page   被修改的页面
+     * @param offset 页内偏移 (0-16383)
+     * @param data   修改后的数据
+     * @throws PageNotManagedByMtrException 如果页面不在 MTR 的 memo 中
+     * @throws MtrStateException 如果 MTR 不在 ACTIVE 状态
+     */
+    public void logModification(Page page, int offset, byte[] data)
+            throws PageNotManagedByMtrException, MtrStateException {
+        checkActive();
+
+        if (redoLogManager == null) {
+            // 无 redo log 支持，跳过记录
+            return;
+        }
+
+        if (data == null || data.length == 0) {
+            throw new IllegalArgumentException("Data cannot be null or empty");
+        }
+
+        if (offset < 0 || offset + data.length > 16384) {
+            throw new IllegalArgumentException(
+                    String.format("Invalid modification: offset=%d, length=%d", offset, data.length));
+        }
+
+        PageId pageId = page.getPageId();
+
+        // 在 memo 中查找并添加修改记录
+        for (MemoSlot slot : memo) {
+            if (slot.pageId.equals(pageId)) {
+                slot.addModification(offset, data.clone());
+                logger.trace("Logged modification: page={}, offset={}, length={}", pageId, offset, data.length);
+                return;
+            }
+        }
+
+        throw PageNotManagedByMtrException.notInMemo(pageId);
+    }
+
     // ==================== 提交和回滚 ====================
 
     /**
      * 提交 Mini-Transaction
      *
-     * <h3>执行步骤</h3>
+     * <h3>执行步骤 (Phase 1-2)</h3>
      * <ol>
-     *   <li>生成并写入 redo log 到全局 log buffer</li>
+     *   <li>获取 commitLock (保证串行提交)</li>
+     *   <li>生成 redo records (WriteBytesRecord + MultiRecEndRecord)</li>
+     *   <li>写入 RedoLogManager</li>
+     *   <li>根据 flush 策略等待持久化</li>
+     *   <li>更新 page LSN</li>
      *   <li>按相反顺序释放所有页面（LIFO）</li>
-     *   <li>对脏页调用 unpinPage(dirty=true)，加入 FlushList</li>
-     *   <li>对非脏页调用 unpinPage(dirty=false)</li>
-     *   <li>清空 memo</li>
-     *   <li>状态改为 COMMITTED</li>
+     *   <li>清空 memo，状态改为 COMMITTED</li>
      * </ol>
+     *
+     * <h3>Phase 5 Group Commit 优化</h3>
+     * <p>当启用 Group Commit 时，在 waitForFlush 之前释放 commitLock，
+     * 允许多个事务同时进入等待队列，实现批量 fsync。</p>
      *
      * <h3>Redo Log 顺序</h3>
      * <p>所有 redo log 必须在 unpin 页面之前写入，保证 WAL 规则：
@@ -318,26 +444,66 @@ public class MiniTransaction implements AutoCloseable {
 
         checkActive();
 
+        Lock commitLock = null;
+        long commitSn = 0;
+        boolean groupCommitEnabled = false;
+
         try {
-            // ===== Step 1: 写入 redo log (WAL) =====
-            // TODO: 当前简化实现，仅打印日志
-            // 完整实现需要：
-            // 1. 序列化 redo log records
-            // 2. 写入 RedoLogBuffer
-            // 3. 可能触发 log buffer flush
-            if (!redoLogBuffer.isEmpty()) {
-                // logManager.write(redoLogBuffer);
-                // System.out.println("MTR: wrote " + redoLogBuffer.size() + " redo log records");
+            // ===== Step 1: 生成 redo group =====
+            List<RedoRecord> redoGroup = buildRedoGroup();
+
+            // ===== Step 2: 写入 redo log (WAL) =====
+            if (redoLogManager != null && !redoGroup.isEmpty()) {
+                // 检查是否启用 Group Commit
+                groupCommitEnabled = redoLogManager.isGroupCommitEnabled();
+
+                // 获取 commit lock (串行化写入 buffer)
+                commitLock = redoLogManager.getCommitLock();
+                commitLock.lock();
+
+                try {
+                    // 写入 redo log
+                    commitSn = redoLogManager.write(redoGroup);
+                    logger.debug("MTR: wrote {} redo records, commitSn={}", redoGroup.size(), commitSn);
+                } finally {
+                    // Phase 5 优化: 在 waitForFlush 之前释放 commitLock
+                    // 这允许多个事务同时进入等待队列，实现 Group Commit
+                    if (groupCommitEnabled) {
+                        commitLock.unlock();
+                        commitLock = null;  // 标记已释放，避免 finally 重复释放
+                    }
+                }
+
+                // ===== Step 3: 等待 WAL (根据策略) =====
+                // innodb_flush_log_at_trx_commit: 1=sync, 2=write, 0=none
+                // 注意: Phase 5 模式下，此时 commitLock 已释放，多个事务可并发等待
+                try {
+                    redoLogManager.waitForFlush(commitSn);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new MiniDbException("MTR commit interrupted", e);
+                } catch (IOException e) {
+                    throw new MiniDbException("MTR commit failed: redo log flush error", e);
+                }
             }
 
-            // ===== Step 2: 释放所有页面（LIFO 顺序） =====
+            // ===== Step 4: 更新 page LSN =====
+            if (commitSn > 0) {
+                for (MemoSlot slot : memo) {
+                    if (slot.isDirty) {
+                        slot.page.setLsn(commitSn);
+                    }
+                }
+            }
+
+            // ===== Step 5: 释放所有页面（LIFO 顺序） =====
             // 从后往前遍历，保证后获取的页面先释放
             for (int i = memo.size() - 1; i >= 0; i--) {
                 MemoSlot slot = memo.get(i);
                 bufferPool.unpinPage(slot.pageId, slot.isDirty);
             }
 
-            // ===== Step 3: 清理状态 =====
+            // ===== Step 6: 清理状态 =====
             memo.clear();
             redoLogBuffer.clear();
             state = State.COMMITTED;
@@ -349,7 +515,45 @@ public class MiniTransaction implements AutoCloseable {
                 throw (MiniDbException) e;
             }
             throw new MiniDbException("MTR commit failed", e);
+        } finally {
+            // 释放 commit lock (Phase 1-2 模式，或 Phase 5 写入失败时)
+            if (commitLock != null) {
+                commitLock.unlock();
+            }
         }
+    }
+
+    /**
+     * 构建 redo group
+     *
+     * <p>从 memo 中的修改记录生成 redo records 列表，
+     * 并添加 MLOG_MULTI_REC_END 标记。</p>
+     *
+     * @return redo records 列表 (可能为空)
+     */
+    private List<RedoRecord> buildRedoGroup() {
+        List<RedoRecord> redoGroup = new ArrayList<>();
+
+        for (MemoSlot slot : memo) {
+            if (slot.isDirty && !slot.modifications.isEmpty()) {
+                // 为每个修改生成 WriteBytesRecord
+                for (PageModification mod : slot.modifications) {
+                    WriteBytesRecord record = new WriteBytesRecord(
+                            slot.pageId,
+                            mod.offset,
+                            mod.data
+                    );
+                    redoGroup.add(record);
+                }
+            }
+        }
+
+        // 添加 group end marker
+        if (!redoGroup.isEmpty()) {
+            redoGroup.add(new MultiRecEndRecord());
+        }
+
+        return redoGroup;
     }
 
     /**
@@ -485,7 +689,7 @@ public class MiniTransaction implements AutoCloseable {
     /**
      * MTR Memo 槽位
      *
-     * <p>记录 MTR 中获取的每个页面的信息。</p>
+     * <p>记录 MTR 中获取的每个页面的信息，包括修改区域。</p>
      */
     private static class MemoSlot {
         /** 页面标识 */
@@ -497,15 +701,55 @@ public class MiniTransaction implements AutoCloseable {
         /** 是否为脏页 */
         boolean isDirty;
 
+        /** 页面修改记录列表 (用于生成 redo log) */
+        final List<PageModification> modifications;
+
         MemoSlot(PageId pageId, Page page, boolean isDirty) {
             this.pageId = pageId;
             this.page = page;
             this.isDirty = isDirty;
+            this.modifications = new ArrayList<>();
+        }
+
+        /**
+         * 添加修改记录
+         *
+         * @param offset 页内偏移
+         * @param data   修改后的数据
+         */
+        void addModification(int offset, byte[] data) {
+            modifications.add(new PageModification(offset, data));
         }
 
         @Override
         public String toString() {
-            return String.format("MemoSlot{pageId=%s, dirty=%s}", pageId, isDirty);
+            return String.format("MemoSlot{pageId=%s, dirty=%s, modifications=%d}",
+                    pageId, isDirty, modifications.size());
+        }
+    }
+
+    // ==================== 内部类：Page Modification ====================
+
+    /**
+     * 页面修改记录
+     *
+     * <p>记录页面内某个区域的修改。</p>
+     */
+    private static class PageModification {
+        /** 页内偏移 */
+        final int offset;
+
+        /** 修改后的数据 */
+        final byte[] data;
+
+        PageModification(int offset, byte[] data) {
+            this.offset = offset;
+            this.data = data;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("PageModification{offset=%d, length=%d}", offset, data.length);
         }
     }
 

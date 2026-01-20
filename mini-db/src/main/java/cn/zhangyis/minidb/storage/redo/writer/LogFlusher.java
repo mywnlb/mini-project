@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -253,10 +254,18 @@ public class LogFlusher implements Runnable {
     // ==================== 同步刷盘 (供 MTR commit 调用) ====================
 
     /**
-     * 同步等待指定 SN 被持久化
+     * 同步等待指定 SN 被持久化 (Phase 1-2 模式)
      *
      * <p>当 flushLogAtTrxCommit=1 时，MTR commit 会调用此方法。
-     * Phase 1-2 使用串行提交模型，此方法会阻塞直到 fsync 完成。</p>
+     * 此方法会通知后台 flusher 线程并等待 flushedSn 达到目标值，
+     * 而不是在用户线程中直接执行 fsync。</p>
+     *
+     * <h3>关键设计</h3>
+     * <ul>
+     *   <li><b>不在用户线程执行 fsync</b>: 避免破坏 Group Commit</li>
+     *   <li><b>通知后台线程</b>: 唤醒 flusher 加速 fsync</li>
+     *   <li><b>等待水位推进</b>: 阻塞直到 flushedSn >= targetSn</li>
+     * </ul>
      *
      * @param targetSn 目标 SN
      * @throws InterruptedException 如果等待被中断
@@ -267,22 +276,67 @@ public class LogFlusher implements Runnable {
             return;
         }
 
-        // Phase 1-2 串行模型: 直接执行 fsync 并等待
+        // 如果已经 flush 过了，直接返回
+        if (buffer.getFlushedSn() >= targetSn) {
+            return;
+        }
+
+        // 通知后台 flusher 线程有新数据需要 flush
+        notifyNewWrite();
+
+        // 等待 flushedSn 被后台线程推进到目标值
+        // 使用 buffer 的 waitForFlush 方法，这会在 flushedSn 推进时被唤醒
+        buffer.waitForFlush(targetSn);
+    }
+
+    /**
+     * Group Commit Leader 执行 fsync (Phase 5 模式)
+     *
+     * <p>此方法供 Group Commit 的 Leader 线程调用。
+     * Leader 直接在当前线程执行 fsync，一次 fsync 覆盖多个事务。</p>
+     *
+     * <h3>与 syncFlush 的区别</h3>
+     * <ul>
+     *   <li><b>syncFlush</b>: 等待后台线程完成 fsync（被动）</li>
+     *   <li><b>leaderFlush</b>: Leader 主动执行 fsync（主动）</li>
+     * </ul>
+     *
+     * <h3>Group Commit 工作流程</h3>
+     * <pre>
+     * T1 (Leader): leaderFlush(300) → 执行 fsync → 推进 flushedSn → 唤醒 T2, T3
+     * T2 (Follower): 等待被唤醒
+     * T3 (Follower): 等待被唤醒
+     * </pre>
+     *
+     * @param targetSn 目标 SN (本批次的最大 SN)
+     * @throws IOException 如果 fsync 失败
+     */
+    public void leaderFlush(long targetSn) throws IOException {
         long flushedSn = buffer.getFlushedSn();
+
+        // 如果已经 flush 过了，直接返回
         if (flushedSn >= targetSn) {
-            // 已经 flush 过了
             return;
         }
 
         // 等待 writer 完成写入
         long writeSn = buffer.getWriteSn();
-        while (writeSn < targetSn) {
-            Thread.sleep(1);  // 简单轮询，Phase 1-2 可接受
+        int waitCount = 0;
+        while (writeSn < targetSn && waitCount < 1000) {
+            // 短暂等待 writer 追上
+            LockSupport.parkNanos(10_000); // 10μs
             writeSn = buffer.getWriteSn();
+            waitCount++;
         }
 
-        // 执行 fsync
-        doFsync(flushedSn, writeSn);
+        // 确定实际可以 flush 的范围
+        long flushUpTo = Math.min(targetSn, writeSn);
+        if (flushUpTo <= flushedSn) {
+            return;
+        }
+
+        // Leader 直接执行 fsync
+        doFsync(flushedSn, flushUpTo);
     }
 
     // ==================== 通知方法 ====================

@@ -102,26 +102,55 @@ public class LogBlockFormatter {
      *
      * <p>这是系统中唯一执行 SN → LSN 转换的地方。</p>
      *
-     * <h3>算法</h3>
-     * <pre>
-     * 1. 确定 startSn 对应的起始 block
-     * 2. 填充第一个 block 的剩余空间
-     * 3. 后续 payload 每 496 bytes 填充一个完整 block
-     * 4. 最后一个 block 可能部分填充
-     * 5. 为每个 block 添加 header + trailer
-     * </pre>
-     *
      * @param startSn 数据的起始 SN
      * @param payload 纯 redo payload (不含 block 结构)
      * @return 格式化后的 log blocks (含 header/trailer)
      */
     public static ByteBuffer format(long startSn, ByteBuffer payload) {
+        return format(startSn, payload, null);
+    }
+
+    /**
+     * 格式化 payload 为 log blocks (支持 partial block 合并)
+     *
+     * <p>这是系统中唯一执行 SN → LSN 转换的地方。</p>
+     *
+     * <h3>算法</h3>
+     * <pre>
+     * 1. 确定 startSn 对应的起始 block
+     * 2. 如果 startSn 不在 block 边界，使用 existingBlockData 合并
+     * 3. 填充第一个 block 的剩余空间
+     * 4. 后续 payload 每 496 bytes 填充一个完整 block
+     * 5. 最后一个 block 可能部分填充
+     * 6. 为每个 block 添加 header + trailer
+     * </pre>
+     *
+     * <h3>Partial Block 处理</h3>
+     * <pre>
+     * 场景: MTR 1 写入 100 字节 (SN 0-99)，MTR 2 写入 50 字节 (SN 100-149)
+     *
+     * 旧版本 (有 bug):
+     *   Block 0 = [Header][0...0][MTR2 data][0...0][Trailer]
+     *   MTR1 的数据被覆盖！
+     *
+     * 新版本 (修复后):
+     *   Block 0 = [Header][MTR1 data][MTR2 data][0...0][Trailer]
+     *   通过 existingBlockData 保留 MTR1 的数据
+     * </pre>
+     *
+     * @param startSn           数据的起始 SN
+     * @param payload           纯 redo payload (不含 block 结构)
+     * @param existingBlockData 第一个 block 的已存在数据 (用于 partial block 合并)，可为 null
+     * @return 格式化后的 log blocks (含 header/trailer)
+     */
+    public static ByteBuffer format(long startSn, ByteBuffer payload, byte[] existingBlockData) {
         if (payload == null || payload.remaining() == 0) {
             return ByteBuffer.allocate(0);
         }
 
         int payloadSize = payload.remaining();
-        logger.trace("Formatting payload: startSn={}, payloadSize={}", startSn, payloadSize);
+        logger.trace("Formatting payload: startSn={}, payloadSize={}, hasExistingBlock={}",
+                startSn, payloadSize, existingBlockData != null);
 
         // 计算需要的 block 数量
         long startBlockNo = startSn / DATA_SIZE;
@@ -144,19 +173,39 @@ public class LogBlockFormatter {
             int dataLen = Math.min(DATA_SIZE - dataStartOffset, payloadSize - payloadPos);
 
             // 创建 block
-            byte[] block = new byte[BLOCK_SIZE];
+            byte[] block;
 
-            // 1. 填充 data 区域
+            if (i == 0 && existingBlockData != null && existingBlockData.length == BLOCK_SIZE) {
+                // 第一个 block 且有已存在数据：复制已存在的 block 作为基础
+                // 这样可以保留 block 前面部分的数据
+                block = existingBlockData.clone();
+                logger.trace("Using existing block data for block {}, preserving {} bytes",
+                        currentBlockNo, offsetInFirstBlock);
+            } else {
+                // 新 block
+                block = new byte[BLOCK_SIZE];
+            }
+
+            // 1. 填充 data 区域 (在 dataStartOffset 位置开始)
             payload.get(block, HEADER_SIZE + dataStartOffset, dataLen);
             payloadPos += dataLen;
 
-            // 2. 构建 header
-            writeHeader(block, currentBlockNo, dataStartOffset + dataLen);
+            // 2. 计算实际的 data_len (包括已存在的数据)
+            int totalDataLen;
+            if (i == 0 && existingBlockData != null) {
+                // 第一个 block 有已存在数据时，data_len = offsetInFirstBlock + 新数据长度
+                totalDataLen = offsetInFirstBlock + dataLen;
+            } else {
+                totalDataLen = dataStartOffset + dataLen;
+            }
 
-            // 3. 构建 trailer
+            // 3. 构建 header (使用正确的 totalDataLen)
+            writeHeader(block, currentBlockNo, totalDataLen);
+
+            // 4. 构建 trailer
             writeTrailer(block);
 
-            // 4. 写入输出
+            // 5. 写入输出
             output.put(block);
 
             currentBlockNo++;

@@ -1,6 +1,11 @@
 package cn.zhangyis.minidb.storage.redo;
 
+import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.redo.buffer.RedoLogBuffer;
+import cn.zhangyis.minidb.storage.redo.checkpoint.CheckpointManager;
+import cn.zhangyis.minidb.storage.redo.commit.CommitQueue;
+import cn.zhangyis.minidb.storage.redo.commit.CommitWaiter;
+import cn.zhangyis.minidb.storage.redo.commit.GroupCommitMetrics;
 import cn.zhangyis.minidb.storage.redo.fileset.RedoLogFileSet;
 import cn.zhangyis.minidb.storage.redo.record.RedoRecord;
 import cn.zhangyis.minidb.storage.redo.record.RedoRecordSerializer;
@@ -12,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -26,48 +32,29 @@ import java.util.concurrent.locks.ReentrantLock;
  *     ├── RedoLogBuffer      - 环形缓冲区 (SN 空间)
  *     ├── RedoLogFileSet     - 文件管理 (ib_logfile0/1)
  *     ├── LogWriter          - 后台写入线程 (buffer → file)
- *     └── LogFlusher         - 后台刷盘线程 (fsync)
+ *     ├── LogFlusher         - 后台刷盘线程 (fsync)
+ *     └── CommitQueue        - Group Commit 提交队列 (Phase 5)
  * </pre>
  *
- * <h2>MTR 提交流程 (Phase 1-2 串行模型)</h2>
+ * <h2>提交模型</h2>
+ * <ul>
+ *   <li><b>Phase 1-2 串行模型</b>: commitLock 串行化，周期性 flusher</li>
+ *   <li><b>Phase 5 Group Commit</b>: Leader/Follower 机制，精准唤醒</li>
+ * </ul>
+ *
+ * <h2>MTR 提交流程 (Phase 5 Group Commit)</h2>
  * <pre>
  * MTR.commit()
  *     │
- *     ├─ 1. 获取 commitLock (串行化)
+ *     ├─ 1. 写入 buffer (并发)
  *     │
- *     ├─ 2. 序列化 redo records → payload
+ *     ├─ 2. 加入 CommitQueue
  *     │
- *     ├─ 3. redoLogManager.write(payload)
- *     │      ├─ reserveSpace() 预留空间
- *     │      ├─ writeRecord() 写入 buffer
- *     │      └─ advanceWriteReadySn() 推进水位
+ *     ├─ 3. 尝试成为 Leader
+ *     │      ├─ 成功 → 执行 group commit
+ *     │      └─ 失败 → 等待 Leader 唤醒
  *     │
- *     ├─ 4. 通知 LogWriter
- *     │
- *     ├─ 5. (可选) 等待 fsync
- *     │
- *     └─ 6. 释放 commitLock
- * </pre>
- *
- * <h2>使用示例</h2>
- * <pre>
- * // 初始化
- * RedoLogConfig config = new RedoLogConfig.Builder()
- *     .dataDir("/data/minidb")
- *     .logFileSize(50 * 1024 * 1024)
- *     .build();
- * RedoLogManager manager = new RedoLogManager(config);
- * manager.start();
- *
- * // MTR commit 时调用
- * List&lt;RedoRecord&gt; records = ...;
- * long endSn = manager.write(records);
- *
- * // 等待持久化 (innodb_flush_log_at_trx_commit = 1)
- * manager.waitForFlush(endSn);
- *
- * // 关闭
- * manager.shutdown();
+ *     └─ 4. 返回
  * </pre>
  *
  * @author MiniDB
@@ -76,6 +63,14 @@ import java.util.concurrent.locks.ReentrantLock;
 public class RedoLogManager implements AutoCloseable {
 
     private static final Logger logger = LoggerFactory.getLogger(RedoLogManager.class);
+
+    // ==================== 配置常量 ====================
+
+    /** Group Commit 默认批量等待时间 (微秒) */
+    private static final long DEFAULT_BATCH_WAIT_MICROS = 100;
+
+    /** Follower 最大等待时间 (毫秒) */
+    private static final long MAX_FOLLOWER_WAIT_MS = 100;
 
     // ==================== 组件 ====================
 
@@ -93,6 +88,23 @@ public class RedoLogManager implements AutoCloseable {
 
     /** Log Flusher 线程 */
     private final LogFlusher flusher;
+
+    /** Checkpoint Manager (可选，需要 BufferPool) */
+    private CheckpointManager checkpointManager;
+
+    // ==================== Phase 5: Group Commit ====================
+
+    /** Group Commit 提交队列 */
+    private final CommitQueue commitQueue;
+
+    /** Group Commit 性能指标 */
+    private final GroupCommitMetrics groupCommitMetrics;
+
+    /** 是否启用 Group Commit (Phase 5) */
+    private final boolean groupCommitEnabled;
+
+    /** 批量等待时间 (微秒) */
+    private final long batchWaitMicros;
 
     // ==================== 同步控制 ====================
 
@@ -116,9 +128,22 @@ public class RedoLogManager implements AutoCloseable {
      * @throws IOException 如果文件创建失败
      */
     public RedoLogManager(RedoLogConfig config) throws IOException {
-        this.config = config;
+        this(config, false);
+    }
 
-        // 创建组件
+    /**
+     * 创建 RedoLogManager (可选启用 Group Commit)
+     *
+     * @param config             配置
+     * @param groupCommitEnabled 是否启用 Group Commit (Phase 5)
+     * @throws IOException 如果文件创建失败
+     */
+    public RedoLogManager(RedoLogConfig config, boolean groupCommitEnabled) throws IOException {
+        this.config = config;
+        this.groupCommitEnabled = groupCommitEnabled;
+        this.batchWaitMicros = DEFAULT_BATCH_WAIT_MICROS;
+
+        // 创建核心组件
         this.buffer = new RedoLogBuffer((int) config.getLogBufferSize());
         this.fileSet = new RedoLogFileSet(config);
         this.flusher = new LogFlusher(buffer, fileSet, config);
@@ -126,8 +151,13 @@ public class RedoLogManager implements AutoCloseable {
 
         this.commitLock = new ReentrantLock();
 
-        logger.info("RedoLogManager created: bufferSize={}, fileSize={}, flushMode={}",
-                config.getLogBufferSize(), config.getLogFileSize(), config.getFlushLogAtTrxCommit());
+        // Phase 5: Group Commit 组件
+        this.commitQueue = new CommitQueue();
+        this.groupCommitMetrics = new GroupCommitMetrics();
+
+        logger.info("RedoLogManager created: bufferSize={}, fileSize={}, flushMode={}, groupCommit={}",
+                config.getLogBufferSize(), config.getLogFileSize(),
+                config.getFlushLogAtTrxCommit(), groupCommitEnabled);
     }
 
     // ==================== 生命周期管理 ====================
@@ -155,6 +185,7 @@ public class RedoLogManager implements AutoCloseable {
      *
      * <p>关闭顺序：</p>
      * <ol>
+     *   <li>停止 CheckpointManager (执行最后一次 checkpoint)</li>
      *   <li>停止 LogWriter (等待 buffer 清空)</li>
      *   <li>停止 LogFlusher (最后一次 fsync)</li>
      *   <li>关闭文件</li>
@@ -168,6 +199,11 @@ public class RedoLogManager implements AutoCloseable {
         logger.info("RedoLogManager shutting down...");
 
         running = false;
+
+        // 停止 CheckpointManager (先执行最后一次 checkpoint)
+        if (checkpointManager != null) {
+            checkpointManager.stop();
+        }
 
         // 停止后台线程
         writer.stop();
@@ -238,11 +274,35 @@ public class RedoLogManager implements AutoCloseable {
      * <p>阻塞直到指定 SN 的 redo log 已经 fsync 到磁盘。
      * 当 innodb_flush_log_at_trx_commit = 1 时，MTR commit 后必须调用此方法。</p>
      *
+     * <h3>执行策略</h3>
+     * <ul>
+     *   <li>Phase 1-2: 周期性 flusher 或同步 flush</li>
+     *   <li>Phase 5: Group Commit (Leader/Follower 机制)</li>
+     * </ul>
+     *
      * @param targetSn 目标 SN
      * @throws InterruptedException 如果等待被中断
-     * @throws IOException 如果 fsync 失败
+     * @throws IOException          如果 fsync 失败
      */
     public void waitForFlush(long targetSn) throws InterruptedException, IOException {
+        // 如果已经 flush，直接返回
+        if (buffer.getFlushedSn() >= targetSn) {
+            return;
+        }
+
+        if (groupCommitEnabled) {
+            // Phase 5: Group Commit
+            waitForFlushGroupCommit(targetSn);
+        } else {
+            // Phase 1-2: 原有逻辑
+            waitForFlushLegacy(targetSn);
+        }
+    }
+
+    /**
+     * Phase 1-2: 原有等待逻辑
+     */
+    private void waitForFlushLegacy(long targetSn) throws InterruptedException, IOException {
         if (config.getFlushLogAtTrxCommit() == RedoLogConfig.FLUSH_AT_TRX_COMMIT_SYNC) {
             // 同步模式：直接调用 flusher.syncFlush
             flusher.syncFlush(targetSn);
@@ -250,6 +310,121 @@ public class RedoLogManager implements AutoCloseable {
             // 异步模式：等待 buffer 的 flushedSn 推进
             buffer.waitForFlush(targetSn);
         }
+    }
+
+    /**
+     * Phase 5: Group Commit 等待逻辑
+     *
+     * <h3>流程</h3>
+     * <ol>
+     *   <li>加入提交队列</li>
+     *   <li>尝试成为 Leader</li>
+     *   <li>Leader 执行 group commit</li>
+     *   <li>Follower 等待唤醒</li>
+     * </ol>
+     */
+    private void waitForFlushGroupCommit(long targetSn) throws IOException, InterruptedException {
+        // 1. 加入提交队列
+        CommitWaiter waiter = commitQueue.joinQueue(targetSn, Thread.currentThread());
+
+        // 2. 尝试成为 leader
+        if (commitQueue.tryBeLeader()) {
+            // ===== Leader 路径 =====
+            groupCommitMetrics.recordLeader();
+            try {
+                performGroupCommit(targetSn);
+            } finally {
+                commitQueue.releaseLeader();
+            }
+        } else {
+            // ===== Follower 路径 =====
+            groupCommitMetrics.recordFollower();
+            waitAsFollower(targetSn, waiter);
+        }
+    }
+
+    /**
+     * Leader 执行 group commit
+     *
+     * @param leaderCommitSn Leader 的 commit SN
+     */
+    private void performGroupCommit(long leaderCommitSn) throws IOException, InterruptedException {
+        long startTime = System.nanoTime();
+
+        // ===== Step 1: 等待短暂时间凑批次 =====
+        LockSupport.parkNanos(batchWaitMicros * 1000);
+        long batchWaitNanos = System.nanoTime() - startTime;
+
+        // ===== Step 2: 确定本批次的 flush 上界 =====
+        long maxQueueSn = commitQueue.getMaxCommitSn();
+        long writeSn = buffer.getWriteSn();
+
+        // flush_up_to_sn = min(队列最大 sn, write_sn)
+        // 确保只 flush 已经写入文件的数据
+        long flushUpToSn = Math.min(maxQueueSn, writeSn);
+
+        // 如果 writeSn < 需要的 sn，先等待 writer
+        if (writeSn < maxQueueSn) {
+            // 等待 writer 追上
+            int waitCount = 0;
+            while (buffer.getWriteSn() < maxQueueSn && waitCount < 100) {
+                writer.notifyNewData();
+                LockSupport.parkNanos(10_000); // 10μs
+                waitCount++;
+            }
+            writeSn = buffer.getWriteSn();
+            flushUpToSn = Math.min(maxQueueSn, writeSn);
+        }
+
+        logger.debug("Group commit: leader={}, maxQueue={}, writeSn={}, flushUpTo={}",
+                leaderCommitSn, maxQueueSn, writeSn, flushUpToSn);
+
+        // ===== Step 3: 执行 fsync (Leader 直接执行) =====
+        long fsyncStart = System.nanoTime();
+        flusher.leaderFlush(flushUpToSn);
+        long fsyncNanos = System.nanoTime() - fsyncStart;
+
+        // ===== Step 4: 精准唤醒本批次 =====
+        long wakeupStart = System.nanoTime();
+        int wakeupCount = commitQueue.wakeupBatch(flushUpToSn);
+        long wakeupNanos = System.nanoTime() - wakeupStart;
+
+        // ===== Step 5: 记录指标 =====
+        groupCommitMetrics.recordGroupCommit(wakeupCount, batchWaitNanos, fsyncNanos, wakeupNanos);
+
+        logger.debug("Group commit completed: batch={}, batchWait={}μs, fsync={}μs, wakeup={}μs",
+                wakeupCount, batchWaitNanos / 1000, fsyncNanos / 1000, wakeupNanos / 1000);
+    }
+
+    /**
+     * Follower 等待 Leader 完成
+     *
+     * @param targetSn 目标 SN
+     * @param waiter   等待者
+     */
+    private void waitAsFollower(long targetSn, CommitWaiter waiter) {
+        long startTime = System.nanoTime();
+
+        // 循环等待，直到完成或超时
+        long deadline = System.currentTimeMillis() + MAX_FOLLOWER_WAIT_MS;
+
+        while (!waiter.isCompleted() && buffer.getFlushedSn() < targetSn) {
+            // 检查超时
+            if (System.currentTimeMillis() >= deadline) {
+                // 超时，从队列移除
+                commitQueue.removeFromQueue(targetSn);
+                logger.warn("Follower wait timeout: targetSn={}", targetSn);
+                break;
+            }
+
+            // park 等待唤醒
+            LockSupport.parkNanos(1_000_000); // 1ms
+        }
+
+        long waitNanos = System.nanoTime() - startTime;
+        groupCommitMetrics.recordFollowerWait(waitNanos);
+
+        logger.trace("Follower wait completed: targetSn={}, wait={}μs", targetSn, waitNanos / 1000);
     }
 
     /**
@@ -316,6 +491,44 @@ public class RedoLogManager implements AutoCloseable {
                 flusher.getTotalFsyncCount(), flusher.getAverageFsyncTimeUs());
     }
 
+    // ==================== Phase 5: Group Commit 状态查询 ====================
+
+    /**
+     * 是否启用 Group Commit
+     */
+    public boolean isGroupCommitEnabled() {
+        return groupCommitEnabled;
+    }
+
+    /**
+     * 获取 Group Commit 提交队列
+     *
+     * @return CommitQueue
+     */
+    public CommitQueue getCommitQueue() {
+        return commitQueue;
+    }
+
+    /**
+     * 获取 Group Commit 性能指标
+     *
+     * @return GroupCommitMetrics
+     */
+    public GroupCommitMetrics getGroupCommitMetrics() {
+        return groupCommitMetrics;
+    }
+
+    /**
+     * 获取 Group Commit 统计信息
+     */
+    public String getGroupCommitStats() {
+        if (!groupCommitEnabled) {
+            return "Group Commit disabled";
+        }
+        return String.format("enabled=true, queue=%d, %s, %s",
+                commitQueue.size(), commitQueue.getStats(), groupCommitMetrics.getSummary());
+    }
+
     // ==================== 辅助方法 ====================
 
     /**
@@ -325,5 +538,99 @@ public class RedoLogManager implements AutoCloseable {
         if (!running) {
             throw new IllegalStateException("RedoLogManager is not running");
         }
+    }
+
+    // ==================== Checkpoint 管理 ====================
+
+    /**
+     * 初始化 CheckpointManager
+     *
+     * <p>必须在 start() 之后调用。需要 BufferPool 来计算 checkpoint LSN。</p>
+     *
+     * @param bufferPool Buffer Pool 实例
+     * @throws IOException 如果初始化失败
+     */
+    public void initCheckpoint(BufferPool bufferPool) throws IOException {
+        if (checkpointManager != null) {
+            logger.warn("CheckpointManager already initialized");
+            return;
+        }
+
+        checkpointManager = new CheckpointManager(bufferPool, buffer, fileSet, config);
+        checkpointManager.initialize();
+
+        logger.info("CheckpointManager initialized");
+    }
+
+    /**
+     * 启动 Checkpoint 后台线程
+     *
+     * <p>必须先调用 initCheckpoint()。</p>
+     */
+    public void startCheckpoint() {
+        if (checkpointManager == null) {
+            throw new IllegalStateException("CheckpointManager not initialized, call initCheckpoint() first");
+        }
+
+        checkpointManager.start();
+    }
+
+    /**
+     * 手动触发 Checkpoint
+     *
+     * @return checkpoint LSN
+     * @throws IOException 如果执行失败
+     */
+    public long doCheckpoint() throws IOException {
+        if (checkpointManager == null) {
+            throw new IllegalStateException("CheckpointManager not initialized");
+        }
+
+        return checkpointManager.doCheckpoint();
+    }
+
+    /**
+     * 获取最后一次 checkpoint 的 LSN
+     *
+     * @return checkpoint LSN，如果没有 checkpoint 则返回 0
+     */
+    public long getLastCheckpointLsn() {
+        return checkpointManager != null ? checkpointManager.getLastCheckpointLsn() : 0;
+    }
+
+    /**
+     * 获取 CheckpointManager
+     *
+     * @return CheckpointManager 或 null
+     */
+    public CheckpointManager getCheckpointManager() {
+        return checkpointManager;
+    }
+
+    /**
+     * 获取 RedoLogBuffer (供 CheckpointManager 使用)
+     *
+     * @return RedoLogBuffer
+     */
+    public RedoLogBuffer getBuffer() {
+        return buffer;
+    }
+
+    /**
+     * 获取 RedoLogFileSet (供 CheckpointManager 使用)
+     *
+     * @return RedoLogFileSet
+     */
+    public RedoLogFileSet getFileSet() {
+        return fileSet;
+    }
+
+    /**
+     * 获取配置
+     *
+     * @return RedoLogConfig
+     */
+    public RedoLogConfig getConfig() {
+        return config;
     }
 }

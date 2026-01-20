@@ -2452,7 +2452,7 @@ public void commit() {
   - 序列化/反序列化一致
   - 体积检查: 修改 4B 产生 19B redo (不是 16KB)
 
-### Phase 2: 写路径 (2-3周)
+### Phase 2: 写路径 (2-3周) ✅ 已完成
 
 **目标**: MTR 提交时能写 redo log
 
@@ -2460,40 +2460,75 @@ public void commit() {
 1. ✅ 实现 `LogWriter` 后台线程
 2. ✅ 实现 `LogFlusher` 后台线程
 3. ✅ 集成到 `MiniTransaction.commit()`
+   - 添加 `MiniTransaction(BufferPool, RedoLogManager)` 构造函数
+   - 增强 `MemoSlot` 支持 `PageModification` 记录
+   - 添加 `logModification(Page, int, int)` 方法追踪页面修改
+   - `commit()` 中生成 `WriteBytesRecord` + `MultiRecEndRecord`
+   - 串行获取 `commitLock` 写入 `RedoLogManager`
+   - 根据 flush 策略等待持久化
+   - 更新 page LSN
 4. ✅ 实现 `RedoLogManager.write()` 和 `waitForFlush()`
 5. ✅ 支持 `innodb_flush_log_at_trx_commit` 配置
+6. ✅ BufferPool WAL 规则实施
+   - 添加 `setRedoLogManager()` 方法
+   - `flushPageInternal()` 刷盘前等待 redo log fsync
+   - `flushAllPages()` 批量刷盘前等待最大 LSN fsync
 
 **验收**:
 - 集成测试: `RedoLogWriteTest` - MTR 提交后 redo 可读
 - 性能测试: 吞吐量 > 10K transactions/sec (单线程)
 
-### Phase 3: Checkpoint (1-2周)
+### Phase 3: Checkpoint (1-2周) ✅ 已完成
 
 **目标**: 定期 checkpoint，回收 redo 空间
 
 **任务**:
 1. ✅ 实现 `CheckpointRecord` 读写
+   - 64 字节格式：magic + checkpointLsn + checkpointNo + flushedLsn + logFileSize + timestamp + checksum
+   - 支持序列化/反序列化和 CRC32 校验
 2. ✅ 实现 `CheckpointManager.doCheckpoint()`
+   - 计算 checkpoint LSN (最老脏页 LSN 或当前 flushed LSN)
+   - 创建 CheckpointRecord 并写入文件头
+   - 交替写入 ib_logfile0/1
 3. ✅ 实现定期 checkpoint 线程
-4. ✅ 实现 redo 空间回收逻辑
+   - 默认每 10 秒执行
+   - 支持 redo log 使用率阈值触发强制 checkpoint
+4. ✅ 集成到 RedoLogManager
+   - 添加 initCheckpoint(BufferPool) 方法
+   - 添加 startCheckpoint() 方法
+   - 添加 doCheckpoint() 手动触发方法
+5. ✅ BufferPool 添加 getOldestDirtyPageLsn() 方法
 
 **验收**:
 - 集成测试: `CheckpointTest` - checkpoint 后旧 redo 可回收
 - 长时间运行测试: 24小时不 OOM
 
-### Phase 4: 崩溃恢复 (2-3周)
+### Phase 4: 崩溃恢复 (2-3周) ✅ 已完成
 
 **目标**: 崩溃后能恢复数据
 
 **任务**:
 1. ✅ 实现 `RedoLogScanner` (扫描文件)
+   - 从指定 LSN 开始扫描
+   - 解析 log blocks 和 redo records
+   - 处理跨 block 的 records
+   - 支持 Iterator 接口
 2. ✅ 实现 `RedoLogApplier` (重放 redo)
+   - 应用 WriteBytesRecord 到页面
+   - 应用 FullPageRecord (兜底)
+   - 幂等性检查 (page_lsn >= record_lsn 则跳过)
+   - 统计应用/跳过/失败数量
 3. ✅ 实现 `RecoveryCoordinator` (协调恢复流程)
-4. ✅ 集成到数据库启动流程
+   - 读取最新有效 checkpoint
+   - 创建 scanner 和 applier
+   - 扫描并重放 redo records
+   - 处理不完整的 redo groups
+   - 刷新所有恢复的脏页
+4. ⬜ 集成到数据库启动流程 (待后续实现)
 
 **验收**:
 - 崩溃测试: 随机 kill 进程，重启后数据一致
-- 集成测试: `CrashRecoveryTest` - 对比崩溃前后数据
+- 集成测试: `RecoveryTest` - 测试恢复组件
 
 ### Phase 5: 优化与监控 (1-2周)
 

@@ -264,9 +264,12 @@ public class RedoLogFileSet implements AutoCloseable {
     /**
      * 读取指定 LSN 位置的 log block
      *
+     * <p>用于读取已存在的 block 数据（例如 partial block 合并场景）。
+     * 如果 block 尚未写入，返回 null 而不是抛出异常。</p>
+     *
      * @param lsn Log block 的起始 LSN (必须 block 对齐)
-     * @return 读取的 log block (512 bytes)
-     * @throws IOException 如果读取失败
+     * @return 读取的 log block (512 bytes)，如果 block 不存在则返回 null
+     * @throws IOException 如果发生 I/O 错误（不包括 block 不存在的情况）
      */
     public byte[] readBlock(long lsn) throws IOException {
         checkNotClosed();
@@ -278,8 +281,18 @@ public class RedoLogFileSet implements AutoCloseable {
 
         int read = channels[pos.fileIndex()].read(buf, pos.offsetInFile());
 
+        if (read == -1 || read == 0) {
+            // Block 尚未写入（文件位置超出当前大小或为空）
+            logger.trace("Block not found at lsn={}, file={}, offset={} (read={})",
+                    lsn, pos.fileIndex(), pos.offsetInFile(), read);
+            return null;
+        }
+
         if (read != BLOCK_SIZE) {
-            throw new IOException("Incomplete read: expected " + BLOCK_SIZE + ", read " + read);
+            // 部分读取可能表示文件损坏或正在写入中
+            logger.warn("Partial block read at lsn={}: expected {}, got {}",
+                    lsn, BLOCK_SIZE, read);
+            return null;
         }
 
         logger.trace("Read block at lsn={}, file={}, offset={}",
@@ -291,10 +304,13 @@ public class RedoLogFileSet implements AutoCloseable {
     /**
      * 批量读取 log blocks
      *
+     * <p>用于恢复时批量读取 redo log。如果某个 block 不存在，
+     * 则停止读取并返回已读取的部分。</p>
+     *
      * @param startLsn 起始 LSN
      * @param numBlocks 要读取的 block 数量
-     * @return 读取的数据 (numBlocks * 512 bytes)
-     * @throws IOException 如果读取失败
+     * @return 读取的数据，可能少于请求的数量（如果遇到不存在的 block）
+     * @throws IOException 如果发生 I/O 错误
      */
     public ByteBuffer readBlocks(long startLsn, int numBlocks) throws IOException {
         checkNotClosed();
@@ -308,6 +324,12 @@ public class RedoLogFileSet implements AutoCloseable {
 
         for (int i = 0; i < numBlocks; i++) {
             byte[] block = readBlock(currentLsn);
+            if (block == null) {
+                // 遇到不存在的 block，停止读取
+                logger.debug("Stopping batch read at block {}: block not found at lsn={}",
+                        i, currentLsn);
+                break;
+            }
             result.put(block);
             currentLsn += BLOCK_SIZE;
         }
@@ -527,5 +549,14 @@ public class RedoLogFileSet implements AutoCloseable {
             throw new IllegalArgumentException("fileIndex must be 0 or 1: " + fileIndex);
         }
         return filePaths[fileIndex];
+    }
+
+    /**
+     * 获取单个日志文件大小
+     *
+     * @return 文件大小 (bytes)
+     */
+    public long getFileSize() {
+        return fileSize;
     }
 }
