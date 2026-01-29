@@ -1,6 +1,37 @@
 
 # CLAUDE.md (Kernel-Safe Version for mini-db)
 
+# 🚨 Fail-First Design Gate (MANDATORY)
+
+This project enforces a Fail-First design discipline.
+
+When a request contains:
+- "Task:"
+- OR asks to implement / design any kernel or storage component
+
+Claude MUST follow this order BEFORE any Kernel-Safe workflow:
+
+## Step 0: Fail-First Gate (Design Level)
+
+Claude MUST output, BEFORE reading md docs or writing code:
+
+### Forbidden Designs
+- At least 2 designs or implementation paths that MUST NOT be used
+- For each:
+   - Why it is dangerous
+   - Which later module / invariant / recovery path will break
+   - Failure type (silent corruption / crash / recovery failure)
+
+### Core Invariants (Design Level)
+- At least 3 invariants that define correctness of this task
+- These invariants must be referenced later in implementation
+
+If this Fail-First Gate is skipped:
+→ All following implementation is INVALID and must be discarded.
+
+Only after this gate passes:
+→ Proceed to Kernel-Safe Mode.
+
 This project is NOT a normal Java project.
 It is a DATABASE KERNEL project.
 
