@@ -88,7 +88,7 @@ SQL Text → Lexer → Parser(AST) → Binder → Rewriter → Optimizer → Phy
 #### 1. Lexer / Parser
 - SQL 文本解析为 AST
 - 实现方式：
-  - 手写解析器（教学）
+  - 手写解析器
 
 #### 2. Binder（语义绑定）
 - 表、列、索引解析

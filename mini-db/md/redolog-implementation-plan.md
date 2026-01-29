@@ -3212,7 +3212,146 @@ LSN 水位线关系:
 
 ---
 
-**文档状态**: DRAFT v1.0
+## 附录 C: MySQL 8.0 无锁并发写入实现 (Phase 5+)
+
+### C.1 概述
+
+基于 MySQL 8.0 的 redo log 无锁化设计，实现了 `LockFreeRedoLogBuffer`，支持多个 MTR 并发写入 log buffer。
+
+**参考文档**:
+- http://mysql.taobao.org/monthly/2019/02/05/
+- https://catkang.github.io/2020/02/27/mysql-redo.html
+- http://mysql.taobao.org/monthly/2019/03/03/
+
+### C.2 核心组件
+
+#### C.2.1 LockFreeRedoLogBuffer
+
+无锁环形缓冲区，使用 CAS 原子操作实现并发写入。
+
+**核心字段**:
+```java
+// SN 指针 (原子操作)
+private final AtomicLong currentSn;      // 下一个要分配的 SN
+private volatile long writeSn;           // 已写入文件的 SN
+private volatile long flushedSn;         // 已 fsync 的 SN
+
+// LinkBuf 追踪连续性
+private final LinkBuf recentWritten;     // 追踪 buffer 写入连续性
+private final LinkBuf recentClosed;      // 追踪脏页注册连续性
+
+// WaitSlots 分片等待
+private final WaitSlots writeWaitSlots;
+private final WaitSlots flushWaitSlots;
+```
+
+#### C.2.2 LinkBuf
+
+追踪并发写入的连续性边界，使用 VarHandle + long[] 实现无锁标记。
+
+**核心方法**:
+- `addLink(startSn, length)`: 标记区间完成
+- `advanceTail()`: 推进连续边界到最大连续完成位置
+
+#### C.2.3 WaitSlots
+
+分片等待槽位，避免全局 signalAll 造成惊群。
+
+### C.3 三重背压机制
+
+参考 MySQL 8.0，在 `reserveSpace()` 中实现三重检查：
+
+```java
+public long reserveSpace(int size) throws InterruptedException {
+    long startSn = currentSn.getAndAdd(size);
+    long endSn = startSn + size;
+
+    // 检查 1: log_buffer_full (环形空间)
+    while (endSn - flushedSn > capacity) {
+        wakeupLogWriter();
+        wakeupLogFlusher();
+        flushWaitSlots.waitFor(targetFlushedSn, ...);
+    }
+
+    // 检查 2: log_recent_written_wait (LinkBuf 容量)
+    while (endSn - recentWritten.getTail() > linkBufCoverage) {
+        wakeupLogWriter();
+        recentWrittenWaitSlots.waitFor(targetTail, ...);
+    }
+
+    // 检查 3: log_recent_closed_wait (脏页追踪容量)
+    while (endSn - recentClosed.getTail() > linkBufCoverage) {
+        wakeupLogCloser();
+        recentClosedWaitSlots.waitFor(targetTail, ...);
+    }
+
+    return startSn;
+}
+```
+
+### C.4 主动唤醒机制
+
+当用户线程等待时，主动唤醒后台服务加速处理：
+
+```java
+// Buffer 持有后台服务引用
+private volatile BackgroundService logWriter;
+private volatile BackgroundService logFlusher;
+private volatile BackgroundService logCloser;
+
+// 等待前主动唤醒
+private void wakeupLogWriter() {
+    if (logWriter != null) logWriter.wakeup();
+}
+```
+
+### C.5 后台服务生命周期
+
+使用 `BackgroundService` 抽象基类管理后台线程：
+
+| 服务 | 职责 | 启动顺序 |
+|------|------|---------|
+| LogCloser | 推进 recentClosed.tail | 10 |
+| LogWriteNotifier | 唤醒 write 等待者 | 20 |
+| LogFlushNotifier | 唤醒 flush 等待者 | 30 |
+| LockFreeLogWriter | 写入文件 + 推进 writeSn | 40 |
+| LockFreeLogFlusher | fsync + 推进 flushedSn | 50 |
+
+**生命周期状态**:
+```
+NEW → INITIALIZING → INITIALIZED → STARTING → RUNNING → STOPPING → STOPPED → DESTROYED
+```
+
+### C.6 关键修复记录
+
+#### C.6.1 getData() 环形缓冲区有效性检查
+
+**问题**: 原实现使用 `sn < flushedSn` 检查数据有效性，导致 LogWriter 处理 partial block 时无法读取前缀数据。
+
+**修复**: 改为检查环形缓冲区容量：
+```java
+// 旧代码 (错误)
+if (sn < flushedSn || sn + length > currentSn) {
+    return null;
+}
+
+// 新代码 (正确)
+if (sn + length > currentSn || currentSn - sn > capacity) {
+    return null;
+}
+```
+
+**原理**: 数据有效性取决于是否被覆盖，而非是否已刷盘。只要 `currentSn - sn <= capacity`，数据仍在环形缓冲区中可读。
+
+#### C.6.2 CheckpointManager.doCheckpoint() 序号递增
+
+**问题**: 当 checkpoint LSN 与上次相同时跳过，导致序号不递增。
+
+**修复**: 移除跳过逻辑，每次调用都递增序号并写入记录。
+
+---
+
+**文档状态**: DRAFT v1.1
 **作者**: Claude Code (基于 redolog skill 和 mini-db 架构)
 **创建日期**: 2026-01-14
-**最后更新**: 2026-01-14
+**最后更新**: 2026-01-29

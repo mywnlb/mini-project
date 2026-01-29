@@ -10,15 +10,36 @@ import cn.zhangyis.minidb.storage.redo.fileset.LsnMapper;
  * <h2>配置分类</h2>
  * <ul>
  *   <li><b>文件配置</b>: 文件数量、大小、路径</li>
- *   <li><b>Buffer 配置</b>: Log Buffer 大小</li>
+ *   <li><b>Buffer 配置</b>: Log Buffer 大小、Buffer 模式</li>
  *   <li><b>后台线程配置</b>: Writer/Flusher 间隔</li>
  *   <li><b>Flush 策略</b>: innodb_flush_log_at_trx_commit</li>
+ *   <li><b>无锁配置</b>: LinkBuf 容量、WaitSlots 参数 (Lock-Free 模式)</li>
  * </ul>
  *
  * @author MiniDB
  * @version 1.0
  */
 public class RedoLogConfig {
+
+    // ==================== Buffer 模式 ====================
+
+    /**
+     * Buffer 实现模式
+     */
+    public enum BufferMode {
+        /**
+         * 有锁模式 (Phase 1-2)
+         * <p>使用 ReentrantLock 串行化写入，简单可靠，适合调试和对比基准。</p>
+         */
+        LOCK_BASED,
+
+        /**
+         * 无锁模式 (MySQL 8.0 风格)
+         * <p>使用 CAS 原子操作实现并发写入，配合 LinkBuf 追踪连续性。
+         * 性能更高，但复杂度也更高。</p>
+         */
+        LOCK_FREE
+    }
 
     // ==================== 文件配置 ====================
 
@@ -76,6 +97,20 @@ public class RedoLogConfig {
     /** Checkpoint 间隔 (秒) */
     public static final int CHECKPOINT_INTERVAL_SEC = 10;
 
+    // ==================== 无锁模式配置 ====================
+
+    /** LinkBuf 容量比例 (相对于 buffer 大小的分母，默认 8 表示 1/8) */
+    public static final int DEFAULT_LINK_BUF_CAPACITY_RATIO = 8;
+
+    /** LinkBuf 粒度 (字节) */
+    public static final int DEFAULT_LINK_BUF_GRANULARITY = 8;
+
+    /** WaitSlots 槽位数量 */
+    public static final int DEFAULT_WAIT_SLOT_COUNT = 64;
+
+    /** WaitSlots 粒度 (字节) */
+    public static final long DEFAULT_WAIT_SLOT_GRANULARITY = 4096;
+
     // ==================== Flush 策略 ====================
 
     /**
@@ -103,18 +138,33 @@ public class RedoLogConfig {
     private final int flushLogAtTrxCommit;
     private final String dataDir;
 
+    // 无锁模式配置
+    private final BufferMode bufferMode;
+    private final int linkBufCapacityRatio;
+    private final int linkBufGranularity;
+    private final int waitSlotCount;
+    private final long waitSlotGranularity;
+
     // ==================== 构造函数 ====================
 
     /**
-     * 创建配置实例
+     * 创建配置实例 (完整参数)
      *
-     * @param dataDir 数据目录
-     * @param logFileSize 单个日志文件大小
-     * @param logBufferSize Log Buffer 大小
-     * @param flushLogAtTrxCommit Flush 策略
+     * @param dataDir               数据目录
+     * @param logFileSize           单个日志文件大小
+     * @param logBufferSize         Log Buffer 大小
+     * @param flushLogAtTrxCommit   Flush 策略
+     * @param bufferMode            Buffer 模式
+     * @param linkBufCapacityRatio  LinkBuf 容量比例
+     * @param linkBufGranularity    LinkBuf 粒度
+     * @param waitSlotCount         WaitSlots 槽位数量
+     * @param waitSlotGranularity   WaitSlots 粒度
      */
-    public RedoLogConfig(String dataDir, long logFileSize, int logBufferSize, int flushLogAtTrxCommit) {
-        // 验证参数
+    public RedoLogConfig(String dataDir, long logFileSize, int logBufferSize,
+                         int flushLogAtTrxCommit, BufferMode bufferMode,
+                         int linkBufCapacityRatio, int linkBufGranularity,
+                         int waitSlotCount, long waitSlotGranularity) {
+        // 验证基本参数
         if (dataDir == null || dataDir.isBlank()) {
             throw new IllegalArgumentException("dataDir cannot be null or empty");
         }
@@ -140,10 +190,47 @@ public class RedoLogConfig {
                     "flushLogAtTrxCommit must be 0, 1, or 2, got " + flushLogAtTrxCommit);
         }
 
+        // 验证无锁模式参数
+        if (bufferMode == null) {
+            bufferMode = BufferMode.LOCK_BASED;
+        }
+        if (linkBufCapacityRatio <= 0) {
+            throw new IllegalArgumentException("linkBufCapacityRatio must be positive");
+        }
+        if (linkBufGranularity <= 0) {
+            throw new IllegalArgumentException("linkBufGranularity must be positive");
+        }
+        if (waitSlotCount <= 0 || (waitSlotCount & (waitSlotCount - 1)) != 0) {
+            throw new IllegalArgumentException("waitSlotCount must be positive power of 2");
+        }
+        if (waitSlotGranularity <= 0) {
+            throw new IllegalArgumentException("waitSlotGranularity must be positive");
+        }
+
         this.dataDir = dataDir;
         this.logFileSize = logFileSize;
         this.logBufferSize = logBufferSize;
         this.flushLogAtTrxCommit = flushLogAtTrxCommit;
+        this.bufferMode = bufferMode;
+        this.linkBufCapacityRatio = linkBufCapacityRatio;
+        this.linkBufGranularity = linkBufGranularity;
+        this.waitSlotCount = waitSlotCount;
+        this.waitSlotGranularity = waitSlotGranularity;
+    }
+
+    /**
+     * 创建配置实例 (兼容旧版本)
+     *
+     * @param dataDir 数据目录
+     * @param logFileSize 单个日志文件大小
+     * @param logBufferSize Log Buffer 大小
+     * @param flushLogAtTrxCommit Flush 策略
+     */
+    public RedoLogConfig(String dataDir, long logFileSize, int logBufferSize, int flushLogAtTrxCommit) {
+        this(dataDir, logFileSize, logBufferSize, flushLogAtTrxCommit,
+             BufferMode.LOCK_BASED,
+             DEFAULT_LINK_BUF_CAPACITY_RATIO, DEFAULT_LINK_BUF_GRANULARITY,
+             DEFAULT_WAIT_SLOT_COUNT, DEFAULT_WAIT_SLOT_GRANULARITY);
     }
 
     /**
@@ -177,6 +264,46 @@ public class RedoLogConfig {
 
     public int getFlushLogAtTrxCommit() {
         return flushLogAtTrxCommit;
+    }
+
+    public BufferMode getBufferMode() {
+        return bufferMode;
+    }
+
+    public int getLinkBufCapacityRatio() {
+        return linkBufCapacityRatio;
+    }
+
+    public int getLinkBufGranularity() {
+        return linkBufGranularity;
+    }
+
+    public int getWaitSlotCount() {
+        return waitSlotCount;
+    }
+
+    public long getWaitSlotGranularity() {
+        return waitSlotGranularity;
+    }
+
+    /**
+     * 计算 LinkBuf 容量 (槽位数量)
+     *
+     * @return LinkBuf 槽位数量
+     */
+    public int getLinkBufCapacity() {
+        int capacity = logBufferSize / linkBufCapacityRatio / linkBufGranularity;
+        // 确保是 2 的幂
+        return Integer.highestOneBit(capacity);
+    }
+
+    /**
+     * 检查是否为无锁模式
+     *
+     * @return true 如果是无锁模式
+     */
+    public boolean isLockFree() {
+        return bufferMode == BufferMode.LOCK_FREE;
     }
 
     /**
@@ -213,8 +340,10 @@ public class RedoLogConfig {
     @Override
     public String toString() {
         return String.format(
-                "RedoLogConfig{dataDir='%s', logFileSize=%dMB, logBufferSize=%dMB, flushLogAtTrxCommit=%d}",
-                dataDir, logFileSize / (1024 * 1024), logBufferSize / (1024 * 1024), flushLogAtTrxCommit);
+                "RedoLogConfig{dataDir='%s', logFileSize=%dMB, logBufferSize=%dMB, " +
+                "flushLogAtTrxCommit=%d, bufferMode=%s}",
+                dataDir, logFileSize / (1024 * 1024), logBufferSize / (1024 * 1024),
+                flushLogAtTrxCommit, bufferMode);
     }
 
     // ==================== Builder ====================
@@ -227,6 +356,11 @@ public class RedoLogConfig {
         private long logFileSize = DEFAULT_LOG_FILE_SIZE;
         private int logBufferSize = DEFAULT_LOG_BUFFER_SIZE;
         private int flushLogAtTrxCommit = FLUSH_AT_TRX_COMMIT_SYNC;
+        private BufferMode bufferMode = BufferMode.LOCK_BASED;
+        private int linkBufCapacityRatio = DEFAULT_LINK_BUF_CAPACITY_RATIO;
+        private int linkBufGranularity = DEFAULT_LINK_BUF_GRANULARITY;
+        private int waitSlotCount = DEFAULT_WAIT_SLOT_COUNT;
+        private long waitSlotGranularity = DEFAULT_WAIT_SLOT_GRANULARITY;
 
         public Builder dataDir(String dataDir) {
             this.dataDir = dataDir;
@@ -248,8 +382,52 @@ public class RedoLogConfig {
             return this;
         }
 
+        public Builder bufferMode(BufferMode bufferMode) {
+            this.bufferMode = bufferMode;
+            return this;
+        }
+
+        /**
+         * 设置为有锁模式 (便捷方法)
+         */
+        public Builder lockBased() {
+            this.bufferMode = BufferMode.LOCK_BASED;
+            return this;
+        }
+
+        /**
+         * 设置为无锁模式 (便捷方法)
+         */
+        public Builder lockFree() {
+            this.bufferMode = BufferMode.LOCK_FREE;
+            return this;
+        }
+
+        public Builder linkBufCapacityRatio(int ratio) {
+            this.linkBufCapacityRatio = ratio;
+            return this;
+        }
+
+        public Builder linkBufGranularity(int granularity) {
+            this.linkBufGranularity = granularity;
+            return this;
+        }
+
+        public Builder waitSlotCount(int count) {
+            this.waitSlotCount = count;
+            return this;
+        }
+
+        public Builder waitSlotGranularity(long granularity) {
+            this.waitSlotGranularity = granularity;
+            return this;
+        }
+
         public RedoLogConfig build() {
-            return new RedoLogConfig(dataDir, logFileSize, logBufferSize, flushLogAtTrxCommit);
+            return new RedoLogConfig(dataDir, logFileSize, logBufferSize,
+                    flushLogAtTrxCommit, bufferMode,
+                    linkBufCapacityRatio, linkBufGranularity,
+                    waitSlotCount, waitSlotGranularity);
         }
     }
 

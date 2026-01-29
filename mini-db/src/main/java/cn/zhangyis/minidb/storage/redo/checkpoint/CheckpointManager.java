@@ -148,13 +148,9 @@ public class CheckpointManager {
         // ===== Step 1: 计算 checkpoint LSN =====
         long checkpointLsn = calculateCheckpointLsn();
 
-        // 如果和上次相同，跳过
-        if (checkpointLsn == lastCheckpointLsn && checkpointLsn > 0) {
-            logger.debug("Checkpoint LSN unchanged ({}), skipping", checkpointLsn);
-            return checkpointLsn;
-        }
-
         // ===== Step 2: 创建 CheckpointRecord =====
+        // 每次 doCheckpoint 都递增序号，即使 LSN 相同
+        // 这确保 checkpoint 记录能反映最新状态
         long currentNo = checkpointNo.incrementAndGet();
         long flushedLsn = LsnMapper.snToLsn(redoLogBuffer.getFlushedSn());
 
