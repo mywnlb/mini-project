@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(mvn test:*)",
-      "Bash(gradle projects:*)"
+      "Bash(gradle projects:*)",
+      "Bash(dir /s /b \"C:\\\\coding\\\\java\\\\self\\\\miniproject\\\\miniproject\\\\mini-db\\\\src\\\\main\\\\java\\\\cn\\\\zhangyis\\\\minidb\\\\storage\\\\record\")",
+      "Bash(./gradlew test:*)",
+      "Bash(./gradlew :mini-db:test:*)"
     ]
   }
 }

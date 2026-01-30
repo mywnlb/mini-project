@@ -411,6 +411,230 @@ public class MiniTransaction implements AutoCloseable {
         throw PageNotManagedByMtrException.notInMemo(pageId);
     }
 
+    // ==================== 直接写入方法 (BufferFrame-based) ====================
+
+    /**
+     * 写入单个字节到 BufferFrame
+     *
+     * <p>这是 IndexPageOps 等页内算法使用的底层写入方法。
+     * 写入操作会自动记录到 redo log 并标记页面为脏。</p>
+     *
+     * @param frame  BufferFrame (必须持有 X-latch)
+     * @param offset 页内偏移 (0-16383)
+     * @param value  字节值
+     * @throws IllegalStateException 如果未持有 X-latch
+     * @throws MtrStateException     如果 MTR 不在 ACTIVE 状态
+     */
+    public void writeByte(BufferFrame frame, int offset, byte value) throws MtrStateException {
+        checkActive();
+        assertXLatched(frame);
+
+        java.nio.ByteBuffer buf = frame.buffer();
+        buf.put(offset, value);
+
+        logFrameModification(frame, offset, new byte[]{value});
+        markFrameDirty(frame);
+    }
+
+    /**
+     * 写入 short (2字节) 到 BufferFrame
+     *
+     * @param frame  BufferFrame (必须持有 X-latch)
+     * @param offset 页内偏移 (0-16383)
+     * @param value  short 值
+     * @throws IllegalStateException 如果未持有 X-latch
+     * @throws MtrStateException     如果 MTR 不在 ACTIVE 状态
+     */
+    public void writeShort(BufferFrame frame, int offset, short value) throws MtrStateException {
+        checkActive();
+        assertXLatched(frame);
+
+        java.nio.ByteBuffer buf = frame.buffer();
+        buf.putShort(offset, value);
+
+        // 记录修改数据
+        byte[] data = new byte[2];
+        data[0] = (byte) (value & 0xFF);
+        data[1] = (byte) ((value >> 8) & 0xFF);
+        logFrameModification(frame, offset, data);
+        markFrameDirty(frame);
+    }
+
+    /**
+     * 写入 int (4字节) 到 BufferFrame
+     *
+     * @param frame  BufferFrame (必须持有 X-latch)
+     * @param offset 页内偏移 (0-16383)
+     * @param value  int 值
+     * @throws IllegalStateException 如果未持有 X-latch
+     * @throws MtrStateException     如果 MTR 不在 ACTIVE 状态
+     */
+    public void writeInt(BufferFrame frame, int offset, int value) throws MtrStateException {
+        checkActive();
+        assertXLatched(frame);
+
+        java.nio.ByteBuffer buf = frame.buffer();
+        buf.putInt(offset, value);
+
+        // 记录修改数据 (Little Endian)
+        byte[] data = new byte[4];
+        data[0] = (byte) (value & 0xFF);
+        data[1] = (byte) ((value >> 8) & 0xFF);
+        data[2] = (byte) ((value >> 16) & 0xFF);
+        data[3] = (byte) ((value >> 24) & 0xFF);
+        logFrameModification(frame, offset, data);
+        markFrameDirty(frame);
+    }
+
+    /**
+     * 写入 long (8字节) 到 BufferFrame
+     *
+     * @param frame  BufferFrame (必须持有 X-latch)
+     * @param offset 页内偏移 (0-16383)
+     * @param value  long 值
+     * @throws IllegalStateException 如果未持有 X-latch
+     * @throws MtrStateException     如果 MTR 不在 ACTIVE 状态
+     */
+    public void writeLong(BufferFrame frame, int offset, long value) throws MtrStateException {
+        checkActive();
+        assertXLatched(frame);
+
+        java.nio.ByteBuffer buf = frame.buffer();
+        buf.putLong(offset, value);
+
+        // 记录修改数据 (Little Endian)
+        byte[] data = new byte[8];
+        for (int i = 0; i < 8; i++) {
+            data[i] = (byte) ((value >> (i * 8)) & 0xFF);
+        }
+        logFrameModification(frame, offset, data);
+        markFrameDirty(frame);
+    }
+
+    /**
+     * 写入字节数组到 BufferFrame
+     *
+     * @param frame  BufferFrame (必须持有 X-latch)
+     * @param offset 页内偏移 (0-16383)
+     * @param data   要写入的数据
+     * @throws IllegalStateException 如果未持有 X-latch
+     * @throws MtrStateException     如果 MTR 不在 ACTIVE 状态
+     */
+    public void writeBytes(BufferFrame frame, int offset, byte[] data) throws MtrStateException {
+        checkActive();
+        assertXLatched(frame);
+
+        if (data == null || data.length == 0) {
+            return;
+        }
+
+        java.nio.ByteBuffer buf = frame.buffer();
+        buf.position(offset);
+        buf.put(data);
+
+        logFrameModification(frame, offset, data.clone());
+        markFrameDirty(frame);
+    }
+
+    /**
+     * 内存移动 (处理重叠区间)
+     *
+     * <p>用于 Page Directory slot 移动等场景。
+     * Redo 记录移动后的最终数据，而非移动操作本身（保证幂等性）。</p>
+     *
+     * @param frame BufferFrame (必须持有 X-latch)
+     * @param dst   目标偏移
+     * @param src   源偏移
+     * @param len   移动长度
+     * @throws IllegalStateException 如果未持有 X-latch
+     * @throws MtrStateException     如果 MTR 不在 ACTIVE 状态
+     */
+    public void memmove(BufferFrame frame, int dst, int src, int len) throws MtrStateException {
+        checkActive();
+        assertXLatched(frame);
+
+        if (len <= 0) {
+            return;
+        }
+
+        java.nio.ByteBuffer buf = frame.buffer();
+
+        // 读取源数据
+        byte[] data = new byte[len];
+        buf.position(src);
+        buf.get(data);
+
+        // 写入目标位置
+        buf.position(dst);
+        buf.put(data);
+
+        // Redo 记录最终数据 (保证幂等性)
+        logFrameModification(frame, dst, data);
+        markFrameDirty(frame);
+    }
+
+    /**
+     * 断言 BufferFrame 已持有 X-latch
+     *
+     * @param frame BufferFrame
+     * @throws IllegalStateException 如果未持有 X-latch
+     */
+    private void assertXLatched(BufferFrame frame) {
+        if (!frame.isWriteLatched()) {
+            throw new IllegalStateException(
+                    "Must hold X-latch on frame " + frame.getFrameId() +
+                            " (pageId=" + frame.getPageId() + ")");
+        }
+    }
+
+    /**
+     * 记录 BufferFrame 的修改 (内部方法)
+     *
+     * @param frame  BufferFrame
+     * @param offset 修改偏移
+     * @param data   修改数据
+     */
+    private void logFrameModification(BufferFrame frame, int offset, byte[] data) {
+        if (redoLogManager == null) {
+            return;  // 无 redo log 支持
+        }
+
+        PageId pageId = frame.getPageId();
+        for (MemoSlot slot : memo) {
+            if (slot.pageId.equals(pageId)) {
+                slot.addModification(offset, data);
+                logger.trace("Logged frame modification: page={}, offset={}, length={}",
+                        pageId, offset, data.length);
+                return;
+            }
+        }
+
+        // 如果页面不在 memo 中，先添加到 memo
+        Page page = frame.getPage();
+        MemoSlot newSlot = new MemoSlot(pageId, page, true);
+        newSlot.addModification(offset, data);
+        memo.add(newSlot);
+        logger.trace("Added frame to memo and logged modification: page={}, offset={}, length={}",
+                pageId, offset, data.length);
+    }
+
+    /**
+     * 标记 BufferFrame 为脏 (内部方法)
+     *
+     * @param frame BufferFrame
+     */
+    private void markFrameDirty(BufferFrame frame) {
+        frame.setDirty(true);
+
+        PageId pageId = frame.getPageId();
+        for (MemoSlot slot : memo) {
+            if (slot.pageId.equals(pageId)) {
+                slot.isDirty = true;
+                return;
+            }
+        }
+    }
+
     // ==================== 提交和回滚 ====================
 
     /**

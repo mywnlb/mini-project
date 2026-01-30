@@ -202,9 +202,10 @@ public class CompactRecordFormat implements RecordFormat {
             if (length < 128) {
                 varlenList[varlenPos++] = (byte) length;
             } else {
-                // 2 字节编码：低字节在前（逆序存储时会翻转）
-                varlenList[varlenPos++] = (byte) (length & 0xFF);
+                // 2 字节编码：高字节在前（含 0x80 标志位），逆序存储时会翻转
+                // 使得解码时从高地址向低地址读取时，先读到带标志位的高字节
                 varlenList[varlenPos++] = (byte) (0x80 | ((length >> 8) & 0x3F));
+                varlenList[varlenPos++] = (byte) (length & 0xFF);
             }
         }
 

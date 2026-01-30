@@ -236,13 +236,28 @@ public class BufferFrame {
     
     /**
      * 设置页面对象
-     * 
+     *
      * @param page Page 对象
      */
     public void setPage(Page page) {
         this.page = page;
     }
-    
+
+    /**
+     * 直接获取页面的 ByteBuffer
+     *
+     * <p>供 MTR 和 IndexPageOps 等核心组件使用。
+     * 调用者必须持有适当的 latch 才能安全访问返回的 buffer。</p>
+     *
+     * <p><b>警告</b>：不要直接通过此 buffer 进行写操作，
+     * 所有写操作应通过 MTR 进行以确保 WAL 正确性。</p>
+     *
+     * @return 页面的 ByteBuffer，如果页面未加载则返回 null
+     */
+    public java.nio.ByteBuffer buffer() {
+        return page != null ? page.getBuffer() : null;
+    }
+
     /**
      * 获取页面并转换为指定类型
      * 
@@ -357,14 +372,16 @@ public class BufferFrame {
     
     /**
      * 设置脏页状态
-     * 
+     *
+     * <p>脏页状态由 BufferFrame 唯一管理。
+     * 此方法应由 MTR 在 commit 时调用。</p>
+     *
      * @param dirty 脏页标记
      */
     public void setDirty(boolean dirty) {
         this.dirty = dirty;
-        if (dirty && page != null) {
-            page.markDirty();
-        }
+        // 注意：不再调用 page.markDirty()
+        // Page.dirty 已废弃，脏页状态由 BufferFrame 唯一管理
     }
     
     // ==================== LRU 状态 ====================
@@ -476,13 +493,44 @@ public class BufferFrame {
     
     /**
      * 尝试获取读锁 (非阻塞)
-     * 
+     *
      * @return 如果成功获取返回 true
      */
     public boolean tryReadLock() {
         return pageLock.readLock().tryLock();
     }
-    
+
+    /**
+     * 检查当前线程是否持有写锁 (X-latch)
+     *
+     * <p>用于 MTR 断言，确保写操作在正确的锁保护下执行。</p>
+     *
+     * @return 如果当前线程持有写锁返回 true
+     */
+    public boolean isWriteLatched() {
+        return pageLock.isWriteLockedByCurrentThread();
+    }
+
+    /**
+     * 检查当前线程是否持有读锁 (S-latch)
+     *
+     * <p>用于断言读操作在正确的锁保护下执行。</p>
+     *
+     * @return 如果当前线程持有读锁返回 true
+     */
+    public boolean isReadLatched() {
+        return pageLock.getReadHoldCount() > 0;
+    }
+
+    /**
+     * 检查当前线程是否持有任意锁 (S-latch 或 X-latch)
+     *
+     * @return 如果当前线程持有任意锁返回 true
+     */
+    public boolean isLatched() {
+        return isWriteLatched() || isReadLatched();
+    }
+
     /**
      * 返回帧的字符串表示
      * 

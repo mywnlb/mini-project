@@ -107,10 +107,14 @@ public class Page {
     
     /**
      * 脏页标记
-     * 
+     *
      * <p>如果页面在内存中被修改但尚未刷盘，则为 true。
      * 脏页需要在某个时刻写回磁盘以保证持久性。</p>
+     *
+     * @deprecated 脏页状态应由 {@link cn.zhangyis.minidb.storage.buffer.BufferFrame} 唯一管理。
+     *             此字段将在后续版本中移除。
      */
+    @Deprecated
     protected boolean dirty;
     
     // ==================== 构造函数 ====================
@@ -392,27 +396,38 @@ public class Page {
     
     /**
      * 检查是否为脏页
-     * 
+     *
      * @return 如果页面被修改但未刷盘返回 true
+     * @deprecated 脏页状态应由 {@link cn.zhangyis.minidb.storage.buffer.BufferFrame#isDirty()} 查询。
+     *             此方法将在后续版本中移除。
      */
+    @Deprecated
     public boolean isDirty() {
         return dirty;
     }
-    
+
     /**
      * 标记页面为脏
-     * 
+     *
      * <p>任何修改页面内容的操作都应该调用此方法。</p>
+     *
+     * @deprecated 脏页状态应由 {@link cn.zhangyis.minidb.storage.buffer.BufferFrame#setDirty(boolean)} 管理，
+     *             且所有写入应通过 MTR 进行。此方法将在后续版本中移除。
      */
+    @Deprecated
     public void markDirty() {
         this.dirty = true;
     }
-    
+
     /**
      * 清除脏页标记
-     * 
+     *
      * <p>在页面成功刷盘后调用。</p>
+     *
+     * @deprecated 脏页状态应由 {@link cn.zhangyis.minidb.storage.buffer.BufferFrame#setDirty(boolean)} 管理。
+     *             此方法将在后续版本中移除。
      */
+    @Deprecated
     public void clearDirty() {
         this.dirty = false;
     }
@@ -490,10 +505,13 @@ public class Page {
     
     /**
      * 写入单个字节到指定偏移
-     * 
+     *
      * @param offset 页内偏移
      * @param value  字节值
+     * @deprecated 所有写入操作应通过 MTR 进行以确保 WAL 正确性。
+     *             使用 {@code mtr.writeByte(frame, offset, value)} 代替。
      */
+    @Deprecated
     public void putByte(int offset, byte value) {
         buffer.put(offset, value);
         markDirty();
@@ -511,10 +529,13 @@ public class Page {
     
     /**
      * 写入 short 到指定偏移
-     * 
+     *
      * @param offset 页内偏移
      * @param value  short 值
+     * @deprecated 所有写入操作应通过 MTR 进行以确保 WAL 正确性。
+     *             使用 {@code mtr.writeShort(frame, offset, value)} 代替。
      */
+    @Deprecated
     public void putShort(int offset, short value) {
         buffer.putShort(offset, value);
         markDirty();
@@ -532,10 +553,13 @@ public class Page {
     
     /**
      * 写入 int 到指定偏移
-     * 
+     *
      * @param offset 页内偏移
      * @param value  int 值
+     * @deprecated 所有写入操作应通过 MTR 进行以确保 WAL 正确性。
+     *             使用 {@code mtr.writeInt(frame, offset, value)} 代替。
      */
+    @Deprecated
     public void putInt(int offset, int value) {
         buffer.putInt(offset, value);
         markDirty();
@@ -553,10 +577,13 @@ public class Page {
     
     /**
      * 写入 long 到指定偏移
-     * 
+     *
      * @param offset 页内偏移
      * @param value  long 值
+     * @deprecated 所有写入操作应通过 MTR 进行以确保 WAL 正确性。
+     *             使用 {@code mtr.writeLong(frame, offset, value)} 代替。
      */
+    @Deprecated
     public void putLong(int offset, long value) {
         buffer.putLong(offset, value);
         markDirty();
@@ -576,10 +603,13 @@ public class Page {
     
     /**
      * 写入字节数组到指定偏移
-     * 
+     *
      * @param offset 页内偏移
      * @param src    源数组
+     * @deprecated 所有写入操作应通过 MTR 进行以确保 WAL 正确性。
+     *             使用 {@code mtr.writeBytes(frame, offset, src)} 代替。
      */
+    @Deprecated
     public void putBytes(int offset, byte[] src) {
         buffer.position(offset);
         buffer.put(src);
