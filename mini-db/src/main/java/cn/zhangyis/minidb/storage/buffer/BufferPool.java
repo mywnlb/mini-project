@@ -3,7 +3,6 @@ package cn.zhangyis.minidb.storage.buffer;
 import cn.zhangyis.minidb.common.exception.BufferExhaustedException;
 import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
-import cn.zhangyis.minidb.storage.page.IndexPage;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.page.PageType;
@@ -106,7 +105,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * @see LRUList
  * @see FlushList
  */
-public class BufferPool {
+public class BufferPool implements AutoCloseable {
 
     // ==================== 日志 ====================
 
@@ -576,18 +575,13 @@ public class BufferPool {
                 // 设置正确的字节序
                 data.order(ByteOrder.LITTLE_ENDIAN);
 
-                // 根据页类型创建对应的 Page 对象
-                PageType type = PageType.fromValue(data.getShort(Page.FIL_PAGE_TYPE) & 0xFFFF);
-                Page page;
-                if (type == PageType.FIL_PAGE_INDEX) {
-                    page = new IndexPage(pageId, data);
-                } else {
-                    page = new Page(pageId, data);
-                }
+                // 创建 Page 对象（统一使用 Page，INDEX 特性通过 IndexPage 包装访问）
+                Page page = new Page(pageId, data);
                 frame.setPage(page);
             } else {
-                // NEW_PAGE: 创建新的空白 IndexPage
-                frame.setPage(new IndexPage(pageId));
+                // NEW_PAGE: 创建空白 Page
+                // 调用者应使用 IndexPageOps.initPage() 初始化 INDEX 页面
+                frame.setPage(new Page(pageId));
             }
 
             // ===== Step 4: 更新帧状态 =====

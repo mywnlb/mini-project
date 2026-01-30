@@ -3,6 +3,7 @@ package cn.zhangyis.minidb.storage.buffer;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -498,6 +499,30 @@ public class BufferFrame {
      */
     public boolean tryReadLock() {
         return pageLock.readLock().tryLock();
+    }
+
+    /**
+     * 尝试获取读锁（带超时）
+     *
+     * @param timeout 超时时间
+     * @param unit    时间单位
+     * @return 如果成功获取返回 true
+     * @throws InterruptedException 如果等待时被中断
+     */
+    public boolean tryReadLock(long timeout, TimeUnit unit) throws InterruptedException {
+        return pageLock.readLock().tryLock(timeout, unit);
+    }
+
+    /**
+     * 尝试获取写锁（带超时）
+     *
+     * @param timeout 超时时间
+     * @param unit    时间单位
+     * @return 如果成功获取返回 true
+     * @throws InterruptedException 如果等待时被中断
+     */
+    public boolean tryWriteLock(long timeout, TimeUnit unit) throws InterruptedException {
+        return pageLock.writeLock().tryLock(timeout, unit);
     }
 
     /**

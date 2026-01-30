@@ -115,6 +115,12 @@ public final class IndexPageLayout {
     /** Supremum 记录偏移 (虚拟最大记录，链表终点) */
     public static final int SUPREMUM_OFFSET = INFIMUM_OFFSET + 13;  // 107
 
+    /** Infimum 记录大小 (5 bytes header + 8 bytes "infimum\0") */
+    public static final int INFIMUM_SIZE = 13;
+
+    /** Supremum 记录大小 (5 bytes header + 8 bytes "supremum") */
+    public static final int SUPREMUM_SIZE = 13;
+
     /** 用户记录起始位置 */
     public static final int USER_RECORDS_START = SUPREMUM_OFFSET + 13;  // 120
 
@@ -334,6 +340,47 @@ public final class IndexPageLayout {
      */
     public static int freeSpace(ByteBuffer buf) {
         return pageDirectoryEnd(buf) - readHeapTop(buf);
+    }
+
+    // ==================== FIL Header 读取方法 ====================
+
+    /** FIL Header 中前一页偏移 (4 bytes) */
+    public static final int FIL_PAGE_PREV = 8;
+
+    /** FIL Header 中后一页偏移 (4 bytes) */
+    public static final int FIL_PAGE_NEXT = 12;
+
+    /** FIL Header 中 LSN 偏移 (8 bytes) */
+    public static final int FIL_PAGE_LSN = 16;
+
+    /**
+     * 读取前一页页号
+     *
+     * @param buf 页面 ByteBuffer
+     * @return 前一页页号，0 表示无前一页
+     */
+    public static int readPrevPage(ByteBuffer buf) {
+        return buf.getInt(FIL_PAGE_PREV);
+    }
+
+    /**
+     * 读取后一页页号
+     *
+     * @param buf 页面 ByteBuffer
+     * @return 后一页页号，0 表示无后一页
+     */
+    public static int readNextPage(ByteBuffer buf) {
+        return buf.getInt(FIL_PAGE_NEXT);
+    }
+
+    /**
+     * 读取页面 LSN
+     *
+     * @param buf 页面 ByteBuffer
+     * @return LSN 值
+     */
+    public static long readPageLSN(ByteBuffer buf) {
+        return buf.getLong(FIL_PAGE_LSN);
     }
 
     // ==================== 记录链表读取方法 ====================

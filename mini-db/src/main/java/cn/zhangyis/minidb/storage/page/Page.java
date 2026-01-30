@@ -105,17 +105,8 @@ public class Page {
      */
     protected final PageId pageId;
     
-    /**
-     * 脏页标记
-     *
-     * <p>如果页面在内存中被修改但尚未刷盘，则为 true。
-     * 脏页需要在某个时刻写回磁盘以保证持久性。</p>
-     *
-     * @deprecated 脏页状态应由 {@link cn.zhangyis.minidb.storage.buffer.BufferFrame} 唯一管理。
-     *             此字段将在后续版本中移除。
-     */
-    @Deprecated
-    protected boolean dirty;
+    // Phase 1 完成：dirty 字段已删除
+    // 脏页状态现由 BufferFrame 唯一管理
     
     // ==================== 构造函数 ====================
     
@@ -140,7 +131,6 @@ public class Page {
         this.pageId = pageId;
         this.buffer = ByteBuffer.allocate(StorageConstants.PAGE_SIZE);
         this.buffer.order(ByteOrder.LITTLE_ENDIAN);
-        this.dirty = false;
         initializePage();
     }
     
@@ -179,8 +169,6 @@ public class Page {
         // 共享 buffer（不复制），但使用独立的 position/limit/mark
         this.buffer = src.slice().order(ByteOrder.LITTLE_ENDIAN);
         this.buffer.clear(); // position=0, limit=capacity
-
-        this.dirty = false;
     }
 
     
@@ -397,39 +385,39 @@ public class Page {
     /**
      * 检查是否为脏页
      *
-     * @return 如果页面被修改但未刷盘返回 true
+     * @return 始终返回 false（脏页状态由 BufferFrame 管理）
      * @deprecated 脏页状态应由 {@link cn.zhangyis.minidb.storage.buffer.BufferFrame#isDirty()} 查询。
      *             此方法将在后续版本中移除。
      */
     @Deprecated
     public boolean isDirty() {
-        return dirty;
+        return false;
     }
 
     /**
      * 标记页面为脏
      *
-     * <p>任何修改页面内容的操作都应该调用此方法。</p>
+     * <p>此方法现为空操作。脏页状态由 BufferFrame 唯一管理。</p>
      *
      * @deprecated 脏页状态应由 {@link cn.zhangyis.minidb.storage.buffer.BufferFrame#setDirty(boolean)} 管理，
      *             且所有写入应通过 MTR 进行。此方法将在后续版本中移除。
      */
     @Deprecated
     public void markDirty() {
-        this.dirty = true;
+        // 空操作：脏页状态由 BufferFrame 唯一管理
     }
 
     /**
      * 清除脏页标记
      *
-     * <p>在页面成功刷盘后调用。</p>
+     * <p>此方法现为空操作。脏页状态由 BufferFrame 唯一管理。</p>
      *
      * @deprecated 脏页状态应由 {@link cn.zhangyis.minidb.storage.buffer.BufferFrame#setDirty(boolean)} 管理。
      *             此方法将在后续版本中移除。
      */
     @Deprecated
     public void clearDirty() {
-        this.dirty = false;
+        // 空操作：脏页状态由 BufferFrame 唯一管理
     }
     
     // ==================== 校验和相关 ====================
@@ -624,7 +612,7 @@ public class Page {
      */
     @Override
     public String toString() {
-        return String.format("Page{id=%s, type=%s, lsn=%d, dirty=%s}",
-            pageId, getPageType(), getLsn(), dirty);
+        return String.format("Page{id=%s, type=%s, lsn=%d}",
+            pageId, getPageType(), getLsn());
     }
 }

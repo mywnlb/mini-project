@@ -292,7 +292,8 @@ public class MiniTransaction implements AutoCloseable {
         for (MemoSlot slot : memo) {
             if (slot.pageId.equals(pageId)) {
                 slot.isDirty = true;
-                page.markDirty();
+                // Page.markDirty() 已废弃，脏页状态由 MemoSlot.isDirty 追踪，
+                // 最终通过 unpinPage(pageId, isDirty) 传递给 BufferFrame
                 return;
             }
         }

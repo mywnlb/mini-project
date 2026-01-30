@@ -57,7 +57,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * @author MiniDB
  * @version 1.0
  */
-public class DiskManager {
+public class DiskManager implements AutoCloseable {
 
     /**
      * 数据目录路径
