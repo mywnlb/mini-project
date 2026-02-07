@@ -1,5 +1,6 @@
 package cn.zhangyis.minidb.storage.transaction.core;
 
+import cn.zhangyis.minidb.storage.transaction.mvcc.ReadView;
 import cn.zhangyis.minidb.storage.transaction.pointer.RollbackPointer;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -121,17 +122,34 @@ public class Transaction {
      */
     private final IsolationLevel isolationLevel;
 
+    // ==================== MVCC 相关 ====================
+
+    /**
+     * 缓存的 ReadView（用于 REPEATABLE_READ 隔离级别）
+     *
+     * <p>REPEATABLE_READ 隔离级别下，事务首次读取时创建 ReadView，
+     * 之后复用同一个 ReadView，保证快照隔离。</p>
+     */
+    private volatile ReadView cachedReadView;
+
+    /**
+     * TransactionManager 引用（用于创建 ReadView）
+     */
+    private TransactionManager transactionManager;
+
     // ==================== 构造函数 ====================
 
     /**
      * 创建事务（内部使用，由 TransactionManager 调用）
      *
-     * @param id             事务ID
-     * @param isolationLevel 隔离级别
+     * @param id                   事务ID
+     * @param isolationLevel       隔离级别
+     * @param transactionManager   TransactionManager 引用
      */
-    public Transaction(TransactionId id, IsolationLevel isolationLevel) {
+    public Transaction(TransactionId id, IsolationLevel isolationLevel, TransactionManager transactionManager) {
         this.id = id;
         this.isolationLevel = isolationLevel;
+        this.transactionManager = transactionManager;
         this.state = new AtomicReference<>(TransactionState.ACTIVE);
         this.startTime = System.currentTimeMillis();
         this.commitTime = 0;
@@ -140,6 +158,17 @@ public class Transaction {
         this.insertCount = new AtomicInteger(0);
         this.updateCount = new AtomicInteger(0);
         this.deleteCount = new AtomicInteger(0);
+        this.cachedReadView = null;
+    }
+
+    /**
+     * 创建事务（内部使用，由 TransactionManager 调用）
+     *
+     * @param id             事务ID
+     * @param isolationLevel 隔离级别
+     */
+    public Transaction(TransactionId id, IsolationLevel isolationLevel) {
+        this(id, isolationLevel, null);
     }
 
     /**
@@ -396,6 +425,108 @@ public class Transaction {
      */
     public IsolationLevel getIsolationLevel() {
         return isolationLevel;
+    }
+
+    // ==================== MVCC ReadView 管理 ====================
+
+    /**
+     * 获取或创建 ReadView
+     *
+     * <p>根据隔离级别决定 ReadView 的创建策略：
+     * <ul>
+     *   <li>READ_UNCOMMITTED: 不创建 ReadView，返回 null</li>
+     *   <li>READ_COMMITTED: 每次调用都创建新 ReadView</li>
+     *   <li>REPEATABLE_READ: 首次创建，之后复用同一个 ReadView</li>
+     *   <li>SERIALIZABLE: 首次创建，之后复用同一个 ReadView</li>
+     * </ul>
+     * </p>
+     *
+     * @return ReadView 对象，或 null（READ_UNCOMMITTED 时）
+     * @throws IllegalStateException 如果 transactionManager 为 null
+     */
+    public ReadView getOrCreateReadView() {
+        if (transactionManager == null) {
+            throw new IllegalStateException("TransactionManager is not set for transaction " + id);
+        }
+
+        // READ_UNCOMMITTED 不需要 ReadView
+        if (isolationLevel == IsolationLevel.READ_UNCOMMITTED) {
+            return null;
+        }
+
+        // REPEATABLE_READ 和 SERIALIZABLE：缓存 ReadView
+        if (isolationLevel == IsolationLevel.REPEATABLE_READ || isolationLevel == IsolationLevel.SERIALIZABLE) {
+            if (cachedReadView == null) {
+                cachedReadView = transactionManager.createReadView(this);
+                // 注册 ReadView 到 Purge 协调器（Purge 安全门控）
+                registerReadView(cachedReadView);
+            }
+            return cachedReadView;
+        }
+
+        // READ_COMMITTED：每次创建新 ReadView
+        ReadView readView = transactionManager.createReadView(this);
+        // 注册 ReadView 到 Purge 协调器（Purge 安全门控）
+        registerReadView(readView);
+        return readView;
+    }
+
+    /**
+     * 获取缓存的 ReadView（不创建新的）
+     *
+     * @return 缓存的 ReadView，如果未创建返回 null
+     */
+    public ReadView getCachedReadView() {
+        return cachedReadView;
+    }
+
+    /**
+     * 清除缓存的 ReadView
+     *
+     * <p>在事务提交或回滚时调用，释放 ReadView 占用的资源。</p>
+     */
+    public void clearCachedReadView() {
+        cachedReadView = null;
+    }
+
+    /**
+     * 设置 TransactionManager 引用
+     *
+     * <p>由 TransactionManager 在创建事务后调用。</p>
+     *
+     * @param transactionManager TransactionManager 实例
+     */
+    void setTransactionManager(TransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
+    }
+
+    /**
+     * 注册 ReadView 到 Purge 协调器
+     *
+     * <p>当创建 ReadView 时调用，确保 Purge 线程不会清理活跃 ReadView 需要的版本。</p>
+     *
+     * @param readView ReadView 对象
+     */
+    public void registerReadView(ReadView readView) {
+        if (readView != null && transactionManager != null) {
+            // 获取 PurgeCoordinator 并注册 ReadView
+            // 注意：这里需要通过 TransactionManager 获取 PurgeCoordinator
+            // 实际实现需要在 TransactionManager 中添加 getPurgeCoordinator() 方法
+            transactionManager.registerReadView(readView);
+        }
+    }
+
+    /**
+     * 注销 ReadView 从 Purge 协调器
+     *
+     * <p>当 ReadView 不再需要时调用（事务提交/回滚后）。</p>
+     *
+     * @param readView ReadView 对象
+     */
+    public void unregisterReadView(ReadView readView) {
+        if (readView != null && transactionManager != null) {
+            transactionManager.unregisterReadView(readView);
+        }
     }
 
     // ==================== 活跃状态检查 ====================

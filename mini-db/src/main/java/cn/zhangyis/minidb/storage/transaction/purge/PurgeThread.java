@@ -5,6 +5,8 @@ import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -212,7 +214,7 @@ public class PurgeThread extends Thread {
     /**
      * 恢复 Purge
      */
-    public void resume() {
+    public void resumePurge() {
         paused.set(false);
         logger.info("Purge thread resumed");
     }
@@ -227,7 +229,7 @@ public class PurgeThread extends Thread {
         TransactionId purgeLimit = coordinator.getPurgeLimit();
 
         // 检查是否有新的可清理范围
-        if (!purgeLimit.isAfter(lastPurgeLimit)) {
+        if (purgeLimit.getValue() <= lastPurgeLimit.getValue()) {
             // 没有新的可清理记录
             return;
         }
@@ -239,13 +241,7 @@ public class PurgeThread extends Thread {
         int purgedCount = 0;
 
         try {
-            // TODO: 实现实际的 Purge 逻辑
-            // 1. 获取已提交的 UPDATE Undo Segment 列表
-            // 2. 对于每个 Segment，检查其 TRX_ID 是否 < purgeLimit
-            // 3. 如果是，遍历并清理其 Undo 记录
-            // 4. 回收页面空间
-            //
-            // 简化实现：只更新统计信息，实际清理逻辑待后续完善
+            // 执行实际的 Purge 清理
             purgedCount = simulatePurge(purgeLimit);
 
             // 更新最后 Purge 边界
@@ -264,23 +260,83 @@ public class PurgeThread extends Thread {
     }
 
     /**
-     * 模拟 Purge（待实现真正的清理逻辑）
+     * 执行实际的 Purge 清理逻辑
+     *
+     * <p>从 UndoLogManager 的 History List 获取可清理的 UPDATE Segment，
+     * 按提交顺序清理，支持按 Rollback Segment 分组批量处理。</p>
      *
      * @param purgeLimit Purge 边界
-     * @return 清理的记录数
+     * @return 清理的 Segment 数量
      */
     private int simulatePurge(TransactionId purgeLimit) {
-        // TODO: 实现真正的 Purge 逻辑
-        // 这里只是占位符，返回 0 表示没有实际清理
+        int purgedCount = 0;
 
-        // 真正的实现需要：
-        // 1. 从 UndoLogManager 获取已提交的 UPDATE Segment 列表
-        // 2. 检查每个 Segment 的 TRX_ID
-        // 3. 如果 TRX_ID < purgeLimit，标记为可清理
-        // 4. 遍历 Segment 的 Undo 记录，执行物理删除
-        // 5. 回收 Undo 页面
+        // 1. 从 History List 获取可清理的条目（按提交顺序）
+        HistoryList historyList = undoLogManager.getHistoryList();
+        List<HistoryList.HistoryEntry> purgableEntries =
+                historyList.getPurgableEntries(purgeLimit, maxRecordsPerRound);
 
-        return 0;
+        if (purgableEntries.isEmpty()) {
+            return 0;
+        }
+
+        logger.trace("Found {} purgable entries in history list", purgableEntries.size());
+
+        // 2. 按 Rollback Segment 分组，减少锁竞争
+        Map<Integer, List<HistoryList.HistoryEntry>> entriesByRseg = new java.util.HashMap<>();
+        for (HistoryList.HistoryEntry entry : purgableEntries) {
+            entriesByRseg.computeIfAbsent(entry.getRsegId(), k -> new java.util.ArrayList<>())
+                    .add(entry);
+        }
+
+        // 3. 按 Rollback Segment 批量清理
+        for (Map.Entry<Integer, List<HistoryList.HistoryEntry>> rsegGroup : entriesByRseg.entrySet()) {
+            int rsegId = rsegGroup.getKey();
+            List<HistoryList.HistoryEntry> entries = rsegGroup.getValue();
+
+            int rsegPurged = purgeRsegBatch(rsegId, entries, historyList);
+            purgedCount += rsegPurged;
+        }
+
+        return purgedCount;
+    }
+
+    /**
+     * 批量清理单个 Rollback Segment 的条目
+     *
+     * @param rsegId      Rollback Segment ID
+     * @param entries     待清理的条目列表
+     * @param historyList History List（用于移除已清理的条目）
+     * @return 成功清理的数量
+     */
+    private int purgeRsegBatch(int rsegId, List<HistoryList.HistoryEntry> entries,
+                                HistoryList historyList) {
+        int purgedCount = 0;
+
+        for (HistoryList.HistoryEntry entry : entries) {
+            TransactionId trxId = entry.getTrxId();
+
+            try {
+                // 调用 UndoLogManager 执行实际清理
+                boolean success = undoLogManager.purgeUpdateUndo(trxId);
+                if (success) {
+                    // 从 History List 移除
+                    historyList.remove(entry);
+                    purgedCount++;
+                    logger.trace("Purged UPDATE undo for trxId={} in rseg {}", trxId, rsegId);
+                }
+            } catch (Exception e) {
+                // Purge 单个 Segment 失败不影响其他清理
+                logger.warn("Failed to purge UPDATE undo for trxId={} in rseg {}: {}",
+                        trxId, rsegId, e.getMessage());
+            }
+        }
+
+        if (purgedCount > 0) {
+            logger.debug("Purged {} entries from rseg {}", purgedCount, rsegId);
+        }
+
+        return purgedCount;
     }
 
     /**

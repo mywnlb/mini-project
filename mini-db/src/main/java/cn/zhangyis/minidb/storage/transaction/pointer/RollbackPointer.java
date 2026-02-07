@@ -267,6 +267,62 @@ public final class RollbackPointer {
     // ==================== 访问方法 ====================
 
     /**
+     * 编码为 56 位 (7 字节) 的 long 值
+     *
+     * <p>用于将 RollbackPointer 存储到记录的 ROLL_PTR 字段中。</p>
+     *
+     * <pre>
+     * Bits 55-49: [is_insert(1) | rseg_id(7)]
+     * Bits 48-17: page_no (32 bits)
+     * Bits 16-1:  offset (16 bits)
+     * Bit 0:      unused (always 0)
+     * </pre>
+     *
+     * @return 编码后的 long 值
+     */
+    public long encode() {
+        long result = 0;
+
+        // Bit 55: is_insert
+        if (isInsert) {
+            result |= (1L << 55);
+        }
+
+        // Bits 54-48: rseg_id (7 bits)
+        result |= ((long) (rsegId & 0x7F)) << 48;
+
+        // Bits 47-16: page_no (32 bits)
+        result |= ((long) pageNo & 0xFFFFFFFFL) << 16;
+
+        // Bits 15-0: offset (16 bits)
+        result |= (offset & 0xFFFF);
+
+        return result;
+    }
+
+    /**
+     * 从 56 位 long 值解码
+     *
+     * @param encoded 编码后的 long 值
+     * @return 解码后的 RollbackPointer
+     */
+    public static RollbackPointer decode(long encoded) {
+        // Bit 55: is_insert
+        boolean isInsert = (encoded & (1L << 55)) != 0;
+
+        // Bits 54-48: rseg_id (7 bits)
+        int rsegId = (int) ((encoded >> 48) & 0x7F);
+
+        // Bits 47-16: page_no (32 bits)
+        int pageNo = (int) ((encoded >> 16) & 0xFFFFFFFFL);
+
+        // Bits 15-0: offset (16 bits)
+        int offset = (int) (encoded & 0xFFFF);
+
+        return new RollbackPointer(isInsert, rsegId, pageNo, offset);
+    }
+
+    /**
      * 是否是 INSERT 类型的 Undo
      *
      * @return true 如果是 INSERT Undo

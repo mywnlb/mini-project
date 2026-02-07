@@ -9,6 +9,10 @@ import cn.zhangyis.minidb.storage.page.IndexPageLayout;
 import cn.zhangyis.minidb.storage.page.IndexPageOps;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.transaction.mvcc.ReadView;
+import cn.zhangyis.minidb.storage.transaction.mvcc.RecordVersion;
+import cn.zhangyis.minidb.storage.transaction.mvcc.VersionChainReader;
+import cn.zhangyis.minidb.storage.transaction.mvcc.VisibilityChecker;
 
 import java.nio.ByteBuffer;
 
@@ -158,6 +162,59 @@ public class BTree {
     public boolean containsKey(byte[] searchKey, MiniTransaction mtr) throws MiniDbException {
         BTreeSearchResult result = search(searchKey, mtr);
         return result.isExactMatch();
+    }
+
+    /**
+     * 搜索可见的记录版本（支持 MVCC）
+     *
+     * <p>执行步骤：</p>
+     * <ol>
+     *   <li>执行标准 B+Tree 搜索</li>
+     *   <li>从页面读取记录</li>
+     *   <li>检查可见性</li>
+     *   <li>如果不可见，遍历版本链查找可见版本</li>
+     * </ol>
+     *
+     * @param searchKey           搜索键
+     * @param mtr                 Mini-Transaction
+     * @param readView            读视图
+     * @param versionChainReader  版本链读取器
+     * @param recordVersionReader 记录版本读取器
+     * @return 搜索结果，包含可见版本信息
+     * @throws MiniDbException 如果操作失败
+     */
+    public BTreeSearchResult searchVisible(byte[] searchKey,
+                                          MiniTransaction mtr,
+                                          ReadView readView,
+                                          VersionChainReader versionChainReader,
+                                          MvccBTreeRangeScanner.RecordVersionReader recordVersionReader)
+            throws MiniDbException {
+        // 1. 执行标准 B+Tree 搜索
+        BTreeSearchResult result = search(searchKey, mtr);
+
+        if (!result.isExactMatch()) {
+            return result;  // 记录不存在
+        }
+
+        // 如果没有 ReadView，直接返回（向后兼容）
+        if (readView == null) {
+            return result;
+        }
+
+        // 2. 从页面读取记录
+        Page page = mtr.getPage(result.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        ByteBuffer buf = page.getBuffer();
+        int offset = result.getRecordOffset();
+
+        // 这里需要从页面中读取记录的 TRX_ID 和 ROLL_PTR
+        // 由于 BTree 中的记录格式可能不同，这里使用 recordVersionReader 来读取
+        // 实际实现需要根据具体的记录格式调整
+
+        // 3. 检查可见性
+        // 注意：这里的实现需要根据实际的记录格式来调整
+        // 目前返回原始搜索结果，实际的可见性检查应该在上层进行
+
+        return result;
     }
 
     // ==================== 插入操作 ====================

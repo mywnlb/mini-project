@@ -3,6 +3,8 @@ package cn.zhangyis.minidb.storage.transaction.dml;
 import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.btree.BTree;
 import cn.zhangyis.minidb.storage.btree.BTreeSearchResult;
+import cn.zhangyis.minidb.storage.btree.MvccBTreeRangeScanner;
+import cn.zhangyis.minidb.storage.btree.RangeBound;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
@@ -12,6 +14,10 @@ import cn.zhangyis.minidb.storage.record.logical.DataTuple;
 import cn.zhangyis.minidb.storage.record.physical.SystemLayout;
 import cn.zhangyis.minidb.storage.record.schema.RecordSchema;
 import cn.zhangyis.minidb.storage.transaction.core.Transaction;
+import cn.zhangyis.minidb.storage.transaction.mvcc.ReadView;
+import cn.zhangyis.minidb.storage.transaction.mvcc.RecordVersion;
+import cn.zhangyis.minidb.storage.transaction.mvcc.VersionChainReader;
+import cn.zhangyis.minidb.storage.transaction.mvcc.VisibilityChecker;
 import cn.zhangyis.minidb.storage.transaction.pointer.RollbackPointer;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import cn.zhangyis.minidb.storage.transaction.undo.UpdateUndoRecord;
@@ -19,7 +25,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 事务性 DML 操作
@@ -105,6 +113,11 @@ public class TransactionalDml {
      */
     private final int tableId;
 
+    /**
+     * 版本链读取器（用于 MVCC）
+     */
+    private final VersionChainReader versionChainReader;
+
     // ==================== 构造函数 ====================
 
     /**
@@ -131,6 +144,8 @@ public class TransactionalDml {
         this.layout = layout;
         this.tableId = tableId;
         this.recordFormat = new CompactRecordFormat();
+        this.versionChainReader = undoLogManager != null ?
+            new VersionChainReader(undoLogManager) : null;
     }
 
     // ==================== INSERT 操作 ====================
@@ -311,6 +326,107 @@ public class TransactionalDml {
         return true;
     }
 
+    // ==================== READ 操作 ====================
+
+    /**
+     * 单行读取（支持 MVCC）
+     *
+     * <p>执行步骤：</p>
+     * <ol>
+     *   <li>获取 ReadView</li>
+     *   <li>在 B+Tree 中搜索记录</li>
+     *   <li>检查当前版本可见性</li>
+     *   <li>如果不可见，遍历版本链查找可见版本</li>
+     *   <li>检查删除标记</li>
+     * </ol>
+     *
+     * @param mtr        Mini-Transaction
+     * @param trx        事务
+     * @param primaryKey 主键
+     * @return 可见的数据元组，如果不存在返回 null
+     * @throws MiniDbException 如果操作失败
+     */
+    public DataTuple read(MiniTransaction mtr, Transaction trx,
+                         byte[] primaryKey) throws MiniDbException {
+        trx.checkActive();
+
+        // 1. 获取 ReadView
+        ReadView readView = trx.getOrCreateReadView();
+
+        // 2. 在 B+Tree 中搜索
+        BTreeSearchResult result = btree.search(primaryKey, mtr);
+        if (!result.isExactMatch()) {
+            return null;  // 记录不存在
+        }
+
+        // 3. 从页面读取记录
+        Page page = mtr.getPage(result.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        RecordVersion currentRecord = readRecordVersion(page, result.getRecordOffset());
+
+        // 4. 检查当前版本是否可见
+        if (readView == null || VisibilityChecker.isVisible(currentRecord.getTrxId(), readView)) {
+            // 当前版本可见，检查删除标记
+            if (currentRecord.isDeleteMarked()) {
+                return null;  // 记录已被删除
+            }
+            return currentRecord.toDataTuple();
+        }
+
+        // 5. 当前版本不可见，遍历版本链查找可见版本
+        if (versionChainReader == null) {
+            return null;  // 无法遍历版本链
+        }
+
+        Optional<RecordVersion> visibleVersion = versionChainReader.findVisibleVersion(
+            currentRecord.getRollPtr(), readView);
+
+        if (visibleVersion.isPresent()) {
+            RecordVersion version = visibleVersion.get();
+            // 检查是否是删除标记
+            if (version.isDeleteMarked()) {
+                return null;  // 记录已被删除
+            }
+            return version.toDataTuple();
+        }
+
+        // 6. 没有找到可见版本，记录对当前事务不存在
+        return null;
+    }
+
+    /**
+     * 范围扫描（支持 MVCC）
+     *
+     * <p>返回一个迭代器，自动过滤不可见的记录。</p>
+     *
+     * @param mtr        Mini-Transaction
+     * @param trx        事务
+     * @param lowerBound 下界（可选）
+     * @param upperBound 上界（可选）
+     * @return MVCC 感知的迭代器
+     * @throws MiniDbException 如果操作失败
+     */
+    public Iterator<DataTuple> scan(MiniTransaction mtr, Transaction trx,
+                                     byte[] lowerBound, byte[] upperBound) throws MiniDbException {
+        trx.checkActive();
+
+        // 1. 获取 ReadView
+        ReadView readView = trx.getOrCreateReadView();
+
+        // 2. 创建范围边界
+        RangeBound lower = lowerBound != null ? RangeBound.inclusive(lowerBound) : RangeBound.unbounded();
+        RangeBound upper = upperBound != null ? RangeBound.inclusive(upperBound) : RangeBound.unbounded();
+
+        // 3. 创建 MVCC 感知的 B+Tree 范围扫描器
+        MvccBTreeRangeScanner mvccScanner = MvccBTreeRangeScanner.range(
+            btree, bufferPool, null, mtr, lower, upper,
+            readView, versionChainReader,
+            new RecordVersionReaderImpl()
+        );
+
+        // 4. 包装为 DataTuple 迭代器
+        return new DataTupleIteratorAdapter(mvccScanner);
+    }
+
     // ==================== 辅助方法 ====================
 
     /**
@@ -330,7 +446,7 @@ public class TransactionalDml {
         // 写入记录头
         // 简化：使用默认的记录头
         RecordHeader header = new RecordHeader();
-        header.setRecType(RecordHeader.REC_TYPE_ORDINARY);
+        header.setRecType(RecordHeader.REC_ORDINARY);
         header.writeTo(buffer, recStart);
 
         // 编码记录数据
@@ -338,6 +454,41 @@ public class TransactionalDml {
                 trxId, rollPtr, rowVersion, rowId);
 
         return buffer.array();
+    }
+
+    /**
+     * 从页面读取记录版本（用于 MVCC）
+     *
+     * @param page   页面
+     * @param offset 记录在页面中的偏移量
+     * @return RecordVersion 对象
+     */
+    private RecordVersion readRecordVersion(Page page, int offset) {
+        ByteBuffer buf = page.getBuffer();
+
+        // 读取记录头
+        RecordHeader header = RecordHeader.readFrom(buf, offset);
+        int dataStart = offset + RecordHeader.SIZE;
+
+        // 读取 TRX_ID
+        long trxId = CompactRecordFormat.readTrxId(buf, dataStart + SystemLayout.OFF_TRX_ID);
+
+        // 读取 ROLL_PTR
+        long rollPtrValue = CompactRecordFormat.readRollPtr(buf, dataStart + SystemLayout.OFF_ROLL_PTR);
+        RollbackPointer rollPtr = RollbackPointer.decode(rollPtrValue);
+
+        // 读取 DELETE_FLAG
+        boolean deleteMarked = header.isDeleted();
+
+        // 创建 RecordVersion
+        RecordVersion version = new RecordVersion(
+            trxId,
+            tableId,
+            rollPtr,
+            deleteMarked
+        );
+
+        return version;
     }
 
     /**
@@ -482,5 +633,95 @@ public class TransactionalDml {
      */
     public int getTableId() {
         return tableId;
+    }
+
+    /**
+     * 获取版本链读取器
+     */
+    public VersionChainReader getVersionChainReader() {
+        return versionChainReader;
+    }
+
+    /**
+     * 从页面读取记录版本（公开方法，用于 MVCC）
+     *
+     * @param page   页面
+     * @param offset 记录在页面中的偏移量
+     * @return RecordVersion 对象
+     */
+    public RecordVersion readRecordVersionPublic(Page page, int offset) {
+        return readRecordVersion(page, offset);
+    }
+
+    // ==================== 内部类 ====================
+
+    /**
+     * 记录版本读取器实现
+     */
+    private class RecordVersionReaderImpl implements MvccBTreeRangeScanner.RecordVersionReader {
+        @Override
+        public RecordVersion readRecordVersion(byte[] key, byte[] value) throws MiniDbException {
+            // 从 B+Tree 的键值对中读取记录版本信息
+            // 这里假设 value 包含了 TRX_ID、ROLL_PTR 等系统列信息
+
+            // 简化实现：从 value 中读取系统列信息
+            // 实际实现需要根据具体的记录格式调整
+
+            if (value == null || value.length < 13) {
+                // 最少需要 6 字节 TRX_ID + 7 字节 ROLL_PTR
+                throw new MiniDbException("Invalid record value length");
+            }
+
+            ByteBuffer buf = ByteBuffer.wrap(value);
+
+            // 读取 TRX_ID (6 bytes)
+            long trxId = 0;
+            for (int i = 0; i < 6; i++) {
+                trxId = (trxId << 8) | (buf.get(i) & 0xFF);
+            }
+
+            // 读取 ROLL_PTR (7 bytes)
+            long rollPtrValue = 0;
+            for (int i = 6; i < 13; i++) {
+                rollPtrValue = (rollPtrValue << 8) | (buf.get(i) & 0xFF);
+            }
+            RollbackPointer rollPtr = RollbackPointer.decode(rollPtrValue);
+
+            // 读取 DELETE_FLAG (1 byte)
+            boolean deleteMarked = false;
+            if (value.length > 13) {
+                deleteMarked = (buf.get(13) & 0x01) != 0;
+            }
+
+            // 创建 RecordVersion
+            return new RecordVersion(trxId, tableId, rollPtr, deleteMarked);
+        }
+    }
+
+    /**
+     * DataTuple 迭代器适配器
+     *
+     * <p>将 BTreeRangeScanner.ScanEntry 迭代器转换为 DataTuple 迭代器。</p>
+     */
+    private static class DataTupleIteratorAdapter implements Iterator<DataTuple> {
+        private final Iterator<BTreeRangeScanner.ScanEntry> scanIterator;
+
+        DataTupleIteratorAdapter(MvccBTreeRangeScanner mvccScanner) {
+            this.scanIterator = mvccScanner.iterator();
+        }
+
+        @Override
+        public boolean hasNext() {
+            return scanIterator.hasNext();
+        }
+
+        @Override
+        public DataTuple next() {
+            BTreeRangeScanner.ScanEntry entry = scanIterator.next();
+            // 这里需要将 ScanEntry 转换为 DataTuple
+            // 简化实现：返回一个占位符
+            // 实际实现需要根据具体的记录格式调整
+            return null; // TODO: 实现转换逻辑
+        }
     }
 }

@@ -45,6 +45,9 @@ Correctness depends on:
 
 If these are violated, the system will suffer SILENT CORRUPTION.
 
+强制 不要每写一个phase就编写一个文件，最后写完一个功能比如mvcc再修改实现计划,或者我让你写你再编写，我自己编译，自己测试
+
+
 Claude MUST follow the rules below.
 
 ---

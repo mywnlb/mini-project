@@ -7,6 +7,7 @@ import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.redo.RedoLogManager;
 import cn.zhangyis.minidb.storage.transaction.mvcc.ReadView;
+import cn.zhangyis.minidb.storage.transaction.purge.PurgeCoordinator;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoRecord;
 import org.slf4j.Logger;
@@ -154,6 +155,13 @@ public class TransactionManager {
      */
     private volatile boolean initialized;
 
+    /**
+     * Purge 协调器
+     *
+     * <p>用于跟踪活跃的 ReadView，计算可以安全清理的 TRX_ID 边界。</p>
+     */
+    private volatile PurgeCoordinator purgeCoordinator;
+
     // ==================== 构造函数 ====================
 
     /**
@@ -269,6 +277,12 @@ public class TransactionManager {
 
             nextTrxIdCache.set(1);
             trxIdCacheLimit = Long.MAX_VALUE;  // 不需要从系统页分配
+
+            // 初始化 Purge 协调器
+            if (purgeCoordinator == null) {
+                purgeCoordinator = new PurgeCoordinator(this);
+            }
+
             initialized = true;
             logger.info("Initialized TransactionManager in memory mode");
         }
@@ -302,6 +316,9 @@ public class TransactionManager {
         // 创建事务对象
         Transaction trx = new Transaction(trxId, isolationLevel);
 
+        // 设置 TransactionManager 引用
+        trx.setTransactionManager(this);
+
         // 添加到活跃事务列表
         activeTrxLock.readLock().lock();
         try {
@@ -323,6 +340,7 @@ public class TransactionManager {
      *   <li>设置状态为 COMMIT_PENDING</li>
      *   <li>通知 UndoLogManager 事务提交</li>
      *   <li>设置状态为 COMMITTED</li>
+     *   <li>注销 ReadView</li>
      *   <li>从活跃列表移除</li>
      * </ol>
      * </p>
@@ -355,6 +373,15 @@ public class TransactionManager {
             // 状态转换: COMMIT_PENDING -> COMMITTED
             trx.setState(TransactionState.COMMITTED);
 
+            // 注销 ReadView（Purge 安全门控）
+            ReadView cachedReadView = trx.getCachedReadView();
+            if (cachedReadView != null) {
+                trx.unregisterReadView(cachedReadView);
+            }
+
+            // 清除缓存的 ReadView
+            trx.clearCachedReadView();
+
             // 从活跃列表移除
             activeTransactions.remove(trx.getId());
 
@@ -382,6 +409,7 @@ public class TransactionManager {
      *   <li>设置状态为 ROLLBACK_PENDING</li>
      *   <li>从 UndoLogManager 获取 Undo 记录并应用</li>
      *   <li>设置状态为 ROLLED_BACK</li>
+     *   <li>注销 ReadView</li>
      *   <li>从活跃列表移除</li>
      * </ol>
      * </p>
@@ -428,6 +456,15 @@ public class TransactionManager {
 
             // 状态转换: ROLLBACK_PENDING -> ROLLED_BACK
             trx.setState(TransactionState.ROLLED_BACK);
+
+            // 注销 ReadView（Purge 安全门控）
+            ReadView cachedReadView = trx.getCachedReadView();
+            if (cachedReadView != null) {
+                trx.unregisterReadView(cachedReadView);
+            }
+
+            // 清除缓存的 ReadView
+            trx.clearCachedReadView();
 
             // 从活跃列表移除
             activeTransactions.remove(trx.getId());
@@ -593,6 +630,52 @@ public class TransactionManager {
      */
     public long getNextTrxId() {
         return nextTrxIdCache.get();
+    }
+
+    // ==================== Purge 安全门控方法 ====================
+
+    /**
+     * 获取 Purge 协调器
+     *
+     * @return Purge 协调器
+     */
+    public PurgeCoordinator getPurgeCoordinator() {
+        ensureInitialized();
+        if (purgeCoordinator == null) {
+            synchronized (trxIdAllocLock) {
+                if (purgeCoordinator == null) {
+                    purgeCoordinator = new PurgeCoordinator(this);
+                }
+            }
+        }
+        return purgeCoordinator;
+    }
+
+    /**
+     * 注册 ReadView 到 Purge 协调器
+     *
+     * <p>当创建 ReadView 时调用，确保 Purge 线程不会清理活跃 ReadView 需要的版本。</p>
+     *
+     * @param readView ReadView 对象
+     */
+    public void registerReadView(ReadView readView) {
+        if (readView != null) {
+            PurgeCoordinator coordinator = getPurgeCoordinator();
+            coordinator.registerReadView(readView);
+        }
+    }
+
+    /**
+     * 注销 ReadView 从 Purge 协调器
+     *
+     * <p>当 ReadView 不再需要时调用（事务提交/回滚后）。</p>
+     *
+     * @param readView ReadView 对象
+     */
+    public void unregisterReadView(ReadView readView) {
+        if (readView != null && purgeCoordinator != null) {
+            purgeCoordinator.unregisterReadView(readView);
+        }
     }
 
     // ==================== 辅助方法 ====================

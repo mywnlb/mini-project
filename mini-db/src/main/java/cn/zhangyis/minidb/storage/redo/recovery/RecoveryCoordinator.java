@@ -8,6 +8,7 @@ import cn.zhangyis.minidb.storage.redo.fileset.LsnMapper;
 import cn.zhangyis.minidb.storage.redo.fileset.RedoLogFileSet;
 import cn.zhangyis.minidb.storage.redo.record.MultiRecEndRecord;
 import cn.zhangyis.minidb.storage.redo.record.RedoRecord;
+import cn.zhangyis.minidb.storage.transaction.recovery.UndoRecoveryManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,6 +62,20 @@ public class RecoveryCoordinator {
     /** Buffer Pool */
     private final BufferPool bufferPool;
 
+    // ==================== Undo 恢复配置 ====================
+
+    /** Undo 表空间 ID（-1 表示禁用 Undo 恢复） */
+    private int undoSpaceId = -1;
+
+    /** Undo Page 起始页号 */
+    private int undoPageStart = 0;
+
+    /** Undo Page 结束页号 */
+    private int undoPageEnd = 0;
+
+    /** Undo 记录应用器 */
+    private UndoRecoveryManager.UndoRecordApplier undoRecordApplier;
+
     // ==================== 状态 ====================
 
     /** 最新的 checkpoint */
@@ -68,6 +83,9 @@ public class RecoveryCoordinator {
 
     /** 恢复统计 */
     private RecoveryStats stats;
+
+    /** Undo 恢复统计 */
+    private UndoRecoveryManager.RecoveryStats undoStats;
 
     // ==================== 构造函数 ====================
 
@@ -81,6 +99,27 @@ public class RecoveryCoordinator {
         this.fileSet = fileSet;
         this.bufferPool = bufferPool;
         this.stats = new RecoveryStats();
+    }
+
+    /**
+     * 配置 Undo 恢复参数
+     *
+     * <p>如果不调用此方法，将跳过 Undo 回滚阶段。</p>
+     *
+     * @param undoSpaceId  Undo 表空间 ID
+     * @param undoPageStart Undo Page 起始页号
+     * @param undoPageEnd   Undo Page 结束页号
+     * @param undoRecordApplier Undo 记录应用器
+     * @return this（用于链式调用）
+     */
+    public RecoveryCoordinator configureUndoRecovery(int undoSpaceId, int undoPageStart,
+                                                      int undoPageEnd,
+                                                      UndoRecoveryManager.UndoRecordApplier undoRecordApplier) {
+        this.undoSpaceId = undoSpaceId;
+        this.undoPageStart = undoPageStart;
+        this.undoPageEnd = undoPageEnd;
+        this.undoRecordApplier = undoRecordApplier;
+        return this;
     }
 
     // ==================== 核心方法 ====================
@@ -178,7 +217,10 @@ public class RecoveryCoordinator {
             logger.info("Redo scan completed: {} groups, {} records applied, {} skipped",
                     groupCount, stats.recordsApplied, stats.recordsSkipped);
 
-            // 5. 刷新所有脏页
+            // 5. 执行 Undo 回滚阶段（回滚未提交的事务）
+            performUndoRecovery();
+
+            // 6. 刷新所有脏页
             logger.info("Flushing recovered dirty pages...");
             bufferPool.flushAllPages();
 
@@ -193,6 +235,38 @@ public class RecoveryCoordinator {
         } catch (MiniDbException e) {
             throw new RecoveryException("Recovery failed", e);
         }
+    }
+
+    /**
+     * 执行 Undo 回滚恢复阶段
+     *
+     * <p>扫描 Undo 表空间，找出未提交的事务并执行回滚。</p>
+     *
+     * @throws MiniDbException 如果 Undo 恢复失败
+     */
+    private void performUndoRecovery() throws MiniDbException {
+        // 检查是否配置了 Undo 恢复
+        if (undoSpaceId < 0) {
+            logger.debug("Undo recovery not configured, skipping");
+            return;
+        }
+
+        if (undoRecordApplier == null) {
+            logger.warn("Undo record applier not configured, skipping Undo recovery");
+            return;
+        }
+
+        logger.info("Starting Undo recovery phase...");
+
+        UndoRecoveryManager undoRecoveryManager = new UndoRecoveryManager(
+                bufferPool, undoSpaceId, undoPageStart, undoPageEnd);
+
+        undoRecoveryManager.recover(undoRecordApplier);
+
+        undoStats = undoRecoveryManager.getStats();
+
+        logger.info("Undo recovery completed: {} transactions rolled back, {} records processed",
+                undoStats.transactionsRolledBack, undoStats.recordsRolledBack);
     }
 
     // ==================== Checkpoint 读取 ====================
@@ -269,6 +343,13 @@ public class RecoveryCoordinator {
      */
     public RecoveryStats getStats() {
         return stats;
+    }
+
+    /**
+     * 获取 Undo 恢复统计
+     */
+    public UndoRecoveryManager.RecoveryStats getUndoStats() {
+        return undoStats;
     }
 
     /**
