@@ -612,3 +612,18 @@ if (history_list_length > threshold) {
 - 涉及数据页 + 链指针更新
 - 必须有完整的 latch + redo + 回归测试
 - 并发冲突场景复杂
+
+📋 后续工作
+
+中期（建议）：
+- 与数据访问层集成（识别待压缩链段）
+- 实现 appendMergedUndo()
+- 实现 updateRollPtr()
+- 性能基准测试
+- 集成测试（混合工作负载）
+
+长期（可选）：
+- 多线程 Purge（并行清理多个 Segment）
+- 多线程压缩（并行压缩多个链段）
+- 自适应调度（根据系统负载调整）
+- 压缩与 Purge 的协调优化

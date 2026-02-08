@@ -359,6 +359,23 @@ public class IndexManager {
     }
 
     /**
+     * 获取所有表 ID
+     *
+     * <p>用于遍历所有表，例如在 Undo 压缩时扫描所有表的记录。</p>
+     *
+     * @return 所有表 ID 的集合
+     */
+    public java.util.Set<Long> getAllTableIds() {
+        java.util.Set<Long> tableIds = new java.util.HashSet<>();
+        for (IndexDescriptor desc : descriptorCache.values()) {
+            if (!desc.isDeleted()) {
+                tableIds.add(desc.getTableId());
+            }
+        }
+        return tableIds;
+    }
+
+    /**
      * 检查索引是否存在
      *
      * @param indexId 索引 ID

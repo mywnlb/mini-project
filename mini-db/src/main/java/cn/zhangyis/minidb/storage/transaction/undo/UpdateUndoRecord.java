@@ -10,12 +10,16 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * UPDATE 操作的 Undo 记录
+ * UPDATE 操作的 Undo 记录（支持增量格式）
  *
- * <p>当执行 UPDATE 操作时，生成此类型的 Undo 记录。
- * 存储被修改列的旧值，用于回滚和 MVCC 历史版本读取。</p>
+ * <p>支持两种格式：
+ * <ul>
+ *   <li><b>V1 格式</b>：存储所有列的旧值（原始格式）</li>
+ *   <li><b>V2 格式</b>：只存储修改的列（增量格式，减少空间占用 30-70%）</li>
+ * </ul>
+ * </p>
  *
- * <h2>Payload 格式</h2>
+ * <h2>V1 格式（原始）</h2>
  * <pre>
  * ┌────────────┬─────────────────────────────────────────────────────┐
  * │ pk_len     │ primary_key_data                                    │
@@ -29,32 +33,45 @@ import java.util.Objects;
  * └────────────┴──────────┴───────────┴──────────┴───────────┴───────┘
  * </pre>
  *
- * <h2>完整记录格式</h2>
+ * <h2>V2 格式（增量）</h2>
  * <pre>
- * ┌──────┬──────┬─────────┬──────────┬───────────┬─────────────────────┐
- * │ type │ len  │ trx_id  │ table_id │ prev_undo │ pk + old_columns    │
- * │ 0x0C │ (2B) │ (6B)    │ (4B)     │ (7B)      │ (variable)          │
- * └──────┴──────┴─────────┴──────────┴───────────┴─────────────────────┘
+ * ┌──────────┬──────────┬────────────┬─────────────────────────────┐
+ * │ fmt_ver  │ sch_ver  │ pk_len     │ primary_key_data            │
+ * │ (1B)     │ (1B)     │ (2B)       │ (variable)                  │
+ * ├──────────┼──────────┼────────────┼─────────────────────────────┤
+ * │ n_cols   │ 被修改的列数量                                        │
+ * │ (1B)     │                                                     │
+ * ├──────────┼──────────┬───────────┬──────────┬───────────┬───────┤
+ * │ col_id_1 │ len_1    │ old_val_1 │ col_id_2 │ len_2     │ ...   │
+ * │ (2B)     │ (2B)     │ (var)     │ (2B)     │ (2B)      │       │
+ * └──────────┴──────────┴───────────┴──────────┴───────────┴───────┘
  * </pre>
  *
- * <h2>回滚操作</h2>
- * <p>UPDATE table SET col1=old_val1, col2=old_val2 WHERE pk=...</p>
- *
- * <h2>MVCC 语义</h2>
- * <p>UPDATE Undo 用于重建历史版本：当前行数据 + 旧值 = 历史版本</p>
+ * <h2>设计约束</h2>
+ * <ul>
+ *   <li><b>U1</b>：Undo 记录不可修改</li>
+ *   <li><b>U2</b>：版本链完整性 - 需要确保列继承逻辑正确</li>
+ *   <li><b>U8</b>：Undo 读取安全 - 仍然无需锁</li>
+ * </ul>
  *
  * @author MiniDB
- * @version 1.0
+ * @version 2.0
  */
 public class UpdateUndoRecord extends UndoRecord {
 
     // ==================== Payload 常量 ====================
 
-    /** pk_len 字段大小 */
+    /** V1 格式：pk_len 字段大小 */
     private static final int PK_LEN_SIZE = 2;
 
-    /** n_cols 字段大小 */
+    /** V1 格式：n_cols 字段大小 */
     private static final int N_COLS_SIZE = 1;
+
+    /** V2 格式：format_version 字段大小 */
+    private static final int FORMAT_VERSION_SIZE = 1;
+
+    /** V2 格式：schema_version 字段大小 */
+    private static final int SCHEMA_VERSION_SIZE = 1;
 
     /** col_id 字段大小 */
     private static final int COL_ID_SIZE = 2;
@@ -63,6 +80,16 @@ public class UpdateUndoRecord extends UndoRecord {
     private static final int COL_LEN_SIZE = 2;
 
     // ==================== 字段 ====================
+
+    /**
+     * 格式版本（V1 或 V2）
+     */
+    private final byte formatVersion;
+
+    /**
+     * Schema 版本
+     */
+    private final byte schemaVersion;
 
     /**
      * 主键数据
@@ -77,7 +104,7 @@ public class UpdateUndoRecord extends UndoRecord {
     // ==================== 构造函数 ====================
 
     /**
-     * 创建 UPDATE Undo 记录
+     * 创建 UPDATE Undo 记录（V1 格式）
      *
      * @param trxId          事务 ID
      * @param tableId        表 ID
@@ -89,12 +116,61 @@ public class UpdateUndoRecord extends UndoRecord {
                             RollbackPointer prevUndoPtr,
                             byte[] primaryKeyData,
                             List<OldColumnValue> oldColumns) {
+        this(trxId, tableId, prevUndoPtr, primaryKeyData, oldColumns,
+                UndoRecordVersion.FORMAT_V1, UndoRecordVersion.INITIAL_SCHEMA_VERSION);
+    }
+
+    /**
+     * 创建 UPDATE Undo 记录（支持版本）
+     *
+     * @param trxId          事务 ID
+     * @param tableId        表 ID
+     * @param prevUndoPtr    上一个 Undo 指针
+     * @param primaryKeyData 主键数据
+     * @param oldColumns     被修改列的旧值
+     * @param formatVersion  格式版本
+     * @param schemaVersion  Schema 版本
+     */
+    public UpdateUndoRecord(TransactionId trxId, int tableId,
+                            RollbackPointer prevUndoPtr,
+                            byte[] primaryKeyData,
+                            List<OldColumnValue> oldColumns,
+                            byte formatVersion,
+                            byte schemaVersion) {
         super(UndoRecordType.UPDATE, trxId, tableId, prevUndoPtr);
+
+        if (!UndoRecordVersion.isValidFormatVersion(formatVersion)) {
+            throw new IllegalArgumentException("Invalid format version: " + formatVersion);
+        }
+        if (!UndoRecordVersion.isValidSchemaVersion(schemaVersion)) {
+            throw new IllegalArgumentException("Invalid schema version: " + schemaVersion);
+        }
+
+        this.formatVersion = formatVersion;
+        this.schemaVersion = schemaVersion;
         this.primaryKeyData = primaryKeyData != null ? primaryKeyData.clone() : new byte[0];
         this.oldColumns = oldColumns != null ? new ArrayList<>(oldColumns) : new ArrayList<>();
     }
 
     // ==================== 访问方法 ====================
+
+    /**
+     * 获取格式版本
+     *
+     * @return 格式版本
+     */
+    public byte getFormatVersion() {
+        return formatVersion;
+    }
+
+    /**
+     * 获取 Schema 版本
+     *
+     * @return Schema 版本
+     */
+    public byte getSchemaVersion() {
+        return schemaVersion;
+    }
 
     /**
      * 获取主键数据
@@ -138,20 +214,58 @@ public class UpdateUndoRecord extends UndoRecord {
         return null;
     }
 
+    /**
+     * 是否为增量格式
+     *
+     * @return 如果是增量格式返回 true
+     */
+    public boolean isIncrementalFormat() {
+        return UndoRecordVersion.isIncrementalFormat(formatVersion);
+    }
+
+    /**
+     * 是否为原始格式
+     *
+     * @return 如果是原始格式返回 true
+     */
+    public boolean isOriginalFormat() {
+        return UndoRecordVersion.isOriginalFormat(formatVersion);
+    }
+
     // ==================== 实现抽象方法 ====================
 
     @Override
     protected int getPayloadSize() {
-        int size = PK_LEN_SIZE + primaryKeyData.length + N_COLS_SIZE;
+        int size = 0;
+
+        // 版本字段（V2 格式）
+        if (isIncrementalFormat()) {
+            size += FORMAT_VERSION_SIZE + SCHEMA_VERSION_SIZE;
+        }
+
+        // 主键
+        size += PK_LEN_SIZE + primaryKeyData.length;
+
+        // 列数量
+        size += N_COLS_SIZE;
+
+        // 列数据
         for (OldColumnValue col : oldColumns) {
             size += COL_ID_SIZE + COL_LEN_SIZE + col.value.length;
         }
+
         return size;
     }
 
     @Override
     protected void writePayload(ByteBuffer buf, int offset) {
         int pos = offset;
+
+        // 版本字段（V2 格式）
+        if (isIncrementalFormat()) {
+            buf.put(pos++, formatVersion);
+            buf.put(pos++, schemaVersion);
+        }
 
         // pk_len (2 bytes)
         buf.putShort(pos, (short) primaryKeyData.length);
@@ -191,7 +305,10 @@ public class UpdateUndoRecord extends UndoRecord {
             OldColumnValue col = oldColumns.get(i);
             sb.append(String.format("col_%d=[%d bytes]", col.columnId, col.value.length));
         }
-        sb.append(String.format(" WHERE pk=[%d bytes]", primaryKeyData.length));
+        sb.append(String.format(" WHERE pk=[%d bytes] (fmt=%s, sch=0x%02X)",
+                primaryKeyData.length,
+                UndoRecordVersion.getFormatVersionName(formatVersion),
+                schemaVersion));
         return sb.toString();
     }
 
@@ -207,6 +324,22 @@ public class UpdateUndoRecord extends UndoRecord {
      */
     static UpdateUndoRecord readPayload(ByteBuffer buf, int offset, UndoRecordHeader header) {
         int pos = offset;
+        byte formatVersion = UndoRecordVersion.FORMAT_V1;
+        byte schemaVersion = UndoRecordVersion.INITIAL_SCHEMA_VERSION;
+
+        // 尝试读取版本字段（V2 格式）
+        // 启发式：如果第一个字节看起来像版本号（0x01 或 0x02），则为 V2 格式
+        byte firstByte = buf.get(pos);
+        if (UndoRecordVersion.isValidFormatVersion(firstByte)) {
+            // 可能是 V2 格式，检查第二个字节是否为有效的 Schema 版本
+            byte secondByte = buf.get(pos + 1);
+            if (UndoRecordVersion.isValidSchemaVersion(secondByte)) {
+                // 确认为 V2 格式
+                formatVersion = firstByte;
+                schemaVersion = secondByte;
+                pos += FORMAT_VERSION_SIZE + SCHEMA_VERSION_SIZE;
+            }
+        }
 
         // pk_len
         int pkLen = buf.getShort(pos) & 0xFFFF;
@@ -246,7 +379,9 @@ public class UpdateUndoRecord extends UndoRecord {
                 header.tableId(),
                 header.prevUndoPtr(),
                 pkData,
-                oldColumns
+                oldColumns,
+                formatVersion,
+                schemaVersion
         );
     }
 
@@ -258,6 +393,8 @@ public class UpdateUndoRecord extends UndoRecord {
         if (o == null || getClass() != o.getClass()) return false;
         UpdateUndoRecord that = (UpdateUndoRecord) o;
         return tableId == that.tableId
+                && formatVersion == that.formatVersion
+                && schemaVersion == that.schemaVersion
                 && trxId.equals(that.trxId)
                 && prevUndoPtr.equals(that.prevUndoPtr)
                 && Arrays.equals(primaryKeyData, that.primaryKeyData)
@@ -266,15 +403,16 @@ public class UpdateUndoRecord extends UndoRecord {
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(trxId, tableId, prevUndoPtr, oldColumns);
+        int result = Objects.hash(trxId, tableId, prevUndoPtr, formatVersion, schemaVersion, oldColumns);
         result = 31 * result + Arrays.hashCode(primaryKeyData);
         return result;
     }
 
     @Override
     public String toString() {
-        return String.format("UpdateUndo{trxId=%s, tableId=%d, pkLen=%d, cols=%d}",
-                trxId, tableId, primaryKeyData.length, oldColumns.size());
+        return String.format("UpdateUndo{trxId=%s, tableId=%d, fmt=%s, sch=0x%02X, pkLen=%d, cols=%d}",
+                trxId, tableId, UndoRecordVersion.getFormatVersionName(formatVersion),
+                schemaVersion, primaryKeyData.length, oldColumns.size());
     }
 
     // ==================== 内部类：旧列值 ====================

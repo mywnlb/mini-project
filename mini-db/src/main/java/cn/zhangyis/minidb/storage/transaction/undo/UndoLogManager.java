@@ -525,6 +525,52 @@ public class UndoLogManager {
     }
 
     /**
+     * 追加写合并后的 Undo 记录
+     *
+     * <p>用于 Undo 压缩：将多个 UPDATE Undo 记录合并为一个，
+     * 然后追加写到 Undo 日志中。</p>
+     *
+     * <p>设计约束：
+     * <ul>
+     *   <li><b>U1</b>：Undo 记录不可修改 - 追加写保证</li>
+     *   <li><b>U2</b>：版本链完整性 - 合并后版本链仍完整</li>
+     *   <li><b>I3</b>：Roll_ptr 更新原子性 - MTR 保证 redo 日志生成</li>
+     * </ul>
+     * </p>
+     *
+     * @param mergedUndo 合并后的 Undo 记录
+     * @param mtr        迷你事务
+     * @return 新的 RollbackPointer，如果失败返回 null
+     * @throws MiniDbException 如果写入失败
+     */
+    public RollbackPointer appendMergedUndo(UpdateUndoRecord mergedUndo, MiniTransaction mtr)
+            throws MiniDbException {
+        try {
+            // 从合并后的 Undo 记录中获取事务 ID
+            TransactionId trxId = mergedUndo.getTrxId();
+
+            // 选择 Rollback Segment（使用与原始事务相同的选择策略）
+            int rsegId = selectRollbackSegment(trxId);
+
+            // 获取或创建 UPDATE Undo Segment
+            // 注意：这里我们直接使用 rsegId 创建 Segment，而不是通过 Transaction 对象
+            UndoSegment segment = updateSegments.computeIfAbsent(trxId, tid -> {
+                UndoSegment newSegment = new UndoSegment(tid, rsegId, false);
+                logger.debug("Created UPDATE UndoSegment for merged undo: trxId={}, rsegId={}",
+                        tid, rsegId);
+                return newSegment;
+            });
+
+            // 写入合并后的 Undo 记录
+            return writeUndoRecord(mtr, segment, mergedUndo);
+
+        } catch (Exception e) {
+            logger.error("Failed to append merged undo", e);
+            throw new MiniDbException("Failed to append merged undo: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 写入 Undo 记录到 Segment
      *
      * @param mtr        Mini-Transaction
