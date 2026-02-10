@@ -2,12 +2,14 @@ package cn.zhangyis.minidb.storage.transaction.purge;
 
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.btree.BTree;
+import cn.zhangyis.minidb.storage.btree.BTreeSearchResult;
 import cn.zhangyis.minidb.storage.btree.BTreeRangeScanner;
+import cn.zhangyis.minidb.storage.btree.IndexDescriptor;
 import cn.zhangyis.minidb.storage.btree.IndexManager;
-import cn.zhangyis.minidb.storage.btree.RecordComparator;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
-import cn.zhangyis.minidb.storage.record.format.CompactRecordFormat;
+import cn.zhangyis.minidb.storage.record.RecordHeader;
 import cn.zhangyis.minidb.storage.record.physical.SystemLayout;
+import cn.zhangyis.minidb.storage.transaction.dml.TransactionalDml;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
 import cn.zhangyis.minidb.storage.transaction.pointer.RollbackPointer;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoCompressionManager;
@@ -18,7 +20,6 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,7 +52,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * CompressionThread compressionThread = new CompressionThread(
  *     coordinator,
  *     undoLogManager,
- *     bufferPool
+ *     bufferPool,
+ *     indexManager
  * );
  *
  * // 启动压缩线程
@@ -178,6 +180,26 @@ public class CompressionThread extends Thread {
                 DEFAULT_COMPRESSION_INTERVAL_MS,
                 DEFAULT_MAX_COMPRESSIONS_PER_ROUND,
                 DEFAULT_MIN_CHAIN_LENGTH);
+    }
+
+    /**
+     * 创建压缩线程
+     *
+     * @param coordinator Purge 协调器
+     * @param undoLogManager Undo Log 管理器
+     * @param bufferPool Buffer Pool
+     * @param indexManager 索引管理器
+     * @param compressionIntervalMs 压缩间隔（毫秒）
+     * @param maxCompressionsPerRound 每轮最大压缩数
+     */
+    public CompressionThread(PurgeCoordinator coordinator,
+                            UndoLogManager undoLogManager,
+                            BufferPool bufferPool,
+                            IndexManager indexManager,
+                            long compressionIntervalMs,
+                            int maxCompressionsPerRound) {
+        this(coordinator, undoLogManager, bufferPool, indexManager,
+                compressionIntervalMs, maxCompressionsPerRound, DEFAULT_MIN_CHAIN_LENGTH);
     }
 
     /**
@@ -324,13 +346,14 @@ public class CompressionThread extends Thread {
             logger.debug("Found {} compression candidates", candidates.size());
 
             // 执行压缩
-            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-                for (CompressionCandidate candidate : candidates) {
-                    if (compressedCount >= maxCompressionsPerRound) {
-                        logger.trace("Reached max compressions per round: {}", maxCompressionsPerRound);
-                        break;
-                    }
+            for (CompressionCandidate candidate : candidates) {
+                if (compressedCount >= maxCompressionsPerRound) {
+                    logger.trace("Reached max compressions per round: {}", maxCompressionsPerRound);
+                    break;
+                }
 
+                // 每个候选使用独立 MTR，避免“写入 merged undo 成功但 roll_ptr 回写失败”时留下半成品状态
+                try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
                     UndoCompressionManager.CompressionResult result =
                             compressionManager.compressUndoChain(
                                     candidate.primaryKey,
@@ -340,16 +363,29 @@ public class CompressionThread extends Thread {
                                     mtr
                             );
 
-                    if (result.isSuccessful()) {
-                        compressedCount++;
-                        spaceSavings += result.getSpaceSavings();
-                        logger.trace("Compression successful: {}", result);
-                    } else {
+                    if (!result.isSuccessful()) {
                         logger.trace("Compression failed: {}", result.getFailureReason());
+                        continue;
                     }
-                }
 
-                mtr.commit();
+                    RollbackPointer newRollPtr = result.getNewRollPtr();
+                    if (newRollPtr == null || newRollPtr.isNull()) {
+                        logger.trace("Compression result has invalid newRollPtr");
+                        continue;
+                    }
+
+                    // 回写数据页 ROLL_PTR（包含 ABA 复验）
+                    if (!updateRecordRollPtr(candidate, newRollPtr, mtr)) {
+                        logger.trace("Failed to update roll_ptr after compression: {}", candidate);
+                        continue;
+                    }
+
+                    mtr.commit();
+
+                    compressedCount++;
+                    spaceSavings += result.getSpaceSavings();
+                    logger.trace("Compression successful: {}", result);
+                }
             }
 
             // 更新最后压缩边界
@@ -366,6 +402,76 @@ public class CompressionThread extends Thread {
                         compressedCount, spaceSavings, duration);
             }
         }
+    }
+
+    /**
+     * 压缩成功后将记录的 roll_ptr 更新到新的 merged undo。
+     *
+     * <p>实现步骤：
+     * <ol>
+     *   <li>通过主键重新定位记录（获取 pageId + recordOffset）</li>
+     *   <li>读取当前 roll_ptr 并做 ABA 复验</li>
+     *   <li>在 X-latch + MTR 保护下写回新的 roll_ptr</li>
+     * </ol>
+     * </p>
+     */
+    private boolean updateRecordRollPtr(CompressionCandidate candidate,
+                                        RollbackPointer newRollPtr,
+                                        MiniTransaction mtr) {
+        try {
+            List<IndexDescriptor> indexes = indexManager.getTableIndexes(candidate.tableId);
+            if (indexes.isEmpty()) {
+                logger.trace("No indexes found for table when updating roll_ptr: {}", candidate.tableId);
+                return false;
+            }
+
+            BTree clusteredIndex = indexManager.openIndex(indexes.get(0).getIndexId(), mtr);
+            if (clusteredIndex == null) {
+                logger.trace("Failed to open clustered index for table: {}", candidate.tableId);
+                return false;
+            }
+
+            BTreeSearchResult searchResult = clusteredIndex.search(candidate.primaryKey, mtr);
+            if (!searchResult.isExactMatch()) {
+                logger.trace("Record not found for roll_ptr update, table={}, pkSize={}",
+                        candidate.tableId, candidate.primaryKey.length);
+                return false;
+            }
+
+            var page = mtr.getPage(searchResult.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+            ByteBuffer buf = page.getBuffer();
+            int rollPtrOffset = searchResult.getRecordOffset() + RecordHeader.SIZE + SystemLayout.OFF_ROLL_PTR;
+            RollbackPointer currentRollPtr = RollbackPointer.fromValue(readRollPtr(buf, rollPtrOffset));
+
+            // ABA 复验：识别候选时的 currentRollPtr 必须仍与当前一致
+            if (!candidate.currentRollPtr.equals(currentRollPtr)) {
+                logger.debug("ABA conflict detected: expected={}, actual={}",
+                        candidate.currentRollPtr, currentRollPtr);
+                return false;
+            }
+
+            return TransactionalDml.updateRollPtr(
+                    bufferPool,
+                    searchResult.getPageId(),
+                    searchResult.getRecordOffset(),
+                    newRollPtr.encode(),
+                    mtr
+            );
+        } catch (Exception e) {
+            logger.trace("Error while updating roll_ptr after compression", e);
+            return false;
+        }
+    }
+
+    /**
+     * 从记录中读取 7-byte ROLL_PTR（大端序）。
+     */
+    private static long readRollPtr(ByteBuffer buf, int offset) {
+        long value = 0;
+        for (int i = 0; i < SystemLayout.ROLL_PTR_SIZE; i++) {
+            value = (value << 8) | (buf.get(offset + i) & 0xFFL);
+        }
+        return value;
     }
 
     /**

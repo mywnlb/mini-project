@@ -219,6 +219,15 @@ public class UndoCompressionManager {
             return originalSize - mergedSize;
         }
 
+        /**
+         * 获取压缩后生成的新 ROLL_PTR
+         *
+         * @return 新的 ROLL_PTR
+         */
+        public RollbackPointer getNewRollPtr() {
+            return newRollPtr;
+        }
+
         @Override
         public String toString() {
             return getCompressionStats();

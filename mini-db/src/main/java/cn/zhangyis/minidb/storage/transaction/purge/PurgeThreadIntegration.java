@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.storage.transaction.purge;
 
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
+import cn.zhangyis.minidb.storage.btree.IndexManager;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.slf4j.Logger;
@@ -43,7 +44,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * PurgeThreadIntegration integration = new PurgeThreadIntegration(
  *     coordinator,
  *     undoLogManager,
- *     bufferPool
+ *     bufferPool,
+ *     indexManager
  * );
  *
  * // 启动 Purge 和压缩
@@ -84,6 +86,11 @@ public class PurgeThreadIntegration {
     private final BufferPool bufferPool;
 
     /**
+     * 索引管理器
+     */
+    private final IndexManager indexManager;
+
+    /**
      * Purge 线程
      */
     private final PurgeThread purgeThread;
@@ -106,11 +113,13 @@ public class PurgeThreadIntegration {
      * @param coordinator Purge 协调器
      * @param undoLogManager Undo Log 管理器
      * @param bufferPool Buffer Pool
+     * @param indexManager 索引管理器
      */
     public PurgeThreadIntegration(PurgeCoordinator coordinator,
                                  UndoLogManager undoLogManager,
-                                 BufferPool bufferPool) {
-        this(coordinator, undoLogManager, bufferPool,
+                                 BufferPool bufferPool,
+                                 IndexManager indexManager) {
+        this(coordinator, undoLogManager, bufferPool, indexManager,
                 PurgeThread.DEFAULT_PURGE_INTERVAL_MS,
                 PurgeThread.DEFAULT_MAX_RECORDS_PER_ROUND,
                 CompressionThread.DEFAULT_COMPRESSION_INTERVAL_MS,
@@ -123,6 +132,7 @@ public class PurgeThreadIntegration {
      * @param coordinator Purge 协调器
      * @param undoLogManager Undo Log 管理器
      * @param bufferPool Buffer Pool
+     * @param indexManager 索引管理器
      * @param purgeIntervalMs Purge 间隔（毫秒）
      * @param maxRecordsPerRound 每轮 Purge 的最大记录数
      * @param compressionIntervalMs 压缩间隔（毫秒）
@@ -131,20 +141,23 @@ public class PurgeThreadIntegration {
     public PurgeThreadIntegration(PurgeCoordinator coordinator,
                                  UndoLogManager undoLogManager,
                                  BufferPool bufferPool,
+                                 IndexManager indexManager,
                                  long purgeIntervalMs,
                                  int maxRecordsPerRound,
                                  long compressionIntervalMs,
                                  int maxCompressionsPerRound) {
-        if (coordinator == null || undoLogManager == null || bufferPool == null) {
+        if (coordinator == null || undoLogManager == null || bufferPool == null || indexManager == null) {
             throw new NullPointerException("Arguments cannot be null");
         }
 
         this.coordinator = coordinator;
         this.undoLogManager = undoLogManager;
         this.bufferPool = bufferPool;
+        this.indexManager = indexManager;
         this.purgeThread = new PurgeThread(coordinator, undoLogManager,
                 purgeIntervalMs, maxRecordsPerRound);
         this.compressionThread = new CompressionThread(coordinator, undoLogManager, bufferPool,
+                indexManager,
                 compressionIntervalMs, maxCompressionsPerRound);
         this.started = new AtomicBoolean(false);
     }

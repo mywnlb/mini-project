@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.storage.transaction.purge;
 
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
+import cn.zhangyis.minidb.storage.btree.IndexManager;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -8,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -24,6 +26,7 @@ class PurgeCompressionIntegrationTest {
     private PurgeCoordinator coordinator;
     private UndoLogManager undoLogManager;
     private BufferPool bufferPool;
+    private IndexManager indexManager;
     private PurgeThreadIntegration integration;
 
     @BeforeEach
@@ -31,11 +34,13 @@ class PurgeCompressionIntegrationTest {
         coordinator = mock(PurgeCoordinator.class);
         undoLogManager = mock(UndoLogManager.class);
         bufferPool = mock(BufferPool.class);
+        indexManager = mock(IndexManager.class);
 
         integration = new PurgeThreadIntegration(
                 coordinator,
                 undoLogManager,
                 bufferPool,
+                indexManager,
                 100,  // purgeIntervalMs
                 1000, // maxRecordsPerRound
                 100,  // compressionIntervalMs
@@ -43,6 +48,7 @@ class PurgeCompressionIntegrationTest {
         );
 
         when(coordinator.getPurgeLimit()).thenReturn(new TransactionId(1000));
+        when(indexManager.getAllTableIds()).thenReturn(Collections.emptySet());
     }
 
     // ==================== CompressionThread 测试 ====================
@@ -53,7 +59,8 @@ class PurgeCompressionIntegrationTest {
         CompressionThread thread = new CompressionThread(
                 coordinator,
                 undoLogManager,
-                bufferPool
+                bufferPool,
+                indexManager
         );
 
         assertNotNull(thread);
@@ -72,6 +79,7 @@ class PurgeCompressionIntegrationTest {
                 coordinator,
                 undoLogManager,
                 bufferPool,
+                indexManager,
                 100,  // compressionIntervalMs
                 100   // maxCompressionsPerRound
         );
@@ -99,7 +107,8 @@ class PurgeCompressionIntegrationTest {
         CompressionThread thread = new CompressionThread(
                 coordinator,
                 undoLogManager,
-                bufferPool
+                bufferPool,
+                indexManager
         );
 
         thread.start();
@@ -123,7 +132,8 @@ class PurgeCompressionIntegrationTest {
         CompressionThread thread = new CompressionThread(
                 coordinator,
                 undoLogManager,
-                bufferPool
+                bufferPool,
+                indexManager
         );
 
         CompressionThread.CompressionStats stats = thread.getCompressionStats();
@@ -138,15 +148,19 @@ class PurgeCompressionIntegrationTest {
     @DisplayName("压缩线程无效参数应该抛出异常")
     void testCompressionThreadInvalidArguments() {
         assertThrows(NullPointerException.class, () ->
-                new CompressionThread(null, undoLogManager, bufferPool)
+                new CompressionThread(null, undoLogManager, bufferPool, indexManager)
         );
 
         assertThrows(NullPointerException.class, () ->
-                new CompressionThread(coordinator, null, bufferPool)
+                new CompressionThread(coordinator, null, bufferPool, indexManager)
         );
 
         assertThrows(NullPointerException.class, () ->
-                new CompressionThread(coordinator, undoLogManager, null)
+                new CompressionThread(coordinator, undoLogManager, null, indexManager)
+        );
+
+        assertThrows(NullPointerException.class, () ->
+                new CompressionThread(coordinator, undoLogManager, bufferPool, null)
         );
     }
 
@@ -250,15 +264,19 @@ class PurgeCompressionIntegrationTest {
     @DisplayName("集成管理器无效参数应该抛出异常")
     void testIntegrationInvalidArguments() {
         assertThrows(NullPointerException.class, () ->
-                new PurgeThreadIntegration(null, undoLogManager, bufferPool)
+                new PurgeThreadIntegration(null, undoLogManager, bufferPool, indexManager)
         );
 
         assertThrows(NullPointerException.class, () ->
-                new PurgeThreadIntegration(coordinator, null, bufferPool)
+                new PurgeThreadIntegration(coordinator, null, bufferPool, indexManager)
         );
 
         assertThrows(NullPointerException.class, () ->
-                new PurgeThreadIntegration(coordinator, undoLogManager, null)
+                new PurgeThreadIntegration(coordinator, undoLogManager, null, indexManager)
+        );
+
+        assertThrows(NullPointerException.class, () ->
+                new PurgeThreadIntegration(coordinator, undoLogManager, bufferPool, null)
         );
     }
 
@@ -356,7 +374,8 @@ class PurgeCompressionIntegrationTest {
                 integration = new PurgeThreadIntegration(
                         coordinator,
                         undoLogManager,
-                        bufferPool
+                        bufferPool,
+                        indexManager
                 );
             }
         }
@@ -418,7 +437,8 @@ class PurgeCompressionIntegrationTest {
         CompressionThread thread = new CompressionThread(
                 coordinator,
                 undoLogManager,
-                bufferPool
+                bufferPool,
+                indexManager
         );
 
         String str = thread.toString();

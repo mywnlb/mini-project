@@ -8,6 +8,7 @@ import cn.zhangyis.minidb.storage.btree.RangeBound;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
+import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.record.RecordHeader;
 import cn.zhangyis.minidb.storage.record.format.CompactRecordFormat;
 import cn.zhangyis.minidb.storage.record.logical.DataTuple;
@@ -633,21 +634,39 @@ public class TransactionalDml {
      * @return 是否成功更新
      * @throws MiniDbException 如果更新失败
      */
-    public boolean updateRollPtr(long pageId, int recordOffset, long newRollPtr,
+    public boolean updateRollPtr(PageId pageId, int recordOffset, long newRollPtr,
                                  MiniTransaction mtr) throws MiniDbException {
+        return updateRollPtr(bufferPool, pageId, recordOffset, newRollPtr, mtr);
+    }
+
+    /**
+     * 在给定页面上更新 ROLL_PTR（静态工具方法）
+     *
+     * @param bufferPool   Buffer Pool
+     * @param pageId       数据页 ID
+     * @param recordOffset 记录在页内的偏移
+     * @param newRollPtr   新的 ROLL_PTR 值
+     * @param mtr          迷你事务
+     * @return 是否成功更新
+     * @throws MiniDbException 如果更新失败
+     */
+    public static boolean updateRollPtr(BufferPool bufferPool, PageId pageId,
+                                        int recordOffset, long newRollPtr,
+                                        MiniTransaction mtr) throws MiniDbException {
         try {
+            if (bufferPool == null) {
+                throw new NullPointerException("bufferPool cannot be null");
+            }
+
             // 获取数据页（READ_EXISTING 模式）
             Page page = mtr.getPage(pageId, BufferPool.FetchMode.READ_EXISTING);
-            ByteBuffer buf = page.getBuffer();
+            var frame = page.getFrame();
 
             // 计算 ROLL_PTR 在页内的绝对偏移
             // 记录布局：RecordHeader + SystemLayout
             // ROLL_PTR 位置：recordOffset + RecordHeader.SIZE + SystemLayout.OFF_ROLL_PTR
             int dataStart = recordOffset + RecordHeader.SIZE;
             int rollPtrOffset = dataStart + SystemLayout.OFF_ROLL_PTR;
-
-            // 验证 ABA 冲突：读取当前 LSN
-            long lsnBefore = page.getLSN();
 
             // 将 ROLL_PTR 转换为 7 字节数组（大端序）
             byte[] rollPtrBytes = new byte[7];
@@ -659,31 +678,24 @@ public class TransactionalDml {
             rollPtrBytes[5] = (byte) ((newRollPtr >> 8) & 0xFF);
             rollPtrBytes[6] = (byte) (newRollPtr & 0xFF);
 
-            // 在 MTR 保护下写入 ROLL_PTR（7 字节）
+            // 在 X-latch + MTR 保护下写入 ROLL_PTR（7 字节）
             // MTR 会自动生成 redo 日志
-            mtr.writeBytes(page.getFrame(), rollPtrOffset, rollPtrBytes);
-
-            // 验证 ABA 冲突：检查 LSN 是否改变
-            // 注意：这里的 LSN 检查是在获取页面后进行的
-            // 实际的 ABA 冲突检测应该在获取 X-latch 后进行
-            // 但由于 MTR 已经处理了 latch，这里只做日志记录
-            long lsnAfter = page.getLSN();
-            if (lsnBefore != lsnAfter) {
-                logger.warn("LSN changed during roll_ptr update: before={}, after={}, " +
-                        "possible concurrent modification detected",
-                        lsnBefore, lsnAfter);
-                // 注意：MTR 会自动处理冲突，这里只是记录警告
+            frame.writeLock();
+            try {
+                mtr.writeBytes(frame, rollPtrOffset, rollPtrBytes);
+            } finally {
+                frame.writeUnlock();
             }
 
             logger.debug("Updated ROLL_PTR: pageId={}, recordOffset={}, newRollPtr={}, " +
                     "rollPtrOffset={}",
-                    pageId, recordOffset, String.format("0x%014x", newRollPtr), rollPtrOffset);
+                    pageId.getPageNo(), recordOffset, String.format("0x%014x", newRollPtr), rollPtrOffset);
 
             return true;
 
         } catch (Exception e) {
             logger.error("Failed to update ROLL_PTR: pageId={}, recordOffset={}, newRollPtr={}",
-                    pageId, recordOffset, String.format("0x%014x", newRollPtr), e);
+                    pageId.getPageNo(), recordOffset, String.format("0x%014x", newRollPtr), e);
             throw new MiniDbException("Failed to update ROLL_PTR: " + e.getMessage(), e);
         }
     }
