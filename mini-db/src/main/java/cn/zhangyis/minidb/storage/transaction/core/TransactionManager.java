@@ -6,6 +6,7 @@ import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.redo.RedoLogManager;
+import cn.zhangyis.minidb.storage.transaction.lock.LockManager;
 import cn.zhangyis.minidb.storage.transaction.mvcc.ReadView;
 import cn.zhangyis.minidb.storage.transaction.purge.PurgeCoordinator;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
@@ -161,6 +162,14 @@ public class TransactionManager {
      * <p>用于跟踪活跃的 ReadView，计算可以安全清理的 TRX_ID 边界。</p>
      */
     private volatile PurgeCoordinator purgeCoordinator;
+
+    /**
+     * Lock Manager 引用 (可选)
+     *
+     * <p>L-P4-4: LockManager 为可选组件。设置后，commit/rollback 会自动调用
+     * {@link LockManager#unlockAll} 释放事务持有的所有锁。</p>
+     */
+    private volatile LockManager lockManager;
 
     // ==================== 构造函数 ====================
 
@@ -382,6 +391,12 @@ public class TransactionManager {
             // 清除缓存的 ReadView
             trx.clearCachedReadView();
 
+            // L-P4-1: 释放所有锁（在 Undo 提交之后、activeTransactions.remove 之前）
+            // L5: unlockAll 幂等，commit 失败后 rollback 重复调用也安全
+            if (lockManager != null) {
+                lockManager.unlockAll(trx);
+            }
+
             // 从活跃列表移除
             activeTransactions.remove(trx.getId());
 
@@ -465,6 +480,12 @@ public class TransactionManager {
 
             // 清除缓存的 ReadView
             trx.clearCachedReadView();
+
+            // L-P4-1: 释放所有锁（在 Undo 回滚之后、activeTransactions.remove 之前）
+            // L5: unlockAll 幂等
+            if (lockManager != null) {
+                lockManager.unlockAll(trx);
+            }
 
             // 从活跃列表移除
             activeTransactions.remove(trx.getId());
@@ -689,6 +710,29 @@ public class TransactionManager {
         }
     }
 
+    // ==================== Lock Manager 集成 ====================
+
+    /**
+     * 设置 Lock Manager
+     *
+     * <p>L-P4-4: LockManager 为可选组件，设置后 commit/rollback 自动释放锁。
+     * 应在 TransactionManager 初始化后、处理事务之前调用。</p>
+     *
+     * @param lockManager Lock Manager 实例
+     */
+    public void setLockManager(LockManager lockManager) {
+        this.lockManager = lockManager;
+    }
+
+    /**
+     * 获取 Lock Manager
+     *
+     * @return Lock Manager，未设置时返回 null
+     */
+    public LockManager getLockManager() {
+        return lockManager;
+    }
+
     // ==================== 关闭方法 ====================
 
     /**
@@ -713,6 +757,12 @@ public class TransactionManager {
         }
 
         activeTransactions.clear();
+
+        // 关闭 LockManager（停止 DeadlockDetector 后台线程等）
+        if (lockManager != null) {
+            lockManager.shutdown();
+        }
+
         initialized = false;
 
         logger.info("TransactionManager closed");

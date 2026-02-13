@@ -7,6 +7,11 @@ import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.IndexPageLayout;
 import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.transaction.core.Transaction;
+import cn.zhangyis.minidb.storage.transaction.lock.DeadlockException;
+import cn.zhangyis.minidb.storage.transaction.lock.LockManager;
+import cn.zhangyis.minidb.storage.transaction.lock.LockMode;
+import cn.zhangyis.minidb.storage.transaction.lock.LockWaitTimeoutException;
 
 import java.nio.ByteBuffer;
 
@@ -306,6 +311,221 @@ public class ConcurrentBTreeOps {
 
         // 重试失败，回退到悲观读取
         return concurrentSearch(btree, searchKey, mtr);
+    }
+
+    // ==================== 锁感知 DML 方法 (Phase 4) ====================
+
+    /**
+     * 锁感知的并发插入
+     *
+     * <p>在 B+Tree 并发插入的基础上加入行锁，遵循 Lock-Latch 排序 (L-P4-2):</p>
+     * <ol>
+     *   <li>获取表级 IX 意向锁</li>
+     *   <li>通过 B+Tree 定位插入位置（获取/释放 Latch）</li>
+     *   <li>获取行级 X 锁（可能阻塞，在 Latch 外等待）</li>
+     *   <li>重新获取 Latch，验证 heapNo 有效性 (L8/L-P4-3)</li>
+     *   <li>执行插入</li>
+     * </ol>
+     *
+     * @param btree       B+Tree
+     * @param trx         事务对象
+     * @param lockManager Lock Manager
+     * @param tableId     表 ID（用于表级意向锁）
+     * @param recordData  记录数据
+     * @param searchKey   搜索键
+     * @param mtr         Mini-Transaction
+     * @return 如果成功插入返回 true
+     * @throws MiniDbException           如果操作失败
+     * @throws DeadlockException         如果检测到死锁
+     * @throws LockWaitTimeoutException  如果锁等待超时
+     */
+    public static boolean lockAwareInsert(BTree btree, Transaction trx, LockManager lockManager,
+                                          int tableId, byte[] recordData, byte[] searchKey,
+                                          MiniTransaction mtr)
+            throws MiniDbException, DeadlockException, LockWaitTimeoutException {
+        BTreeMetadata metadata = btree.getMetadata();
+        int spaceId = metadata.getSpaceId();
+
+        // 1. 获取表级 IX 意向锁
+        lockManager.lockTable(trx, tableId, LockMode.INTENTION_EXCLUSIVE);
+
+        // 2. 通过 B+Tree 定位插入位置（蟹行协议获取/释放 Latch）
+        //    搜索返回后 Latch 已全部释放
+        BTreeSearchResult searchResult = concurrentSearch(btree, searchKey, mtr);
+
+        // 3. 获取行级 X 锁（L-P4-2: 在 Latch 外获取 Lock，可能阻塞等待）
+        int pageNo = searchResult.getPageId().getPageNo();
+        int heapNo = searchResult.getRecordOffset();
+        lockManager.lockRecord(trx, spaceId, pageNo, heapNo, LockMode.EXCLUSIVE);
+
+        // 4. 重新获取 Latch 并执行插入
+        //    L-P4-3/L8: 此时不再验证 heapNo，因为 INSERT 是新记录，
+        //    目标位置由 B+Tree 内部重新定位确定
+        return concurrentInsert(btree, recordData, searchKey, mtr);
+    }
+
+    /**
+     * 锁感知的并发删除
+     *
+     * <p>在 B+Tree 并发删除的基础上加入行锁，遵循 Lock-Latch 排序 (L-P4-2):</p>
+     * <ol>
+     *   <li>获取表级 IX 意向锁</li>
+     *   <li>通过 B+Tree 搜索定位记录（获取/释放 Latch）</li>
+     *   <li>获取行级 X 锁（可能阻塞，在 Latch 外等待）</li>
+     *   <li>重新获取 Latch，通过 concurrentDelete 执行删除（内部重新定位并验证）</li>
+     * </ol>
+     *
+     * @param btree       B+Tree
+     * @param trx         事务对象
+     * @param lockManager Lock Manager
+     * @param tableId     表 ID
+     * @param searchKey   搜索键
+     * @param recordSize  记录大小
+     * @param mtr         Mini-Transaction
+     * @return 如果成功删除返回 true
+     * @throws MiniDbException           如果操作失败
+     * @throws DeadlockException         如果检测到死锁
+     * @throws LockWaitTimeoutException  如果锁等待超时
+     */
+    public static boolean lockAwareDelete(BTree btree, Transaction trx, LockManager lockManager,
+                                          int tableId, byte[] searchKey, int recordSize,
+                                          MiniTransaction mtr)
+            throws MiniDbException, DeadlockException, LockWaitTimeoutException {
+        BTreeMetadata metadata = btree.getMetadata();
+        int spaceId = metadata.getSpaceId();
+
+        // 1. 获取表级 IX 意向锁
+        lockManager.lockTable(trx, tableId, LockMode.INTENTION_EXCLUSIVE);
+
+        // 2. 通过 B+Tree 搜索定位记录
+        BTreeSearchResult searchResult = concurrentSearch(btree, searchKey, mtr);
+        if (!searchResult.isExactMatch()) {
+            return false; // 记录不存在
+        }
+
+        // 3. 获取行级 X 锁（L-P4-2: 在 Latch 外获取，可能阻塞）
+        int pageNo = searchResult.getPageId().getPageNo();
+        int heapNo = searchResult.getRecordOffset();
+        lockManager.lockRecord(trx, spaceId, pageNo, heapNo, LockMode.EXCLUSIVE);
+
+        // 4. 重新获取 Latch 并执行删除
+        //    concurrentDelete 内部通过蟹行协议重新定位，验证了记录位置 (L-P4-3/L8)
+        return concurrentDelete(btree, searchKey, recordSize, mtr);
+    }
+
+    /**
+     * 锁感知的当前读（SELECT ... FOR UPDATE）
+     *
+     * <p>获取行级 X 锁后返回搜索结果。用于 SELECT ... FOR UPDATE 语句。</p>
+     *
+     * @param btree       B+Tree
+     * @param trx         事务对象
+     * @param lockManager Lock Manager
+     * @param tableId     表 ID
+     * @param searchKey   搜索键
+     * @param mtr         Mini-Transaction
+     * @return 搜索结果
+     * @throws MiniDbException           如果操作失败
+     * @throws DeadlockException         如果检测到死锁
+     * @throws LockWaitTimeoutException  如果锁等待超时
+     */
+    public static BTreeSearchResult lockAwareSearchForUpdate(BTree btree, Transaction trx,
+                                                              LockManager lockManager,
+                                                              int tableId, byte[] searchKey,
+                                                              MiniTransaction mtr)
+            throws MiniDbException, DeadlockException, LockWaitTimeoutException {
+        BTreeMetadata metadata = btree.getMetadata();
+        int spaceId = metadata.getSpaceId();
+
+        // 1. 获取表级 IX 意向锁
+        lockManager.lockTable(trx, tableId, LockMode.INTENTION_EXCLUSIVE);
+
+        // 2. B+Tree 搜索（获取/释放 Latch）
+        BTreeSearchResult searchResult = concurrentSearch(btree, searchKey, mtr);
+        if (!searchResult.isExactMatch()) {
+            return searchResult; // 记录不存在，返回未命中结果
+        }
+
+        // 3. 获取行级 X 锁（L-P4-2: 在 Latch 外）
+        int pageNo = searchResult.getPageId().getPageNo();
+        int heapNo = searchResult.getRecordOffset();
+        lockManager.lockRecord(trx, spaceId, pageNo, heapNo, LockMode.EXCLUSIVE);
+
+        // 4. 重新搜索验证 (L-P4-3/L8: Split/Merge 可能导致位置变化)
+        BTreeSearchResult verified = concurrentSearch(btree, searchKey, mtr);
+        if (!verified.isExactMatch()) {
+            // 记录在获取锁期间被删除
+            return verified;
+        }
+
+        // L8 验证: 如果 pageNo 或 heapNo 发生变化，需要重新加锁
+        if (verified.getPageId().getPageNo() != pageNo
+                || verified.getRecordOffset() != heapNo) {
+            // 位置变化（可能发生了 Split），对新位置加锁
+            // 旧锁会在事务结束时释放（不影响正确性，只是多持有一把锁）
+            lockManager.lockRecord(trx, spaceId,
+                    verified.getPageId().getPageNo(),
+                    verified.getRecordOffset(),
+                    LockMode.EXCLUSIVE);
+        }
+
+        return verified;
+    }
+
+    /**
+     * 锁感知的当前读（SELECT ... LOCK IN SHARE MODE）
+     *
+     * <p>获取行级 S 锁后返回搜索结果。用于 SELECT ... LOCK IN SHARE MODE 语句。</p>
+     *
+     * @param btree       B+Tree
+     * @param trx         事务对象
+     * @param lockManager Lock Manager
+     * @param tableId     表 ID
+     * @param searchKey   搜索键
+     * @param mtr         Mini-Transaction
+     * @return 搜索结果
+     * @throws MiniDbException           如果操作失败
+     * @throws DeadlockException         如果检测到死锁
+     * @throws LockWaitTimeoutException  如果锁等待超时
+     */
+    public static BTreeSearchResult lockAwareSearchForShare(BTree btree, Transaction trx,
+                                                             LockManager lockManager,
+                                                             int tableId, byte[] searchKey,
+                                                             MiniTransaction mtr)
+            throws MiniDbException, DeadlockException, LockWaitTimeoutException {
+        BTreeMetadata metadata = btree.getMetadata();
+        int spaceId = metadata.getSpaceId();
+
+        // 1. 获取表级 IS 意向锁
+        lockManager.lockTable(trx, tableId, LockMode.INTENTION_SHARED);
+
+        // 2. B+Tree 搜索（获取/释放 Latch）
+        BTreeSearchResult searchResult = concurrentSearch(btree, searchKey, mtr);
+        if (!searchResult.isExactMatch()) {
+            return searchResult;
+        }
+
+        // 3. 获取行级 S 锁（L-P4-2: 在 Latch 外）
+        int pageNo = searchResult.getPageId().getPageNo();
+        int heapNo = searchResult.getRecordOffset();
+        lockManager.lockRecord(trx, spaceId, pageNo, heapNo, LockMode.SHARED);
+
+        // 4. 重新搜索验证 (L-P4-3/L8)
+        BTreeSearchResult verified = concurrentSearch(btree, searchKey, mtr);
+        if (!verified.isExactMatch()) {
+            return verified;
+        }
+
+        // L8 验证: 位置变化时对新位置加锁
+        if (verified.getPageId().getPageNo() != pageNo
+                || verified.getRecordOffset() != heapNo) {
+            lockManager.lockRecord(trx, spaceId,
+                    verified.getPageId().getPageNo(),
+                    verified.getRecordOffset(),
+                    LockMode.SHARED);
+        }
+
+        return verified;
     }
 
     // ==================== 辅助方法 ====================
