@@ -179,7 +179,18 @@ public class LockManagerImpl implements LockManager {
 
         // 移除事务状态
         transactionMap.remove(trxId);
-        waitingRequests.remove(trxId);
+
+        // 取消等待中的锁请求: 标记 ABORTED + unpark + 从队列移除
+        // 防止等待线程无谓 park 到超时，同时避免 FIFO-strict 下阻塞后续等待者
+        LockRequest waitingRequest = waitingRequests.remove(trxId);
+        if (waitingRequest != null) {
+            waitingRequest.markAborted();
+            Thread t = waitingRequest.getWaitingThread();
+            if (t != null) {
+                LockSupport.unpark(t);
+            }
+            getSegment(waitingRequest.getTarget()).cancelWait(trxId, waitingRequest.getTarget());
+        }
 
         TransactionLockContext ctx = contextMap.remove(trxId);
         if (ctx == null) {
@@ -290,8 +301,8 @@ public class LockManagerImpl implements LockManager {
      * <p>L6: park 在 segment 锁外执行。
      * L4: 超时后取消等待并抛出异常。</p>
      *
-     * <p>JMM: request.status 是 volatile，grantWaiters 中的 markGranted()
-     * (volatile write) happens-before 此处的 isGranted() (volatile read)。</p>
+     * <p>JMM: request.status 使用 CAS/volatile 语义，
+     * grantWaiters 中的 markGranted() 对此处 isGranted() 可见。</p>
      *
      * <p>LockSupport.unpark 在 park 之前调用也有效（设置 permit），
      * 所以不会丢失唤醒信号。</p>
@@ -310,6 +321,10 @@ public class LockManagerImpl implements LockManager {
             // 检查超时
             long remaining = deadline - System.currentTimeMillis();
             if (remaining <= 0) {
+                // 边界竞态: 超时瞬间可能刚被授予，二次确认后再取消
+                if (request.isGranted()) {
+                    return;
+                }
                 // L4: 超时终止等待
                 getSegment(target).cancelWait(request.getTrxId(), target);
                 throw new LockWaitTimeoutException(
@@ -319,7 +334,7 @@ public class LockManagerImpl implements LockManager {
             // L6: park 在 segment 锁外
             LockSupport.parkNanos(remaining * 1_000_000L);
 
-            // 检查状态（volatile read）
+            // 检查状态（CAS/volatile 读语义）
             if (request.isGranted()) {
                 return; // 锁已授予
             }

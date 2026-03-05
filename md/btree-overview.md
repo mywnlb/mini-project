@@ -111,11 +111,11 @@ try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
 
 | 文档 | 描述 |
 |------|------|
-| [架构设计](./btree-architecture.md) | 整体架构和设计原则 |
-| [核心操作](./btree-core-operations.md) | 搜索、插入、删除、分裂、合并 |
-| [并发控制](./btree-concurrency.md) | 锁机制和并发策略 |
-| [实现要点](./btree-implementation-notes.md) | 不变量、物理布局、代码细节 |
-| [WAL 实现](./wal-implementation.md) | WAL 日志系统和崩溃恢复 |
+| [架构设计](btree-architecture.md) | 整体架构和设计原则 |
+| [核心操作](btree-core-operations.md) | 搜索、插入、删除、分裂、合并 |
+| [并发控制](btree-concurrency.md) | 锁机制和并发策略 |
+| [实现要点](btree-implementation-notes.md) | 不变量、物理布局、代码细节 |
+| [WAL 实现](wal-implementation.md) | WAL 日志系统和崩溃恢复 |
 | [索引类型](./btree-index-types.md) | 唯一索引、复合键索引 |
 | [前缀压缩](./btree-compression.md) | 键压缩技术 |
 | [API 参考](./btree-api-reference.md) | 完整 API 文档 |

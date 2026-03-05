@@ -3,10 +3,10 @@
     "allow": [
       "Bash(mvn test:*)",
       "Bash(gradle projects:*)",
-      "Bash(dir /s /b \"C:\\\\coding\\\\java\\\\self\\\\miniproject\\\\miniproject\\\\mini-db\\\\src\\\\main\\\\java\\\\cn\\\\zhangyis\\\\minidb\\\\storage\\\\record\")",
       "Bash(./gradlew test:*)",
-      "Bash(./gradlew :mini-db:test:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(git:*)",
+      "Bash(xargs grep:*)"
     ]
   }
 }

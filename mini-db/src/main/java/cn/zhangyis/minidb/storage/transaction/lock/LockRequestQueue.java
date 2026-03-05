@@ -167,12 +167,14 @@ public class LockRequestQueue {
     /**
      * 取消指定事务的等待请求
      *
-     * <p>用于超时或死锁检测中止等待。</p>
+     * <p>用于超时或死锁检测中止等待。
+     * 在极端竞态下，请求可能已被移到 grantedList，此处也要清理，避免幽灵锁。</p>
      *
      * @param trxId 要取消等待的事务 ID
      */
     public void cancelWait(TransactionId trxId) {
         waitingList.removeIf(r -> r.getTrxId().equals(trxId));
+        grantedList.removeIf(r -> r.getTrxId().equals(trxId));
 
         // 取消等待后，后续等待者可能可以被授予
         grantWaiters();
@@ -191,7 +193,7 @@ public class LockRequestQueue {
      * <p>FIFO-strict: 从队列头部开始，遇到第一个与当前已授予锁不兼容的等待者即停止。
      * 不可跳过不兼容等待者去授予后续兼容者，否则会导致写饥饿。</p>
      *
-     * <p>已授予的等待者会被 markGranted (volatile write) 并 unpark，
+     * <p>已授予的等待者会通过 CAS 转换为 GRANTED 并 unpark，
      * 等待线程的 park 循环会检测到状态变更。</p>
      */
     private void grantWaiters() {
@@ -201,7 +203,12 @@ public class LockRequestQueue {
 
             if (isCompatibleWithAllGranted(waiter)) {
                 it.remove();
-                addToGranted(waiter);
+                // 可能与 deadlock abort 并发：只有 CAS 成功才真正授予
+                if (!waiter.markGranted()) {
+                    continue;
+                }
+                empty = false;
+                grantedList.add(waiter);
 
                 // 唤醒等待线程
                 Thread t = waiter.getWaitingThread();
@@ -256,14 +263,22 @@ public class LockRequestQueue {
      * 将请求加入已授予列表并标记为 GRANTED
      */
     private void addToGranted(LockRequest request) {
-        request.markGranted();
+        if (!request.markGranted()) {
+            throw new IllegalStateException("new lock request must be WAITING before grant");
+        }
+        empty = false;
         grantedList.add(request);
     }
 
     /**
      * 将请求加入等待列表（FIFO 尾部）
+     *
+     * <p>同时设置 waitingThread，保证 request 进入 waitingList 时
+     * 已携带线程引用，供 grantWaiters 中 unpark 使用。</p>
      */
     private void addToWait(LockRequest request) {
+        empty = false;
+        request.setWaitingThread(Thread.currentThread());
         waitingList.add(request);
     }
 

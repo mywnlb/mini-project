@@ -110,8 +110,12 @@ public enum LockType {
     /**
      * 当前锁类型是否覆盖请求的锁类型
      *
-     * <p>L-P5-4: NEXT_KEY 覆盖 RECORD、GAP 和 INSERT_INTENTION。
+     * <p>L-P5-4: NEXT_KEY 覆盖 RECORD 和 GAP。
      * 同类型总是覆盖自身。其他锁类型只覆盖自身。</p>
+     *
+     * <p>注意: NEXT_KEY 不覆盖 INSERT_INTENTION。虽然持有 NEXT_KEY 已完全锁住该区域，
+     * 但 INSERT_INTENTION 的语义是"允许多事务并行插入同一间隙"，与 NEXT_KEY 的保护语义不同。
+     * 不覆盖可保证在未来支持锁降级/部分释放时，INSERT_INTENTION 不会被意外跳过。</p>
      *
      * <p>用于锁重入检查：如果已持有覆盖请求类型的锁，无需再次加锁。</p>
      *
@@ -123,7 +127,7 @@ public enum LockType {
             return true;
         }
         if (this == NEXT_KEY) {
-            return requested == RECORD || requested == GAP || requested == INSERT_INTENTION;
+            return requested == RECORD || requested == GAP;
         }
         return false;
     }

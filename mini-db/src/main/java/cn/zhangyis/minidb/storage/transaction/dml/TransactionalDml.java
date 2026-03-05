@@ -2,6 +2,7 @@ package cn.zhangyis.minidb.storage.transaction.dml;
 
 import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.btree.BTree;
+import cn.zhangyis.minidb.storage.btree.BTreeRangeScanner;
 import cn.zhangyis.minidb.storage.btree.BTreeSearchResult;
 import cn.zhangyis.minidb.storage.btree.MvccBTreeRangeScanner;
 import cn.zhangyis.minidb.storage.btree.RangeBound;
@@ -20,6 +21,9 @@ import cn.zhangyis.minidb.storage.transaction.mvcc.RecordVersion;
 import cn.zhangyis.minidb.storage.transaction.mvcc.VersionChainReader;
 import cn.zhangyis.minidb.storage.transaction.mvcc.VisibilityChecker;
 import cn.zhangyis.minidb.storage.transaction.pointer.RollbackPointer;
+import cn.zhangyis.minidb.storage.transaction.core.Transaction.IsolationLevel;
+import cn.zhangyis.minidb.storage.transaction.lock.LockManager;
+import cn.zhangyis.minidb.storage.transaction.lock.LockMode;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import cn.zhangyis.minidb.storage.transaction.undo.UpdateUndoRecord;
 import org.slf4j.Logger;
@@ -115,6 +119,14 @@ public class TransactionalDml {
     private final int tableId;
 
     /**
+     * Lock Manager (可选)
+     *
+     * <p>DML-L1: 设置后，DML 操作在 B+Tree 物理修改前获取锁。
+     * 未设置时退化为纯 MVCC 无锁模式（仅适用于单线程或测试场景）。</p>
+     */
+    private final LockManager lockManager;
+
+    /**
      * 版本链读取器（用于 MVCC）
      */
     private final VersionChainReader versionChainReader;
@@ -122,7 +134,7 @@ public class TransactionalDml {
     // ==================== 构造函数 ====================
 
     /**
-     * 创建事务性 DML 处理器
+     * 创建事务性 DML 处理器（无锁模式，向后兼容）
      *
      * @param btree          B+Tree 索引
      * @param undoLogManager Undo Log 管理器
@@ -134,6 +146,24 @@ public class TransactionalDml {
     public TransactionalDml(BTree btree, UndoLogManager undoLogManager,
                             BufferPool bufferPool, RecordSchema schema,
                             SystemLayout layout, int tableId) {
+        this(btree, undoLogManager, bufferPool, schema, layout, tableId, null);
+    }
+
+    /**
+     * 创建事务性 DML 处理器
+     *
+     * @param btree          B+Tree 索引
+     * @param undoLogManager Undo Log 管理器
+     * @param bufferPool     Buffer Pool
+     * @param schema         记录 Schema
+     * @param layout         系统列布局
+     * @param tableId        表 ID
+     * @param lockManager    Lock Manager (可为 null，null 时退化为无锁模式)
+     */
+    public TransactionalDml(BTree btree, UndoLogManager undoLogManager,
+                            BufferPool bufferPool, RecordSchema schema,
+                            SystemLayout layout, int tableId,
+                            LockManager lockManager) {
         if (btree == null || bufferPool == null || schema == null || layout == null) {
             throw new NullPointerException("Required parameters cannot be null");
         }
@@ -144,9 +174,10 @@ public class TransactionalDml {
         this.schema = schema;
         this.layout = layout;
         this.tableId = tableId;
+        this.lockManager = lockManager;
         this.recordFormat = new CompactRecordFormat();
         this.versionChainReader = undoLogManager != null ?
-            new VersionChainReader(undoLogManager) : null;
+            new VersionChainReader(undoLogManager.createUndoRecordReader()) : null;
     }
 
     // ==================== INSERT 操作 ====================
@@ -172,6 +203,15 @@ public class TransactionalDml {
     public boolean insert(MiniTransaction mtr, Transaction trx,
                           DataTuple tuple, byte[] primaryKey) throws MiniDbException {
         trx.checkActive();
+
+        // DML-L1: 锁获取在 B+Tree 物理修改之前
+        if (lockManager != null) {
+            // DML-L2: Table IX lock
+            lockManager.lockTable(trx, tableId, LockMode.INTENTION_EXCLUSIVE);
+
+            // DML-L5: InsertIntention lock on the gap
+            acquireInsertLocks(trx, primaryKey, mtr);
+        }
 
         // 1. 写入 INSERT Undo
         RollbackPointer rollPtr = RollbackPointer.NULL;
@@ -228,11 +268,22 @@ public class TransactionalDml {
                           List<UpdateUndoRecord.OldColumnValue> oldColumns) throws MiniDbException {
         trx.checkActive();
 
+        // DML-L2: Table IX lock
+        if (lockManager != null) {
+            lockManager.lockTable(trx, tableId, LockMode.INTENTION_EXCLUSIVE);
+        }
+
         // 1. 搜索记录
         BTreeSearchResult searchResult = btree.search(primaryKey, mtr);
         if (!searchResult.isExactMatch()) {
             logger.warn("UPDATE failed: record not found, pk={}", bytesToHex(primaryKey));
             return false;
+        }
+
+        // DML-L1: 搜索后、修改前加锁
+        // DML-L4: RC = Record X; RR/SERIALIZABLE = NextKey X
+        if (lockManager != null) {
+            acquireRecordLockForWrite(trx, searchResult, mtr);
         }
 
         // 2. 读取旧记录的 ROLL_PTR
@@ -296,11 +347,22 @@ public class TransactionalDml {
                           byte[] primaryKey) throws MiniDbException {
         trx.checkActive();
 
+        // DML-L2: Table IX lock
+        if (lockManager != null) {
+            lockManager.lockTable(trx, tableId, LockMode.INTENTION_EXCLUSIVE);
+        }
+
         // 1. 搜索记录
         BTreeSearchResult searchResult = btree.search(primaryKey, mtr);
         if (!searchResult.isExactMatch()) {
             logger.warn("DELETE failed: record not found, pk={}", bytesToHex(primaryKey));
             return false;
+        }
+
+        // DML-L1: 搜索后、修改前加锁
+        // DML-L4: RC = Record X; RR/SERIALIZABLE = NextKey X
+        if (lockManager != null) {
+            acquireRecordLockForWrite(trx, searchResult, mtr);
         }
 
         // 2. 读取旧记录信息
@@ -351,6 +413,11 @@ public class TransactionalDml {
                          byte[] primaryKey) throws MiniDbException {
         trx.checkActive();
 
+        // SERIALIZABLE: 普通 SELECT 自动转为锁定读 (DML-L4)
+        if (lockManager != null && trx.getIsolationLevel() == IsolationLevel.SERIALIZABLE) {
+            lockManager.lockTable(trx, tableId, LockMode.INTENTION_SHARED);
+        }
+
         // 1. 获取 ReadView
         ReadView readView = trx.getOrCreateReadView();
 
@@ -358,6 +425,11 @@ public class TransactionalDml {
         BTreeSearchResult result = btree.search(primaryKey, mtr);
         if (!result.isExactMatch()) {
             return null;  // 记录不存在
+        }
+
+        // SERIALIZABLE: 搜索后对记录加 NextKey S 锁 (DML-L4)
+        if (lockManager != null && trx.getIsolationLevel() == IsolationLevel.SERIALIZABLE) {
+            acquireRecordLockForRead(trx, result, mtr);
         }
 
         // 3. 从页面读取记录
@@ -426,6 +498,120 @@ public class TransactionalDml {
 
         // 4. 包装为 DataTuple 迭代器
         return new DataTupleIteratorAdapter(mvccScanner);
+    }
+
+    // ==================== 锁辅助方法 ====================
+
+    /**
+     * INSERT 加锁逻辑 (DML-L5)
+     *
+     * <p>搜索 B+Tree 确定插入位置：</p>
+     * <ul>
+     *   <li>key 不存在: 在 next record 上获取 InsertIntention lock</li>
+     *   <li>key 已存在: 在现有记录上获取 Record X lock（等待未提交的 INSERT 或检测 duplicate key）</li>
+     * </ul>
+     */
+    private void acquireInsertLocks(Transaction trx, byte[] primaryKey,
+                                    MiniTransaction mtr) throws MiniDbException {
+        BTreeSearchResult pos = btree.search(primaryKey, mtr);
+        Page page = mtr.getPage(pos.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        int spaceId = pos.getPageId().getSpaceId();
+        int pageNo = pos.getPageId().getPageNo();
+
+        if (pos.isExactMatch()) {
+            // Key 已存在 — 对已有记录加 X lock
+            // 如果该记录由另一个活跃事务插入（未提交），lock 会等待
+            int heapNo = readHeapNo(page, pos.getRecordOffset());
+            lockManager.lockRecord(trx, spaceId, pageNo, heapNo, LockMode.EXCLUSIVE);
+        } else {
+            // Key 不存在 — InsertIntention lock on the gap (next record)
+            int nextHeapNo = readNextRecordHeapNo(page, pos.getRecordOffset());
+            lockManager.lockInsertIntention(trx, spaceId, pageNo, nextHeapNo);
+        }
+    }
+
+    /**
+     * UPDATE/DELETE 加锁逻辑 (DML-L4)
+     *
+     * <p>根据隔离级别选择锁类型：</p>
+     * <ul>
+     *   <li>RC: Record X lock（仅锁记录，不锁间隙）</li>
+     *   <li>RR/SERIALIZABLE: NextKey X lock（锁记录 + 间隙，防止幻读）</li>
+     * </ul>
+     */
+    private void acquireRecordLockForWrite(Transaction trx, BTreeSearchResult searchResult,
+                                           MiniTransaction mtr) throws MiniDbException {
+        Page page = mtr.getPage(searchResult.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        int heapNo = readHeapNo(page, searchResult.getRecordOffset());
+        int spaceId = searchResult.getPageId().getSpaceId();
+        int pageNo = searchResult.getPageId().getPageNo();
+
+        if (useNextKeyLock(trx)) {
+            lockManager.lockNextKey(trx, spaceId, pageNo, heapNo, LockMode.EXCLUSIVE);
+        } else {
+            lockManager.lockRecord(trx, spaceId, pageNo, heapNo, LockMode.EXCLUSIVE);
+        }
+    }
+
+    /**
+     * SERIALIZABLE SELECT 加锁逻辑 (DML-L4)
+     *
+     * <p>SERIALIZABLE 隔离级别下，普通 SELECT 自动转为 NextKey S lock，
+     * 等效于 SELECT ... LOCK IN SHARE MODE。</p>
+     */
+    private void acquireRecordLockForRead(Transaction trx, BTreeSearchResult searchResult,
+                                          MiniTransaction mtr) throws MiniDbException {
+        Page page = mtr.getPage(searchResult.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        int heapNo = readHeapNo(page, searchResult.getRecordOffset());
+        int spaceId = searchResult.getPageId().getSpaceId();
+        int pageNo = searchResult.getPageId().getPageNo();
+
+        lockManager.lockNextKey(trx, spaceId, pageNo, heapNo, LockMode.SHARED);
+    }
+
+    /**
+     * 从 RecordHeader 读取 heapNo
+     *
+     * @param page         页面
+     * @param recordOffset 记录在页面中的偏移量
+     * @return heapNo (13 bits, 唯一标识页内记录)
+     */
+    private int readHeapNo(Page page, int recordOffset) {
+        ByteBuffer buf = page.getBuffer();
+        RecordHeader header = RecordHeader.readFrom(buf, recordOffset);
+        return header.getHeapNo();
+    }
+
+    /**
+     * 读取 next record 的 heapNo（用于 InsertIntention lock）
+     *
+     * <p>通过 RecordHeader.nextRecord 相对偏移找到下一条记录，
+     * 读取其 heapNo。如果 nextRecord=0（无后继），使用 Supremum 的 heapNo=1。</p>
+     *
+     * @param page         页面
+     * @param recordOffset 当前记录（predecessor）的偏移量
+     * @return next record 的 heapNo
+     */
+    private int readNextRecordHeapNo(Page page, int recordOffset) {
+        ByteBuffer buf = page.getBuffer();
+        int nextRecordRelative = RecordHeader.peekNextRecord(buf, recordOffset);
+        if (nextRecordRelative == 0) {
+            // 无后继记录 — 使用 Supremum 约定 (heapNo=1)
+            return 1;
+        }
+        int nextRecordOffset = recordOffset + nextRecordRelative;
+        RecordHeader nextHeader = RecordHeader.readFrom(buf, nextRecordOffset);
+        return nextHeader.getHeapNo();
+    }
+
+    /**
+     * 是否使用 NextKey lock（根据隔离级别判断）
+     *
+     * <p>RC 使用 Record lock（不锁间隙），RR/SERIALIZABLE 使用 NextKey lock。</p>
+     */
+    private boolean useNextKeyLock(Transaction trx) {
+        IsolationLevel level = trx.getIsolationLevel();
+        return level == IsolationLevel.REPEATABLE_READ || level == IsolationLevel.SERIALIZABLE;
     }
 
     // ==================== 辅助方法 ====================
@@ -660,7 +846,7 @@ public class TransactionalDml {
 
             // 获取数据页（READ_EXISTING 模式）
             Page page = mtr.getPage(pageId, BufferPool.FetchMode.READ_EXISTING);
-            var frame = page.getFrame();
+            ByteBuffer buf = page.getBuffer();
 
             // 计算 ROLL_PTR 在页内的绝对偏移
             // 记录布局：RecordHeader + SystemLayout
@@ -668,24 +854,17 @@ public class TransactionalDml {
             int dataStart = recordOffset + RecordHeader.SIZE;
             int rollPtrOffset = dataStart + SystemLayout.OFF_ROLL_PTR;
 
-            // 将 ROLL_PTR 转换为 7 字节数组（大端序）
-            byte[] rollPtrBytes = new byte[7];
-            rollPtrBytes[0] = (byte) ((newRollPtr >> 48) & 0xFF);
-            rollPtrBytes[1] = (byte) ((newRollPtr >> 40) & 0xFF);
-            rollPtrBytes[2] = (byte) ((newRollPtr >> 32) & 0xFF);
-            rollPtrBytes[3] = (byte) ((newRollPtr >> 24) & 0xFF);
-            rollPtrBytes[4] = (byte) ((newRollPtr >> 16) & 0xFF);
-            rollPtrBytes[5] = (byte) ((newRollPtr >> 8) & 0xFF);
-            rollPtrBytes[6] = (byte) (newRollPtr & 0xFF);
+            // 写入 ROLL_PTR（7 字节，大端序）
+            buf.put(rollPtrOffset,     (byte) ((newRollPtr >> 48) & 0xFF));
+            buf.put(rollPtrOffset + 1, (byte) ((newRollPtr >> 40) & 0xFF));
+            buf.put(rollPtrOffset + 2, (byte) ((newRollPtr >> 32) & 0xFF));
+            buf.put(rollPtrOffset + 3, (byte) ((newRollPtr >> 24) & 0xFF));
+            buf.put(rollPtrOffset + 4, (byte) ((newRollPtr >> 16) & 0xFF));
+            buf.put(rollPtrOffset + 5, (byte) ((newRollPtr >> 8) & 0xFF));
+            buf.put(rollPtrOffset + 6, (byte) (newRollPtr & 0xFF));
 
-            // 在 X-latch + MTR 保护下写入 ROLL_PTR（7 字节）
-            // MTR 会自动生成 redo 日志
-            frame.writeLock();
-            try {
-                mtr.writeBytes(frame, rollPtrOffset, rollPtrBytes);
-            } finally {
-                frame.writeUnlock();
-            }
+            // 标记脏页，MTR 会自动生成 redo 日志
+            mtr.markDirty(page);
 
             logger.debug("Updated ROLL_PTR: pageId={}, recordOffset={}, newRollPtr={}, " +
                     "rollPtrOffset={}",
@@ -728,6 +907,13 @@ public class TransactionalDml {
      */
     public VersionChainReader getVersionChainReader() {
         return versionChainReader;
+    }
+
+    /**
+     * 获取 Lock Manager
+     */
+    public LockManager getLockManager() {
+        return lockManager;
     }
 
     /**

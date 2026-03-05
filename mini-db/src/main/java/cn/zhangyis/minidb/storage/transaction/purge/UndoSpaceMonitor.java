@@ -238,13 +238,13 @@ public class UndoSpaceMonitor {
         double undoSpaceRatio = calculateUndoSpaceRatio();
 
         // 2. 获取 History List 长度
-        long historyListLength = getHistoryListLength();
+        long historyListLength = computeHistoryListLength();
 
         // 3. 计算 Purge 滞后比率
         double purgeLag = calculatePurgeLag();
 
         // 4. 获取最老 ReadView 年龄
-        long oldestReadViewAgeMs = getOldestReadViewAgeMs();
+        long oldestReadViewAgeMs = computeOldestReadViewAgeMs();
 
         // 5. 判断是否需要限流
         boolean needsThrottle = undoSpaceRatio > CRITICAL_SPACE_RATIO;
@@ -304,7 +304,7 @@ public class UndoSpaceMonitor {
      *
      * @return 待 purge 的版本数
      */
-    private long getHistoryListLength() {
+    private long computeHistoryListLength() {
         HistoryList historyList = undoLogManager.getHistoryList();
         if (historyList == null) {
             return 0;
@@ -321,7 +321,7 @@ public class UndoSpaceMonitor {
      */
     private double calculatePurgeLag() {
         // 获取当前 Undo 记录总数（近似为 History List 长度）
-        long currentHistoryLen = getHistoryListLength();
+        long currentHistoryLen = computeHistoryListLength();
 
         // 如果 History List 为空，滞后比率为 0
         if (currentHistoryLen == 0) {
@@ -342,7 +342,7 @@ public class UndoSpaceMonitor {
      *
      * @return 年龄（毫秒）
      */
-    private long getOldestReadViewAgeMs() {
+    private long computeOldestReadViewAgeMs() {
         // 从 PurgeCoordinator 获取活跃 ReadView 列表
         var readViews = purgeCoordinator.getActiveReadViews();
 

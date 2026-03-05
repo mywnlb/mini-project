@@ -1,5 +1,6 @@
 package cn.zhangyis.minidb.storage.transaction.purge;
 
+import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.btree.BTree;
 import cn.zhangyis.minidb.storage.btree.BTreeSearchResult;
@@ -307,7 +308,7 @@ public class CompressionThread extends Thread {
     /**
      * 恢复压缩
      */
-    public void resume() {
+    public void resumeCompression() {
         paused.set(false);
         logger.info("Compression thread resumed");
     }
@@ -352,7 +353,7 @@ public class CompressionThread extends Thread {
                     break;
                 }
 
-                // 每个候选使用独立 MTR，避免“写入 merged undo 成功但 roll_ptr 回写失败”时留下半成品状态
+                // 每个候选使用独立 MTR，避免"写入 merged undo 成功但 roll_ptr 回写失败"时留下半成品状态
                 try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
                     UndoCompressionManager.CompressionResult result =
                             compressionManager.compressUndoChain(
@@ -385,6 +386,8 @@ public class CompressionThread extends Thread {
                     compressedCount++;
                     spaceSavings += result.getSpaceSavings();
                     logger.trace("Compression successful: {}", result);
+                } catch (MiniDbException e) {
+                    logger.trace("Compression MTR failed for candidate: {}", candidate, e);
                 }
             }
 
@@ -441,7 +444,7 @@ public class CompressionThread extends Thread {
             var page = mtr.getPage(searchResult.getPageId(), BufferPool.FetchMode.READ_EXISTING);
             ByteBuffer buf = page.getBuffer();
             int rollPtrOffset = searchResult.getRecordOffset() + RecordHeader.SIZE + SystemLayout.OFF_ROLL_PTR;
-            RollbackPointer currentRollPtr = RollbackPointer.fromValue(readRollPtr(buf, rollPtrOffset));
+            RollbackPointer currentRollPtr = RollbackPointer.decode(readRollPtr(buf, rollPtrOffset));
 
             // ABA 复验：识别候选时的 currentRollPtr 必须仍与当前一致
             if (!candidate.currentRollPtr.equals(currentRollPtr)) {
@@ -534,7 +537,7 @@ public class CompressionThread extends Thread {
 
                         // 3. 创建全表扫描器
                         try (BTreeRangeScanner scanner = BTreeRangeScanner.fullScan(
-                                btree, bufferPool, btree.getComparator(), mtr)) {
+                                btree, bufferPool, null, mtr)) {
 
                             // 4. 遍历所有记录
                             for (BTreeRangeScanner.ScanEntry entry : scanner) {
@@ -563,7 +566,7 @@ public class CompressionThread extends Thread {
                                                 (recordData[rollPtrOffset + i] & 0xFF);
                                     }
 
-                                    RollbackPointer rollPtr = RollbackPointer.fromValue(rollPtrValue);
+                                    RollbackPointer rollPtr = RollbackPointer.decode(rollPtrValue);
 
                                     // 如果 roll_ptr 为 null，跳过
                                     if (rollPtr.isNull()) {

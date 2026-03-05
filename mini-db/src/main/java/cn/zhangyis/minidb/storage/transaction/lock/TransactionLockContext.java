@@ -4,7 +4,9 @@ import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 事务锁上下文
@@ -24,7 +26,7 @@ import java.util.List;
 public class TransactionLockContext {
 
     private final TransactionId trxId;
-    private final List<LockRequest> heldLocks = new ArrayList<>();
+    private final Map<LockTarget, LockRequest> heldLocks = new HashMap<>();
 
     /** 幂等标志 (L5): 防止重复释放 */
     private boolean released = false;
@@ -39,7 +41,7 @@ public class TransactionLockContext {
      * @param request 锁请求
      */
     public void addLock(LockRequest request) {
-        heldLocks.add(request);
+        heldLocks.put(request.getTarget(), request);
     }
 
     /**
@@ -55,7 +57,7 @@ public class TransactionLockContext {
             return Collections.emptyList();
         }
         released = true;
-        List<LockRequest> result = new ArrayList<>(heldLocks);
+        List<LockRequest> result = new ArrayList<>(heldLocks.values());
         heldLocks.clear();
         return result;
     }
@@ -73,7 +75,7 @@ public class TransactionLockContext {
             return Collections.emptyList();
         }
         List<LockRequest> sharedLocks = new ArrayList<>();
-        heldLocks.removeIf(request -> {
+        heldLocks.values().removeIf(request -> {
             if (request.getMode() == LockMode.SHARED) {
                 sharedLocks.add(request);
                 return true;
@@ -93,15 +95,7 @@ public class TransactionLockContext {
      * @return 被移除的锁请求，如果未找到返回 null
      */
     public LockRequest removeLock(LockTarget target) {
-        java.util.Iterator<LockRequest> it = heldLocks.iterator();
-        while (it.hasNext()) {
-            LockRequest request = it.next();
-            if (request.getTarget().equals(target)) {
-                it.remove();
-                return request;
-            }
-        }
-        return null;
+        return heldLocks.remove(target);
     }
 
     /**
@@ -111,12 +105,8 @@ public class TransactionLockContext {
      * @return 已持有的锁请求，如果未持有则返回 null
      */
     public LockRequest findLock(LockTarget target) {
-        for (LockRequest request : heldLocks) {
-            if (request.getTarget().equals(target) && request.isGranted()) {
-                return request;
-            }
-        }
-        return null;
+        LockRequest request = heldLocks.get(target);
+        return (request != null && request.isGranted()) ? request : null;
     }
 
     /**

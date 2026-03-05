@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls:*)",
-      "Bash(gradle tasks:*)",
-      "Bash(./gradlew tasks:*)"
-    ]
-  }
-}

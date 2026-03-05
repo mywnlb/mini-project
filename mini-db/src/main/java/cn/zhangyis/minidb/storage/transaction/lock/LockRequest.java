@@ -2,6 +2,8 @@ package cn.zhangyis.minidb.storage.transaction.lock;
 
 import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
 
+import java.util.concurrent.atomic.AtomicReference;
+
 /**
  * 锁请求
  *
@@ -16,7 +18,7 @@ import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
  *
  * <h2>JMM 要点</h2>
  * <ul>
- *   <li>{@code status} 使用 volatile，保证跨线程写-读 happens-before</li>
+ *   <li>{@code status} 使用 CAS（AtomicReference），保证状态单向转换且不可覆盖</li>
  *   <li>{@code waitingThread} 使用 volatile，供 park/unpark 使用</li>
  *   <li>{@code mode} 使用 volatile，因为升级时会被修改</li>
  *   <li>{@code lockType} 使用 volatile，因为类型合并升级时会被修改</li>
@@ -45,14 +47,14 @@ public class LockRequest {
     /** 锁类型，volatile: 类型合并升级时可被修改 (L-P5-4) */
     private volatile LockType lockType;
 
-    /** 请求状态，volatile: 跨线程可见 (JMM) */
-    private volatile Status status;
+    /** 请求状态，CAS 保证 WAITING 只能单向转到 GRANTED/ABORTED */
+    private final AtomicReference<Status> status = new AtomicReference<>(Status.WAITING);
 
     /** 等待线程引用，volatile: park/unpark 用 */
     private volatile Thread waitingThread;
 
     /** 锁授予时的时间戳 */
-    private long grantTime;
+    private volatile long grantTime;
 
     /**
      * 创建锁请求，初始状态为 WAITING，锁类型默认为 RECORD
@@ -80,7 +82,6 @@ public class LockRequest {
         this.target = target;
         this.mode = mode;
         this.lockType = lockType;
-        this.status = Status.WAITING;
     }
 
     // ==================== 状态转换方法 ====================
@@ -89,33 +90,40 @@ public class LockRequest {
      * 标记为已授予
      *
      * <p>状态: WAITING → GRANTED，不可回退。</p>
+     *
+     * @return true 如果状态成功从 WAITING 转为 GRANTED
      */
-    public void markGranted() {
-        this.status = Status.GRANTED;
-        this.grantTime = System.currentTimeMillis();
+    public boolean markGranted() {
+        if (this.status.compareAndSet(Status.WAITING, Status.GRANTED)) {
+            this.grantTime = System.currentTimeMillis();
+            return true;
+        }
+        return false;
     }
 
     /**
      * 标记为已中止
      *
      * <p>状态: WAITING → ABORTED，不可回退。</p>
+     *
+     * @return true 如果状态成功从 WAITING 转为 ABORTED
      */
-    public void markAborted() {
-        this.status = Status.ABORTED;
+    public boolean markAborted() {
+        return this.status.compareAndSet(Status.WAITING, Status.ABORTED);
     }
 
     // ==================== 状态查询方法 ====================
 
     public boolean isGranted() {
-        return status == Status.GRANTED;
+        return status.get() == Status.GRANTED;
     }
 
     public boolean isAborted() {
-        return status == Status.ABORTED;
+        return status.get() == Status.ABORTED;
     }
 
     public boolean isWaiting() {
-        return status == Status.WAITING;
+        return status.get() == Status.WAITING;
     }
 
     // ==================== 访问方法 ====================
@@ -190,7 +198,7 @@ public class LockRequest {
     }
 
     public Status getStatus() {
-        return status;
+        return status.get();
     }
 
     public Thread getWaitingThread() {
@@ -208,6 +216,6 @@ public class LockRequest {
     @Override
     public String toString() {
         return String.format("LockRequest(trx=%s, target=%s, mode=%s, type=%s, status=%s)",
-                trxId, target, mode, lockType, status);
+                trxId, target, mode, lockType, status.get());
     }
 }

@@ -5,7 +5,8 @@ import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
-import lombok.Data;
+
+import java.util.Objects;
 
 import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
 
@@ -59,7 +60,6 @@ import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
  * @author MiniDB
  * @version 1.0
  */
-@Data
 public class FlstNode {
 
     /**
@@ -251,6 +251,37 @@ public class FlstNode {
 
         // 清空当前节点的指针
         initialize(mtr);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        FlstNode flstNode = (FlstNode) o;
+        return offset == flstNode.offset && Objects.equals(page, flstNode.page);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(page, offset);
+    }
+
+    /**
+     * 获取节点所在的页面
+     *
+     * @return 页面
+     */
+    public Page getPage() {
+        return page;
+    }
+
+    /**
+     * 获取节点在页面中的偏移
+     *
+     * @return 偏移（字节）
+     */
+    public int getOffset() {
+        return offset;
     }
 
     @Override

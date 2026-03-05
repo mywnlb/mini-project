@@ -78,10 +78,6 @@ public class LockTableSegment {
             LockRequestQueue queue = map.computeIfAbsent(target, k -> new LockRequestQueue());
             LockResult result = queue.tryGrant(request);
 
-            if (result == LockResult.WAIT) {
-                request.setWaitingThread(Thread.currentThread());
-            }
-
             return result;
         } finally {
             lock.unlock();

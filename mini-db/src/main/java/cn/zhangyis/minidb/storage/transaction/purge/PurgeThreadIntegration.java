@@ -235,7 +235,7 @@ public class PurgeThreadIntegration {
     public void resume() {
         logger.info("Resuming Purge and Compression");
         purgeThread.resumePurge();
-        compressionThread.resume();
+        compressionThread.resumeCompression();
     }
 
     // ==================== 状态查询 ====================

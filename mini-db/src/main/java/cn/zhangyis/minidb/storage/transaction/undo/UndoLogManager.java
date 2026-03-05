@@ -633,7 +633,7 @@ public class UndoLogManager {
             Page page;
             if (pooledPageId != null) {
                 // 从池中获取页面
-                page = bufferPool.getPage(pooledPageId);
+                page = mtr.getPage(pooledPageId, BufferPool.FetchMode.READ_EXISTING);
                 logger.trace("Allocated undo page from pool: pageId={}, rsegId={}", pooledPageId, rsegId);
             } else {
                 // 池为空，从 Segment 分配新页
@@ -1052,6 +1052,18 @@ public class UndoLogManager {
             }
         }
         return total;
+    }
+
+    /**
+     * 获取已使用的 Undo 空间（字节）
+     *
+     * <p>估算所有 Rollback Segment 使用的总空间。
+     * 每页按 16KB 计算。</p>
+     *
+     * @return 已使用的空间（字节）
+     */
+    public long getTotalUndoSpaceUsed() {
+        return (long) getAllocatedPageCount() * 16384L;
     }
 
     /**

@@ -274,16 +274,18 @@ public class DeadlockDetector {
     /**
      * 中止牺牲者事务
      *
-     * <p>标记其等待中的 LockRequest 为 ABORTED (volatile write)，
+     * <p>CAS 标记其等待中的 LockRequest 为 ABORTED，
      * 并 unpark 等待线程使其从 waitForLock 循环中退出。</p>
      */
     private void abortVictim(TransactionId victimId) {
         LockRequest request = waitingRequests.get(victimId);
-        if (request == null || !request.isWaiting()) {
-            return; // 已不在等待状态（可能已超时或被授予）
+        if (request == null) {
+            return;
         }
 
-        request.markAborted(); // volatile write
+        if (!request.markAborted()) {
+            return; // 已不在 WAITING（可能已授予或已中止）
+        }
 
         Thread t = request.getWaitingThread();
         if (t != null) {

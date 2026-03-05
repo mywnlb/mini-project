@@ -163,6 +163,47 @@ public class RecordVersion {
         );
     }
 
+    /**
+     * 简化构造函数（用于从页面读取记录版本）
+     *
+     * <p>当只需要版本元数据（trxId、tableId、rollPtr、deleteMarked）时使用。</p>
+     *
+     * @param trxIdValue     事务 ID（long 值）
+     * @param tableId        表 ID
+     * @param prevVersionPtr 上一版本指针
+     * @param isDeleteMarked 是否是删除标记
+     */
+    public RecordVersion(long trxIdValue, int tableId,
+                         RollbackPointer prevVersionPtr,
+                         boolean isDeleteMarked) {
+        this(new TransactionId(trxIdValue), tableId, prevVersionPtr,
+                null, null, false, isDeleteMarked);
+    }
+
+    // ==================== 转换方法 ====================
+
+    /**
+     * 转换为 DataTuple
+     *
+     * <p>将版本的列值映射转换为 DataTuple 对象。
+     * 如果没有列值信息，返回一个空的 DataTuple。</p>
+     *
+     * @return DataTuple 对象
+     */
+    public cn.zhangyis.minidb.storage.record.logical.DataTuple toDataTuple() {
+        if (columnValues.isEmpty()) {
+            return cn.zhangyis.minidb.storage.record.logical.DataTuple.create(0);
+        }
+        int maxColId = columnValues.keySet().stream().mapToInt(Integer::intValue).max().orElse(0);
+        cn.zhangyis.minidb.storage.record.logical.DataTuple tuple =
+                cn.zhangyis.minidb.storage.record.logical.DataTuple.create(maxColId + 1);
+        for (var entry : columnValues.entrySet()) {
+            tuple.setField(entry.getKey(),
+                    cn.zhangyis.minidb.storage.record.logical.DataField.varbinaryField(entry.getValue()));
+        }
+        return tuple;
+    }
+
     // ==================== 访问方法 ====================
 
     /**
@@ -189,6 +230,17 @@ public class RecordVersion {
      * @return 回滚指针
      */
     public RollbackPointer getPrevVersionPtr() {
+        return prevVersionPtr;
+    }
+
+    /**
+     * 获取回滚指针（getPrevVersionPtr 的别名）
+     *
+     * <p>为调用方提供语义更直接的 API。</p>
+     *
+     * @return 回滚指针
+     */
+    public RollbackPointer getRollPtr() {
         return prevVersionPtr;
     }
 

@@ -98,7 +98,7 @@ public class MvccRangeIterator implements Iterator<DataTuple> {
         this.mtr = mtr;
         this.dml = dml;
         this.versionChainReader = dml.getUndoLogManager() != null ?
-            new VersionChainReader(dml.getUndoLogManager()) : null;
+            new VersionChainReader(dml.getUndoLogManager().createUndoRecordReader()) : null;
         this.nextTuple = null;
         this.exhausted = false;
 

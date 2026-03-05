@@ -224,5 +224,4 @@ try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
 ---
 
 ## Final Rule
-
 If any step above is skipped, the implementation must be discarded as unsafe.

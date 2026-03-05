@@ -185,8 +185,7 @@ public class UndoRecoveryManager {
                 }
 
                 // 发现活跃的 Undo Page
-                long trxIdValue = UndoPageHeader.getTrxId(buf);
-                TransactionId trxId = new TransactionId(trxIdValue);
+                TransactionId trxId = UndoPageHeader.getTrxId(buf);
                 int undoType = UndoPageHeader.getUndoType(buf);
                 int rsegId = UndoPageHeader.getRsegId(buf);
 
