@@ -117,7 +117,21 @@ public enum PageType {
      * 序列化字典信息页 (SDI)
      * <p>MySQL 8.0+ 存储数据字典的序列化信息。</p>
      */
-    FIL_PAGE_SDI(17853);
+    FIL_PAGE_SDI(17853),
+
+    /**
+     * Catalog 元数据页
+     * <p>存储 Catalog 全局信息：ID 生成器计数器 + 数据库列表。
+     * 位于系统表空间 Page 3。</p>
+     */
+    FIL_PAGE_CATALOG_META(17840),
+
+    /**
+     * 表元数据页
+     * <p>存储表定义（列、索引 ID、状态等），链式存储。
+     * 位于系统表空间 Page 4+。</p>
+     */
+    FIL_PAGE_TABLE_META(17841);
     
     /** 页面类型的数值 */
     private final int value;

@@ -86,7 +86,7 @@ public class BTree {
             throws MiniDbException {
         // 分配根页面
         Page rootPage = mtr.newPage(spaceId);
-        BufferFrame rootFrame = bufferPool.getPage(rootPage.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        BufferFrame rootFrame = mtr.getPageFrame(rootPage.getPageId(), BufferPool.FetchMode.READ_EXISTING);
         rootFrame.writeLock();
 
         try {

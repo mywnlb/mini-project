@@ -91,6 +91,26 @@ public class IdGenerator {
         return nextDatabaseId.get();
     }
 
+    /**
+     * 用持久化快照重置所有计数器。
+     */
+    public void reset(long nextTableId, long nextColumnId,
+                      long nextIndexId, long nextDatabaseId) {
+        if (nextTableId < 1 || nextColumnId < 1 || nextIndexId < 1 || nextDatabaseId < 1) {
+            throw new IllegalArgumentException(
+                    "All next-ID values must be >= 1");
+        }
+        this.nextTableId.set(nextTableId);
+        this.nextColumnId.set(nextColumnId);
+        this.nextIndexId.set(nextIndexId);
+        this.nextDatabaseId.set(nextDatabaseId);
+    }
+
+    public void resetFrom(IdGenerator source) {
+        reset(source.getNextTableId(), source.getNextColumnId(),
+                source.getNextIndexId(), source.getNextDatabaseId());
+    }
+
     @Override
     public String toString() {
         return String.format("IdGenerator{table=%d, column=%d, index=%d, db=%d}",

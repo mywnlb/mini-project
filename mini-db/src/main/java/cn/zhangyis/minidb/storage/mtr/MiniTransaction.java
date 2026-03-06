@@ -5,6 +5,7 @@ import cn.zhangyis.minidb.common.exception.MtrStateException;
 import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.buffer.BufferFrame;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
+import cn.zhangyis.minidb.storage.constants.StorageConstants;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.redo.RedoLogConfig;
@@ -213,12 +214,27 @@ public class MiniTransaction implements AutoCloseable {
      * @throws MiniDbException 如果页面加载失败或 MTR 状态错误
      */
     public Page getPage(PageId pageId, BufferPool.FetchMode mode) throws MiniDbException {
+        return getPageFrame(pageId, mode).getPage();
+    }
+
+    /**
+     * 获取页面所属的 BufferFrame。
+     *
+     * <p>适用于需要显式持有 page latch 的页格式代码。返回的 frame 仍由 MTR
+     * 负责 pin/unpin，重复获取同一页面不会重复 pin。</p>
+     *
+     * @param pageId 页面标识
+     * @param mode   获取模式
+     * @return BufferFrame
+     * @throws MiniDbException 如果页面加载失败或 MTR 状态错误
+     */
+    public BufferFrame getPageFrame(PageId pageId, BufferPool.FetchMode mode) throws MiniDbException {
         checkActive();
 
         // 检查是否已经在 memo 中
         for (MemoSlot slot : memo) {
             if (slot.pageId.equals(pageId)) {
-                return slot.page;  // 直接返回已缓存的页面
+                return slot.frame;  // 直接返回已缓存的 frame
             }
         }
 
@@ -227,9 +243,9 @@ public class MiniTransaction implements AutoCloseable {
         Page page = frame.getPage();
 
         // 记录到 memo（默认非脏页）
-        memo.add(new MemoSlot(pageId, page, false));
+        memo.add(new MemoSlot(pageId, page, frame, false));
 
-        return page;
+        return frame;
     }
 
     /**
@@ -244,6 +260,17 @@ public class MiniTransaction implements AutoCloseable {
     }
 
     /**
+     * 获取页面所属的 BufferFrame（简化方法）。
+     *
+     * @param pageId 页面标识
+     * @return BufferFrame
+     * @throws MiniDbException 如果页面加载失败
+     */
+    public BufferFrame getPageFrame(PageId pageId) throws MiniDbException {
+        return getPageFrame(pageId, BufferPool.FetchMode.READ_EXISTING);
+    }
+
+    /**
      * 分配新页面
      *
      * <p>从 Buffer Pool 分配一个新页面，自动加入 MTR 管理。</p>
@@ -253,15 +280,26 @@ public class MiniTransaction implements AutoCloseable {
      * @throws MiniDbException 如果分配失败
      */
     public Page newPage(int spaceId) throws MiniDbException {
+        return newPageFrame(spaceId).getPage();
+    }
+
+    /**
+     * 分配新页面并返回对应的 BufferFrame。
+     *
+     * @param spaceId 表空间 ID
+     * @return 新分配的 BufferFrame
+     * @throws MiniDbException 如果分配失败
+     */
+    public BufferFrame newPageFrame(int spaceId) throws MiniDbException {
         checkActive();
 
         BufferFrame frame = bufferPool.newPage(spaceId);
         Page page = frame.getPage();
 
         // 新页面自动标记为脏页
-        memo.add(new MemoSlot(page.getPageId(), page, true));
+        memo.add(new MemoSlot(page.getPageId(), page, frame, true));
 
-        return page;
+        return frame;
     }
 
     // ==================== 页面修改方法 ====================
@@ -346,7 +384,7 @@ public class MiniTransaction implements AutoCloseable {
             return;
         }
 
-        if (length <= 0 || offset < 0 || offset + length > 16384) {
+        if (length <= 0 || offset < 0 || offset + length > StorageConstants.PAGE_SIZE) {
             throw new IllegalArgumentException(
                     String.format("Invalid modification: offset=%d, length=%d", offset, length));
         }
@@ -393,7 +431,7 @@ public class MiniTransaction implements AutoCloseable {
             throw new IllegalArgumentException("Data cannot be null or empty");
         }
 
-        if (offset < 0 || offset + data.length > 16384) {
+        if (offset < 0 || offset + data.length > StorageConstants.PAGE_SIZE) {
             throw new IllegalArgumentException(
                     String.format("Invalid modification: offset=%d, length=%d", offset, data.length));
         }
@@ -612,7 +650,7 @@ public class MiniTransaction implements AutoCloseable {
 
         // 如果页面不在 memo 中，先添加到 memo
         Page page = frame.getPage();
-        MemoSlot newSlot = new MemoSlot(pageId, page, true);
+        MemoSlot newSlot = new MemoSlot(pageId, page, frame, true);
         newSlot.addModification(offset, data);
         memo.add(newSlot);
         logger.trace("Added frame to memo and logged modification: page={}, offset={}, length={}",
@@ -923,15 +961,19 @@ public class MiniTransaction implements AutoCloseable {
         /** 页面对象引用 */
         final Page page;
 
+        /** 页面所属的 BufferFrame */
+        final BufferFrame frame;
+
         /** 是否为脏页 */
         boolean isDirty;
 
         /** 页面修改记录列表 (用于生成 redo log) */
         final List<PageModification> modifications;
 
-        MemoSlot(PageId pageId, Page page, boolean isDirty) {
+        MemoSlot(PageId pageId, Page page, BufferFrame frame, boolean isDirty) {
             this.pageId = pageId;
             this.page = page;
+            this.frame = frame;
             this.isDirty = isDirty;
             this.modifications = new ArrayList<>();
         }

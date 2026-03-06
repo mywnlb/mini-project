@@ -392,6 +392,10 @@ public class BufferPool implements AutoCloseable {
                 config.getOldBlockRatio(), config.getOldBlockTimeMs());
     }
 
+    public DiskManager getDiskManager() {
+        return diskManager;
+    }
+
     /**
      * LRU 后台整理任务
      *
@@ -759,11 +763,12 @@ public class BufferPool implements AutoCloseable {
         frame.unpin();
 
         // 处理脏页标记
-        if (isDirty && !frame.isDirty()) {
-            frame.setDirty(true);
+        if (isDirty) {
+            if (!frame.isDirty()) {
+                frame.setDirty(true);
+            }
 
-            // 加入 Flush List
-            // 使用当前时间作为 LSN (简化实现，实际应使用 Redo Log LSN)
+            // 无条件尝试加入 Flush List；FlushList.add() 会自行去重。
             long lsn = frame.getPage().getLsn();
             flushList.add(frameIndex, lsn > 0 ? lsn : System.nanoTime());
         }

@@ -90,7 +90,7 @@ public class IndexManager {
         }
 
         PageId metaPageId = new PageId(spaceId, metaPageNo);
-        BufferFrame frame = bufferPool.getPage(metaPageId, BufferPool.FetchMode.READ_EXISTING);
+        BufferFrame frame = mtr.getPageFrame(metaPageId, BufferPool.FetchMode.READ_EXISTING);
         frame.readLock();
 
         try {
@@ -100,6 +100,7 @@ public class IndexManager {
                 frame.writeLock();
                 try {
                     IndexMetaPage.initPage(frame, mtr);
+                    mtr.markDirty(frame.getPage());
                 } finally {
                     frame.writeUnlock();
                     frame.readLock();
@@ -130,6 +131,13 @@ public class IndexManager {
     public BTree createIndex(String indexName, long tableId, IndexType indexType,
                              List<IndexDescriptor.ColumnDescriptor> columns,
                              MiniTransaction mtr) throws MiniDbException {
+        long indexId = nextIndexId.getAndIncrement();
+        return createIndex(indexId, indexName, tableId, indexType, columns, mtr);
+    }
+
+    public BTree createIndex(long indexId, String indexName, long tableId, IndexType indexType,
+                             List<IndexDescriptor.ColumnDescriptor> columns,
+                             MiniTransaction mtr) throws MiniDbException {
         ensureInitialized(mtr);
 
         // 检查名称是否已存在
@@ -137,9 +145,6 @@ public class IndexManager {
         if (nameToIdMap.containsKey(nameKey)) {
             throw new IllegalArgumentException("Index already exists: " + indexName);
         }
-
-        // 分配索引 ID
-        long indexId = nextIndexId.getAndIncrement();
 
         // 创建 B+Tree
         CompositeKeyDef keyDef = columnsToKeyDef(columns);
@@ -159,6 +164,7 @@ public class IndexManager {
         indexCache.put(indexId, btree);
         descriptorCache.put(indexId, descriptor);
         nameToIdMap.put(nameKey, indexId);
+        nextIndexId.updateAndGet(current -> Math.max(current, indexId + 1));
 
         return btree;
     }
@@ -421,7 +427,7 @@ public class IndexManager {
     private void persistDescriptor(IndexDescriptor descriptor, MiniTransaction mtr)
             throws MiniDbException {
         PageId metaPageId = new PageId(spaceId, metaPageNo);
-        BufferFrame frame = bufferPool.getPage(metaPageId, BufferPool.FetchMode.READ_EXISTING);
+        BufferFrame frame = mtr.getPageFrame(metaPageId, BufferPool.FetchMode.READ_EXISTING);
         frame.writeLock();
 
         try {
@@ -429,6 +435,7 @@ public class IndexManager {
                 // 空间不足，需要分配新页面（简化处理：抛异常）
                 throw new RuntimeException("Index metadata page is full");
             }
+            mtr.markDirty(frame.getPage());
         } finally {
             frame.writeUnlock();
         }
@@ -437,11 +444,12 @@ public class IndexManager {
     private void updateDescriptor(IndexDescriptor descriptor, MiniTransaction mtr)
             throws MiniDbException {
         PageId metaPageId = new PageId(spaceId, metaPageNo);
-        BufferFrame frame = bufferPool.getPage(metaPageId, BufferPool.FetchMode.READ_EXISTING);
+        BufferFrame frame = mtr.getPageFrame(metaPageId, BufferPool.FetchMode.READ_EXISTING);
         frame.writeLock();
 
         try {
             IndexMetaPage.updateDescriptor(frame, descriptor);
+            mtr.markDirty(frame.getPage());
         } finally {
             frame.writeUnlock();
         }

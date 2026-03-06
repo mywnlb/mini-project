@@ -81,12 +81,11 @@ public class DatabaseDescriptor {
      *
      * @param tableName 表名
      * @param tableId   表 ID
-     * @throws CatalogException 表已存在
      */
     public void addTable(String tableName, long tableId) {
         Long prev = tableNameToId.putIfAbsent(tableName, tableId);
         if (prev != null) {
-            throw CatalogException.tableAlreadyExists(tableName);
+            throw new IllegalStateException("Table already exists: " + tableName);
         }
     }
 

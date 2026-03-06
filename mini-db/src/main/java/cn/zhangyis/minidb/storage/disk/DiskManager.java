@@ -228,6 +228,24 @@ public class DiskManager implements AutoCloseable {
         }
     }
 
+    public void dropTablespace(int spaceId, String name) throws DiskIOException {
+        lock.writeLock().lock();
+        try {
+            TablespaceFile tsFile = tablespaces.remove(spaceId);
+            if (tsFile != null) {
+                tsFile.close();
+            }
+
+            Path filePath = dataDir.resolve(name + ".ibd");
+            Files.deleteIfExists(filePath);
+        } catch (IOException e) {
+            throw new DiskIOException(DiskIOException.ERR_FILE_SYNC,
+                "Failed to drop tablespace: " + spaceId, e);
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
     /**
      * 检查表空间是否存在
      *

@@ -51,4 +51,29 @@ public class CatalogException extends MiniDbException {
         return new CatalogException(700401,
                 "Invalid primary key: " + reason);
     }
+
+    public static CatalogException databaseAlreadyExists(String name) {
+        return new CatalogException(700501,
+                "Database already exists: " + name);
+    }
+
+    public static CatalogException databaseNotFound(String name) {
+        return new CatalogException(700601,
+                "Database not found: " + name);
+    }
+
+    public static CatalogException databaseNotEmpty(String name) {
+        return new CatalogException(700701,
+                "Database not empty: " + name);
+    }
+
+    public static CatalogException catalogNotInitialized() {
+        return new CatalogException(700801,
+                "Catalog not initialized");
+    }
+
+    public static CatalogException persistenceFailed(String operation, Throwable cause) {
+        return new CatalogException(700901,
+                "Catalog persistence failed: " + operation, cause);
+    }
 }
