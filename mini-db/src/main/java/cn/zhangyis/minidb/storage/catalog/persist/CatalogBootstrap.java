@@ -9,6 +9,7 @@ import cn.zhangyis.minidb.storage.catalog.ColumnMeta;
 import cn.zhangyis.minidb.storage.catalog.DatabaseDescriptor;
 import cn.zhangyis.minidb.storage.catalog.IdGenerator;
 import cn.zhangyis.minidb.storage.catalog.TableDescriptor;
+import cn.zhangyis.minidb.storage.catalog.ddl.DdlLogPage;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.record.schema.RecordSchema;
@@ -85,32 +86,38 @@ public class CatalogBootstrap {
     /**
      * 首次初始化 Catalog 元数据页
      *
-     * <p>创建 CatalogMetaPage (Page 3) 和第一个 TableMetaPage。</p>
+     * <p>创建 CatalogMetaPage (Page 3)、第一个 TableMetaPage (Page 4) 和 DDL Log head page (Page 5)。</p>
      *
      * @throws CatalogException 初始化失败时
      */
     public void initCatalog() throws CatalogException {
         PageId catalogPageId = PageId.of(SYSTEM_SPACE_ID, CatalogMetaPage.CATALOG_META_PAGE_NO);
         PageId tableMetaPageId = PageId.of(SYSTEM_SPACE_ID, TableMetaPage.FIRST_TABLE_META_PAGE_NO);
+        PageId ddlLogPageId = PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO);
 
         try {
-            ensureSystemCatalogPagesAllocated(TableMetaPage.FIRST_TABLE_META_PAGE_NO);
+            ensureSystemCatalogPagesAllocated(DdlLogPage.DDL_LOG_PAGE_NO);
 
             try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
                 BufferFrame catalogFrame = mtr.getPageFrame(catalogPageId, BufferPool.FetchMode.READ_EXISTING);
                 BufferFrame tableMetaFrame = mtr.getPageFrame(tableMetaPageId, BufferPool.FetchMode.READ_EXISTING);
+                BufferFrame ddlLogFrame = mtr.getPageFrame(ddlLogPageId, BufferPool.FetchMode.READ_EXISTING);
 
                 catalogFrame.writeLock();
                 tableMetaFrame.writeLock();
+                ddlLogFrame.writeLock();
                 try {
-                    // 按 pageNo 顺序初始化，先让 page 4 有效，再发布 page 3。
+                    // 按 pageNo 顺序持锁；发布顺序仍然让 page 3 最后完成。
                     TableMetaPage.initPage(tableMetaFrame);
+                    DdlLogPage.initPage(ddlLogFrame);
                     CatalogMetaPage.initPage(catalogFrame);
                     CatalogMetaPage.writeFirstTableMetaPage(catalogFrame, tableMetaPageId.getPageNo());
 
                     mtr.markDirty(tableMetaFrame.getPage());
+                    mtr.markDirty(ddlLogFrame.getPage());
                     mtr.markDirty(catalogFrame.getPage());
                 } finally {
+                    ddlLogFrame.writeUnlock();
                     tableMetaFrame.writeUnlock();
                     catalogFrame.writeUnlock();
                 }
@@ -119,6 +126,31 @@ public class CatalogBootstrap {
             }
         } catch (MiniDbException e) {
             throw new CatalogException("Failed to initialize catalog", e);
+        }
+    }
+
+    /**
+     * 兼容升级路径：为已存在的 catalog 补齐 DDL Log head page。
+     */
+    public void ensureDdlLogPageInitialized() throws CatalogException {
+        PageId ddlLogPageId = PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO);
+        try {
+            ensureSystemCatalogPagesAllocated(DdlLogPage.DDL_LOG_PAGE_NO);
+            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+                BufferFrame ddlLogFrame = mtr.getPageFrame(ddlLogPageId, BufferPool.FetchMode.READ_EXISTING);
+                ddlLogFrame.writeLock();
+                try {
+                    if (!DdlLogPage.isValid(ddlLogFrame)) {
+                        DdlLogPage.initPage(ddlLogFrame);
+                        mtr.markDirty(ddlLogFrame.getPage());
+                    }
+                } finally {
+                    ddlLogFrame.writeUnlock();
+                }
+                mtr.commit();
+            }
+        } catch (MiniDbException e) {
+            throw new CatalogException("Failed to ensure DDL log page", e);
         }
     }
 

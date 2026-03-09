@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -179,6 +180,68 @@ class CatalogManagerPhase4Test {
         }
     }
 
+    @Test
+    void loadCatalogRecoversOrphanTablespaceFromPendingCreateIntent() throws Exception {
+        int orphanSpaceId = 41;
+        long orphanTableId = 41L;
+
+        catalogManager.getDdlLogManager().appendDeleteSpaceIntentAndForce(orphanSpaceId, orphanTableId);
+        diskManager.createTablespace(orphanSpaceId, "table_" + orphanSpaceId);
+        assertTrue(Files.exists(tablespaceFile(orphanSpaceId)));
+
+        restartCatalog();
+
+        assertFalse(Files.exists(tablespaceFile(orphanSpaceId)));
+        assertFalse(diskManager.tablespaceExists(orphanSpaceId));
+        assertTrue(catalogManager.getDdlLogManager().scanAllRecords().isEmpty());
+    }
+
+    @Test
+    void loadCatalogSkipsStaleCreateIntentWhenTableExists() throws Exception {
+        catalogManager.createDatabase("stale_db");
+        TableDescriptor table = catalogManager.createTable(
+                "stale_db",
+                "users",
+                List.of(
+                        new ColumnMeta(1, "id", FieldType.bigint(false), 0, null),
+                        new ColumnMeta(2, "name", FieldType.varchar(32, true), 1, null)
+                )
+        );
+
+        catalogManager.getDdlLogManager().appendDeleteSpaceIntentAndForce(table.getSpaceId(), table.getTableId());
+        assertTrue(Files.exists(tablespaceFile(table.getSpaceId())));
+
+        restartCatalog();
+
+        TableDescriptor loaded = catalogManager.getTable("stale_db", "users");
+        assertEquals(table.getTableId(), loaded.getTableId());
+        assertTrue(Files.exists(tablespaceFile(table.getSpaceId())));
+        assertTrue(catalogManager.getDdlLogManager().scanAllRecords().isEmpty());
+    }
+
+    @Test
+    void loadCatalogReplaysPendingDropIntentAfterMetadataDelete() throws Exception {
+        catalogManager.createDatabase("drop_recover_db");
+        TableDescriptor table = catalogManager.createTable(
+                "drop_recover_db",
+                "orders",
+                List.of(
+                        new ColumnMeta(1, "id", FieldType.bigint(false), 0, null),
+                        new ColumnMeta(2, "status", FieldType.varchar(16, true), 1, null)
+                )
+        );
+
+        catalogManager.getDdlLogManager().appendDeleteSpaceIntentAndForce(table.getSpaceId(), table.getTableId());
+        invokePersistTableDrop(table.getTableId(), table.getDatabaseId(), 0);
+        assertTrue(Files.exists(tablespaceFile(table.getSpaceId())));
+
+        restartCatalog();
+
+        assertThrows(CatalogException.class, () -> catalogManager.getTable("drop_recover_db", "orders"));
+        assertFalse(Files.exists(tablespaceFile(table.getSpaceId())));
+        assertTrue(catalogManager.getDdlLogManager().scanAllRecords().isEmpty());
+    }
+
     private boolean createTableRace(CountDownLatch start) throws Exception {
         start.await();
         try {
@@ -218,6 +281,17 @@ class CatalogManagerPhase4Test {
         bufferPool = new BufferPool(64, diskManager);
         catalogManager = new CatalogManager(bufferPool);
         catalogManager.loadCatalog();
+    }
+
+    private void invokePersistTableDrop(long tableId, int databaseId, int newTableCount) throws Exception {
+        Method method = CatalogManager.class.getDeclaredMethod(
+                "persistTableDrop",
+                long.class,
+                int.class,
+                int.class
+        );
+        method.setAccessible(true);
+        method.invoke(catalogManager, tableId, databaseId, newTableCount);
     }
 
     private Path tablespaceFile(int spaceId) {

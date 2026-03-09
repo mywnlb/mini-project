@@ -6,6 +6,7 @@ import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.catalog.ColumnMeta;
 import cn.zhangyis.minidb.storage.catalog.DatabaseDescriptor;
 import cn.zhangyis.minidb.storage.catalog.TableDescriptor;
+import cn.zhangyis.minidb.storage.catalog.ddl.DdlLogPage;
 import cn.zhangyis.minidb.storage.constants.StorageConstants;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
@@ -69,7 +70,7 @@ class CatalogPersistPhase2Test {
         CatalogBootstrap.CatalogSnapshot snapshot = bootstrap.loadCatalog();
 
         assertTrue(bootstrap.isCatalogInitialized());
-        assertEquals(5, diskManager.getPageCount(SYSTEM_SPACE_ID));
+        assertEquals(6, diskManager.getPageCount(SYSTEM_SPACE_ID));
         assertEquals(1L, snapshot.idGenerator().getNextTableId());
         assertTrue(snapshot.databases().isEmpty());
         assertTrue(snapshot.tables().isEmpty());
@@ -90,6 +91,15 @@ class CatalogPersistPhase2Test {
             assertEquals(PageType.FIL_PAGE_TABLE_META, tableMetaFrame.getPage().getPageType());
         } finally {
             bufferPool.unpinPage(tableMetaPageId, false);
+        }
+
+        PageId ddlLogPageId = PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO);
+        BufferFrame ddlLogFrame = bufferPool.getPage(ddlLogPageId, BufferPool.FetchMode.READ_EXISTING);
+        try {
+            assertEquals(1, ddlLogFrame.getPinCount());
+            assertEquals(PageType.FIL_PAGE_DDL_LOG, ddlLogFrame.getPage().getPageType());
+        } finally {
+            bufferPool.unpinPage(ddlLogPageId, false);
         }
     }
 

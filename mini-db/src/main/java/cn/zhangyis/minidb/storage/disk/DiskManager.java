@@ -247,6 +247,36 @@ public class DiskManager implements AutoCloseable {
     }
 
     /**
+     * 幂等删除表空间文件。
+     *
+     * <p>与 {@link #dropTablespace(int, String)} 的区别是：
+     * 即使表空间当前没有打开，也会直接按文件路径尝试删除。
+     * 这用于 crash recovery 清理 orphan .ibd 文件。</p>
+     *
+     * @param spaceId 表空间 ID
+     * @param name    表空间名称（不含 .ibd）
+     * @return true 表示删除了文件，false 表示文件原本不存在
+     * @throws DiskIOException 如果关闭已打开文件或删除文件失败
+     */
+    public boolean dropTablespaceIfExists(int spaceId, String name) throws DiskIOException {
+        lock.writeLock().lock();
+        try {
+            TablespaceFile tsFile = tablespaces.remove(spaceId);
+            if (tsFile != null) {
+                tsFile.close();
+            }
+
+            Path filePath = dataDir.resolve(name + ".ibd");
+            return Files.deleteIfExists(filePath);
+        } catch (IOException e) {
+            throw new DiskIOException(DiskIOException.ERR_FILE_SYNC,
+                "Failed to delete tablespace if exists: " + spaceId, e);
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
      * 检查表空间是否存在
      *
      * @param spaceId 表空间 ID

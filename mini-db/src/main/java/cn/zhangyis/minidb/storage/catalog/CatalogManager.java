@@ -7,6 +7,7 @@ import cn.zhangyis.minidb.storage.btree.IndexType;
 import cn.zhangyis.minidb.storage.buffer.BufferFrame;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.catalog.cache.CatalogCache;
+import cn.zhangyis.minidb.storage.catalog.ddl.DdlLogManager;
 import cn.zhangyis.minidb.storage.catalog.persist.CatalogBootstrap;
 import cn.zhangyis.minidb.storage.catalog.persist.CatalogMetaPage;
 import cn.zhangyis.minidb.storage.catalog.persist.TableMetaPage;
@@ -16,6 +17,8 @@ import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.record.schema.RecordSchema;
 import cn.zhangyis.minidb.storage.record.schema.SchemaRegistry;
 import cn.zhangyis.minidb.storage.space.TableSpace;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -47,6 +50,8 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public class CatalogManager {
 
+    private static final Logger log = LoggerFactory.getLogger(CatalogManager.class);
+
     private static final int SYSTEM_SPACE_ID = 0;
     private static final int TABLE_INDEX_META_PAGE_NO = 3;
     private static final String PRIMARY_INDEX_NAME = "PRIMARY";
@@ -55,6 +60,7 @@ public class CatalogManager {
     private final BufferPool bufferPool;
     private final IdGenerator idGenerator;
     private final CatalogCache cache;
+    private final DdlLogManager ddlLogManager;
 
     /**
      * databaseName → DDL 锁。
@@ -68,6 +74,7 @@ public class CatalogManager {
         this.bufferPool = Objects.requireNonNull(bufferPool, "bufferPool");
         this.idGenerator = new IdGenerator();
         this.cache = new CatalogCache();
+        this.ddlLogManager = new DdlLogManager(bufferPool);
         this.dbLocks = new ConcurrentHashMap<>();
         this.initialized = false;
     }
@@ -90,7 +97,11 @@ public class CatalogManager {
      */
     public void loadCatalog() throws CatalogException {
         CatalogBootstrap bootstrap = new CatalogBootstrap(bufferPool);
+        bootstrap.ensureDdlLogPageInitialized();
         CatalogBootstrap.CatalogSnapshot snapshot = bootstrap.loadCatalog();
+
+        ddlLogManager.replayPendingIntents(snapshot.tables());
+        ddlLogManager.refreshNextOpIdSeed();
 
         idGenerator.resetFrom(snapshot.idGenerator());
 
@@ -224,6 +235,7 @@ public class CatalogManager {
 
             long tableId = idGenerator.allocateTableId();
             int spaceId = Math.toIntExact(tableId);
+            long ddlOpId = ddlLogManager.appendDeleteSpaceIntentAndForce(spaceId, tableId);
             List<ColumnMeta> persistedColumns = assignColumnIds(normalizedColumns);
             RecordSchema schema = buildSchema(persistedColumns);
             SchemaRegistry schemaRegistry = new SchemaRegistry(schema);
@@ -268,14 +280,19 @@ public class CatalogManager {
 
                 db.addTable(tableName, tableId);
                 cache.putTable(dbName, table);
+                compactIntentBestEffort(ddlOpId, "createTable success");
                 return table;
             } catch (Exception e) {
+                boolean cleanupCompleted = !tablespaceCreated;
                 if (tablespaceCreated) {
                     try {
-                        diskManager.dropTablespace(spaceId, tablespaceName);
+                        cleanupCompleted = deleteTablespaceIfExists(spaceId, tablespaceName);
                     } catch (MiniDbException cleanupFailure) {
                         e.addSuppressed(cleanupFailure);
                     }
+                }
+                if (cleanupCompleted) {
+                    compactIntentBestEffort(ddlOpId, "createTable rollback path");
                 }
                 if (e instanceof CatalogException catalogException) {
                     throw catalogException;
@@ -310,6 +327,7 @@ public class CatalogManager {
                 throw CatalogException.tableNotFound(tableName);
             }
 
+            long ddlOpId = ddlLogManager.appendDeleteSpaceIntentAndForce(table.getSpaceId(), table.getTableId());
             int newTableCount = db.getTableCount() - 1;
             persistTableDrop(table.getTableId(), db.getDatabaseId(), newTableCount);
 
@@ -317,6 +335,14 @@ public class CatalogManager {
             table.setLastUpdateTime(System.currentTimeMillis());
             db.removeTable(tableName);
             cache.removeTable(dbName, tableName);
+
+            try {
+                deleteTablespaceIfExists(table.getSpaceId(), tablespaceName(table.getSpaceId()));
+                compactIntentBestEffort(ddlOpId, "dropTable post-DDL cleanup");
+            } catch (MiniDbException e) {
+                log.warn("Post-DDL cleanup failed for dropped table tableId={}, spaceId={}, reason={}",
+                        table.getTableId(), table.getSpaceId(), e.getMessage());
+            }
         } finally {
             lock.unlock();
         }
@@ -376,6 +402,10 @@ public class CatalogManager {
 
     public CatalogCache getCache() {
         return cache;
+    }
+
+    DdlLogManager getDdlLogManager() {
+        return ddlLogManager;
     }
 
     public boolean isInitialized() {
@@ -830,6 +860,23 @@ public class CatalogManager {
 
     private String tablespaceName(int spaceId) {
         return TABLESPACE_NAME_PREFIX + spaceId;
+    }
+
+    private boolean deleteTablespaceIfExists(int spaceId, String tablespaceName) throws MiniDbException {
+        int pageCount = bufferPool.getDiskManager().getPageCount(spaceId);
+        for (int pageNo = 0; pageNo < pageCount; pageNo++) {
+            bufferPool.deletePage(PageId.of(spaceId, pageNo));
+        }
+        return bufferPool.getDiskManager().dropTablespaceIfExists(spaceId, tablespaceName);
+    }
+
+    private void compactIntentBestEffort(long ddlOpId, String reason) {
+        try {
+            ddlLogManager.compactByOpId(ddlOpId);
+        } catch (CatalogException e) {
+            log.warn("DDL log compaction deferred, ddlOpId={}, reason={}, detail={}",
+                    ddlOpId, reason, e.getMessage());
+        }
     }
 
     private static TableMetaPage.TableEntry toTableEntry(TableDescriptor table) {

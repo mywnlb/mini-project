@@ -93,6 +93,38 @@ public class CatalogCache {
         return removed;
     }
 
+    /**
+     * 按 tableId 移除表缓存（DDL Log 重放使用）
+     *
+     * <p>幂等：tableId 不存在时静默返回 null。</p>
+     *
+     * @param tableId 表 ID
+     * @return 被移除的 TableDescriptor，不存在返回 null
+     */
+    public TableDescriptor removeTableById(long tableId) {
+        TableDescriptor removed = tableById.remove(tableId);
+        if (removed != null) {
+            Map<String, TableDescriptor> dbTables = tableByDbAndName.get(
+                    findDbNameByTableId(removed));
+            if (dbTables != null) {
+                dbTables.remove(removed.getTableName());
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * 通过 TableDescriptor 的 databaseId 反查 dbName
+     */
+    private String findDbNameByTableId(TableDescriptor table) {
+        for (Map.Entry<String, DatabaseDescriptor> entry : databaseByName.entrySet()) {
+            if (entry.getValue().getDatabaseId() == table.getDatabaseId()) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
     public List<TableDescriptor> listTables(String dbName) {
         Map<String, TableDescriptor> dbTables = tableByDbAndName.get(dbName);
         if (dbTables == null) {

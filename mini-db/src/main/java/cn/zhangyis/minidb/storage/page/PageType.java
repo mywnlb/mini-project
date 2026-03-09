@@ -131,7 +131,14 @@ public enum PageType {
      * <p>存储表定义（列、索引 ID、状态等），链式存储。
      * 位于系统表空间 Page 4+。</p>
      */
-    FIL_PAGE_TABLE_META(17841);
+    FIL_PAGE_TABLE_META(17841),
+
+    /**
+     * DDL Log 页面
+     * <p>存储 DDL Log 记录，用于原子 DDL 的 crash recovery。
+     * 位于系统表空间 Page 5。</p>
+     */
+    FIL_PAGE_DDL_LOG(17842);
     
     /** 页面类型的数值 */
     private final int value;
