@@ -6,7 +6,9 @@
       "Bash(./gradlew test:*)",
       "Bash(ls:*)",
       "Bash(git:*)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "Bash(mkdir:*)",
+      "WebFetch(domain:mysql.taobao.org)"
     ]
   }
 }
