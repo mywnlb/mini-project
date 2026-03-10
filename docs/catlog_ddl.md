@@ -135,7 +135,7 @@ DDL log 头页固定为 system space `page 5`；如果单页满，按 `nextPage`
 | Entry 1                   |
 | - entryLen (4)            |
 | - ddlOpId (8)             |
-| - logType (1)             |  DELETE_SPACE = 1
+| - logType (1)             |  FREE_TREE=1, DELETE_SPACE=2, REMOVE_CACHE=3
 | - replayGuard (1)         |  TABLE_ABSENT = 1
 | - reserved (2)            |
 | - spaceId (4)             |

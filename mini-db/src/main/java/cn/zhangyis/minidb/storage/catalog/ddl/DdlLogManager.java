@@ -7,8 +7,6 @@ import cn.zhangyis.minidb.storage.catalog.CatalogException;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.PageId;
-import cn.zhangyis.minidb.storage.page.PageType;
-import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.catalog.TableDescriptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,8 +55,7 @@ public class DdlLogManager {
     }
 
     public void appendIntentAndForce(DdlLogRecord record) throws CatalogException {
-        List<PageId> touchedPages = appendRecord(record);
-        forceTouchedPages(touchedPages);
+        appendRecordAndForce(record);
     }
 
     public List<DdlLogRecord> scanAllRecords() throws CatalogException {
@@ -130,7 +127,7 @@ public class DdlLogManager {
         rewriteAllRecordsAndForce(remaining);
     }
 
-    private List<PageId> appendRecord(DdlLogRecord record) throws CatalogException {
+    private void appendRecordAndForce(DdlLogRecord record) throws CatalogException {
         LinkedHashSet<PageId> touchedPages = new LinkedHashSet<>();
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             int currentPageNo = DdlLogPage.DDL_LOG_PAGE_NO;
@@ -173,13 +170,14 @@ public class DdlLogManager {
                     frame.writeUnlock();
                 }
             }
+            // force 必须在 commit（unpin）之前，页面被 pin 住时不会被 evict 提前刷盘
+            forceTouchedPages(new ArrayList<>(touchedPages));
             mtr.commit();
         } catch (MiniDbException e) {
             throw CatalogException.persistenceFailed("append DDL log intent", e);
         } catch (RuntimeException e) {
             throw new CatalogException("Failed to append DDL log intent", e);
         }
-        return new ArrayList<>(touchedPages);
     }
 
     private void rewriteAllRecordsAndForce(List<DdlLogRecord> records) throws CatalogException {
@@ -206,7 +204,8 @@ public class DdlLogManager {
                     pageNos.add(newFrame.getPageId().getPageNo());
                 }
 
-                for (int i = 0; i < frames.size(); i++) {
+                // 写入 required 页面的数据和 nextPage 链
+                for (int i = 0; i < requiredPages; i++) {
                     BufferFrame frame = frames.get(i);
                     int fromIndex = i * DdlLogPage.MAX_ENTRIES;
                     int toIndex = Math.min(fromIndex + DdlLogPage.MAX_ENTRIES, records.size());
@@ -218,20 +217,29 @@ public class DdlLogManager {
                     mtr.markDirty(frame.getPage());
                     touchedPages.add(frame.getPageId());
                 }
+
+                // 清零多余页面：断开 chain 并清空内容，避免孤儿页残留脏数据
+                for (int i = requiredPages; i < frames.size(); i++) {
+                    BufferFrame frame = frames.get(i);
+                    DdlLogPage.rewritePage(frame, List.of(), 0);
+                    mtr.markDirty(frame.getPage());
+                    touchedPages.add(frame.getPageId());
+                }
             } finally {
                 for (int i = frames.size() - 1; i >= 0; i--) {
                     frames.get(i).writeUnlock();
                 }
             }
 
+            // force 必须在 commit（unpin）之前完成，否则 unpin 后页面可能被 evict
+            // 部分刷盘，crash 时 DDL log chain 不一致。页面仍被 pin 住时不会被 evict。
+            forceTouchedPages(new ArrayList<>(touchedPages));
             mtr.commit();
         } catch (MiniDbException e) {
             throw CatalogException.persistenceFailed("compact DDL log", e);
         } catch (RuntimeException e) {
             throw new CatalogException("Failed to compact DDL log", e);
         }
-
-        forceTouchedPages(new ArrayList<>(touchedPages));
     }
 
     private List<Integer> collectPageNos() throws CatalogException {

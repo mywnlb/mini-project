@@ -101,7 +101,6 @@ public class CatalogManager {
         CatalogBootstrap.CatalogSnapshot snapshot = bootstrap.loadCatalog();
 
         ddlLogManager.replayPendingIntents(snapshot.tables());
-        ddlLogManager.refreshNextOpIdSeed();
 
         idGenerator.resetFrom(snapshot.idGenerator());
 

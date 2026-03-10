@@ -225,3 +225,6 @@ try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
 
 ## Final Rule
 If any step above is skipped, the implementation must be discarded as unsafe.
+
+在使用 Ralph Loop 模式时，如果连续 5次 测试失败且报错信息没有变化，请立即停止并请求人类介入。
+每次循环必须先执行 git commit -m "ralph: iteration X" 以便回滚。

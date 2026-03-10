@@ -8,7 +8,9 @@
       "Bash(git:*)",
       "Bash(xargs grep:*)",
       "Bash(mkdir:*)",
-      "WebFetch(domain:mysql.taobao.org)"
+      "WebFetch(domain:mysql.taobao.org)",
+      "Bash(wc:*)",
+      "Bash(gh api:*)"
     ]
   }
 }
