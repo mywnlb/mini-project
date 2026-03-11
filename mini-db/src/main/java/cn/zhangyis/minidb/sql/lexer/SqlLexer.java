@@ -5,10 +5,12 @@ import java.util.Map;
 
 public class SqlLexer {
     private final String sql;
+    private final String originalSql;
     private int pos = 0;
     private final Map<String, TokenType> keywords = new HashMap<>();
 
     public SqlLexer(String sql) {
+        this.originalSql = sql;
         this.sql = sql.toUpperCase();
         initKeywords();
     }
@@ -19,7 +21,24 @@ public class SqlLexer {
         keywords.put("WHERE", TokenType.WHERE);
         keywords.put("JOIN", TokenType.JOIN);
         keywords.put("ON", TokenType.ON);
-        keywords.put("STAR", TokenType.STAR);
+        keywords.put("AND", TokenType.AND);
+        keywords.put("OR", TokenType.OR);
+        keywords.put("GROUP", TokenType.GROUP);
+        keywords.put("BY", TokenType.BY);
+        keywords.put("HAVING", TokenType.HAVING);
+        keywords.put("ORDER", TokenType.ORDER);
+        keywords.put("LIMIT", TokenType.LIMIT);
+        keywords.put("COUNT", TokenType.COUNT);
+        keywords.put("SUM", TokenType.SUM);
+        keywords.put("AVG", TokenType.AVG);
+        keywords.put("MAX", TokenType.MAX);
+        keywords.put("MIN", TokenType.MIN);
+        keywords.put("INSERT", TokenType.INSERT);
+        keywords.put("INTO", TokenType.INTO);
+        keywords.put("VALUES", TokenType.VALUES);
+        keywords.put("UPDATE", TokenType.UPDATE);
+        keywords.put("SET", TokenType.SET);
+        keywords.put("DELETE", TokenType.DELETE);
     }
 
     public Token nextToken() {
@@ -27,69 +46,59 @@ public class SqlLexer {
         if (pos >= sql.length()) return Token.EOF_TOKEN;
 
         int start = pos;
-        char ch = sql.charAt(pos);
+        char c = sql.charAt(pos);
 
-        return switch (ch) {
-            case '*' -> emit(TokenType.STAR, 1);
-            case '=' -> emit(TokenType.EQ, 1);
-            case '(' -> emit(TokenType.LPAREN, 1);
-            case ')' -> emit(TokenType.RPAREN, 1);
-            case ',' -> emit(TokenType.COMMA, 1);
-            case ';' -> emit(TokenType.SEMICOLON, 1);
-            case '.' -> emit(TokenType.DOT, 1);
-            case '"' -> stringToken(start);
-            default -> {
-                if (Character.isDigit(ch)) {
-                    yield numberToken(start);
-                } else if (Character.isLetter(ch)) {
-                    yield identifierToken(start);
-                } else {
-                    yield unknownToken(start);
-                }
+        // 单引号字符串
+        if (c == '\'') {
+            pos++;
+            StringBuilder sb = new StringBuilder();
+            while (pos < sql.length() && sql.charAt(pos) != '\'') {
+                sb.append(sql.charAt(pos));
+                pos++;
             }
-        };
-    }
-
-    private Token emit(TokenType type, int length) {
-        Token token = new Token(type, type.getLiteral(), pos, pos + length);
-        pos += length;
-        return token;
-    }
-
-    private Token identifierToken(int start) {
-        while (pos < sql.length() && Character.isLetterOrDigit(sql.charAt(pos))) {
-            pos++;
+            if (pos < sql.length()) pos++; // skip closing quote
+            return new Token(TokenType.STRING, sb.toString(), start, pos);
         }
-        String word = sql.substring(start, pos);
-        TokenType type = keywords.getOrDefault(word, TokenType.IDENTIFIER);
-        return new Token(type, word, start, pos);
-    }
 
-    private Token numberToken(int start) {
-        while (pos < sql.length() && Character.isDigit(sql.charAt(pos))) {
-            pos++;
+        // 双字符运算符
+        if (pos + 1 < sql.length()) {
+            String two = sql.substring(pos, pos + 2);
+            if (two.equals("<=")) { pos += 2; return new Token(TokenType.LE, "<=", start, pos); }
+            if (two.equals(">=")) { pos += 2; return new Token(TokenType.GE, ">=", start, pos); }
+            if (two.equals("<>")) { pos += 2; return new Token(TokenType.NE, "<>", start, pos); }
         }
-        String num = sql.substring(start, pos);
-        return new Token(TokenType.NUMBER, num, start, pos);
-    }
 
-    private Token stringToken(int start) {
-        pos++; // skip "
-        int end = pos;
-        while (end < sql.length() && sql.charAt(end) != '"') end++;
-        String value = sql.substring(pos, end);
-        pos = end + 1;
-        return new Token(TokenType.STRING, value, start, pos);
-    }
+        // 单字符运算符和标点
+        switch (c) {
+            case '*': pos++; return new Token(TokenType.STAR, "*", start, pos);
+            case '=': pos++; return new Token(TokenType.EQ, "=", start, pos);
+            case '<': pos++; return new Token(TokenType.LT, "<", start, pos);
+            case '>': pos++; return new Token(TokenType.GT, ">", start, pos);
+            case '(': pos++; return new Token(TokenType.LPAREN, "(", start, pos);
+            case ')': pos++; return new Token(TokenType.RPAREN, ")", start, pos);
+            case ',': pos++; return new Token(TokenType.COMMA, ",", start, pos);
+            case ';': pos++; return new Token(TokenType.SEMICOLON, ";", start, pos);
+            case '.': pos++; return new Token(TokenType.DOT, ".", start, pos);
+        }
 
-    private Token unknownToken(int start) {
-        pos++;
-        return new Token(TokenType.IDENTIFIER, sql.substring(start, pos), start, pos);
+        // 数字
+        if (Character.isDigit(c)) {
+            while (pos < sql.length() && Character.isDigit(sql.charAt(pos))) pos++;
+            return new Token(TokenType.NUMBER, sql.substring(start, pos), start, pos);
+        }
+
+        // 标识符或关键字
+        if (Character.isLetter(c) || c == '_') {
+            while (pos < sql.length() && (Character.isLetterOrDigit(sql.charAt(pos)) || sql.charAt(pos) == '_')) pos++;
+            String word = sql.substring(start, pos);
+            TokenType type = keywords.getOrDefault(word, TokenType.IDENTIFIER);
+            return new Token(type, word, start, pos);
+        }
+
+        throw new SqlParseException("Unexpected character '" + c + "' at position " + pos);
     }
 
     private void skipWhitespace() {
-        while (pos < sql.length() && Character.isWhitespace(sql.charAt(pos))) {
-            pos++;
-        }
+        while (pos < sql.length() && Character.isWhitespace(sql.charAt(pos))) pos++;
     }
 }

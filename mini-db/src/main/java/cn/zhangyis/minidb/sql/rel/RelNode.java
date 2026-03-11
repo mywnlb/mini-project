@@ -10,6 +10,3 @@ public abstract class RelNode {
         return RelTraitSet.DEFAULT;
     }
 }
-
-interface RelTraitSet {}
-class DefaultRelTraitSet implements RelTraitSet {}

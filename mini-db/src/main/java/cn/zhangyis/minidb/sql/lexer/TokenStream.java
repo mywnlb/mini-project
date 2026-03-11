@@ -2,7 +2,6 @@ package cn.zhangyis.minidb.sql.lexer;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.NoSuchElementException;
 
 public class TokenStream {
     private final SqlLexer lexer;
@@ -55,11 +54,5 @@ public class TokenStream {
 
     public boolean isEOF() {
         return current.type() == TokenType.EOF;
-    }
-}
-
-class SqlParseException extends RuntimeException {
-    public SqlParseException(String message) {
-        super(message);
     }
 }

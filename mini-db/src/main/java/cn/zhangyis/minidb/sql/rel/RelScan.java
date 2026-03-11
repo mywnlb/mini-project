@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.sql.rel;
 
 import cn.zhangyis.minidb.sql.catalog.TableMeta;
+import java.util.List;
 
 public class RelScan extends RelNode {
     private final String tableName;

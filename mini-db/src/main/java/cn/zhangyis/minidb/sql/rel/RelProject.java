@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.sql.rel;
 
 import cn.zhangyis.minidb.sql.ast.SqlNodeList;
+import java.util.List;
 
 public class RelProject extends RelNode {
     private final RelNode input;
@@ -23,4 +24,5 @@ public class RelProject extends RelNode {
     }
 
     public RelNode input() { return input; }
+    public SqlNodeList projection() { return projection; }
 }

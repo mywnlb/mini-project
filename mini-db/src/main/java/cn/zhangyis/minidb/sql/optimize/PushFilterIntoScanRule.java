@@ -1,6 +1,5 @@
 package cn.zhangyis.minidb.sql.optimize;
 
-import cn.zhangyis.minidb.sql.ast.SqlNode;
 import cn.zhangyis.minidb.sql.rel.*;
 
 public class PushFilterIntoScanRule extends RelOptRule {
@@ -19,6 +18,6 @@ public class PushFilterIntoScanRule extends RelOptRule {
         RelScan scan = (RelScan) filter.input();
 
         // 创建带索引条件的扫描 (MVP简化)
-        return new RelIndexedScan(scan.tableName(), filter.condition());
+        return new RelIndexedScan(scan.tableName(), scan.tableMeta(), filter.condition());
     }
 }

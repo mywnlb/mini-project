@@ -1,5 +1,6 @@
 package cn.zhangyis.minidb.sql.catalog;
 
+import cn.zhangyis.minidb.sql.types.SqlType;
 import java.util.List;
 import java.util.Map;
 
@@ -18,7 +19,7 @@ public class MockCatalog implements CatalogSpi {
 
     @Override
     public TableMeta getTable(String qualifiedName) {
-        return tables.get(qualifiedName);
+        return tables.get(qualifiedName.toLowerCase());
     }
 
     @Override
@@ -28,6 +29,7 @@ public class MockCatalog implements CatalogSpi {
 
     @Override
     public List<ColumnMeta> getColumns(String tableName) {
-        return getTable(tableName).columns();
+        TableMeta meta = getTable(tableName);
+        return meta != null ? meta.columns() : List.of();
     }
 }
