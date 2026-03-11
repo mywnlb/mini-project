@@ -1,10 +1,24 @@
 package cn.zhangyis.minidb.sql.optimize.cost;
 
+import cn.zhangyis.minidb.sql.ast.SqlLiteral;
+import cn.zhangyis.minidb.sql.exec.PhysicalPlanner.JoinAlgorithm;
 import cn.zhangyis.minidb.sql.rel.*;
 
+/**
+ * CBO 代价优化器：基于 CostModel 做物理计划决策
+ * 核心职责：为 RelJoin 选择最优 JOIN 算法
+ */
 public class CostOptimizer {
     private final CostModel costModel = new CostModel();
 
+    public CostModel costModel() {
+        return costModel;
+    }
+
+    /**
+     * 为逻辑计划中的每个 JOIN 选择最优算法
+     * 返回带注解的物理计划描述
+     */
     public String decidePhysicalPlan(RelNode plan) {
         if (plan instanceof RelInsert insert) {
             return "INSERT_EXEC[" + insert.tableName() + "](rows=" + insert.valueRows().size() + ")";
@@ -17,9 +31,19 @@ public class CostOptimizer {
             return "DELETE_EXEC\n  " + decidePhysicalPlan(delete.input());
         }
         if (plan instanceof RelSort sort) {
+            double inputRows = costModel.estimateRows(sort.input());
             double cost = costModel.sortCost(sort.input());
             String lim = sort.limit() != null ? ", limit=" + sort.limit() : "";
-            return "SORT(cost=" + String.format("%.1f", cost) + lim + ")\n" +
+            // TopN 优化：有 LIMIT 时用堆排序
+            String algo = "MemSort";
+            if (sort.limit() instanceof SqlLiteral lit) {
+                int limitVal = Integer.parseInt(lit.value());
+                if (limitVal < inputRows * 0.1) {
+                    algo = "TopN(heap)";
+                    cost = inputRows * 0.01 + limitVal * Math.log(limitVal) * 0.001;
+                }
+            }
+            return algo + "(cost=" + String.format("%.1f", cost) + lim + ")\n" +
                    "  " + decidePhysicalPlan(sort.input());
         }
         if (plan instanceof RelProject project) {
@@ -31,9 +55,10 @@ public class CostOptimizer {
                    "  " + decidePhysicalPlan(agg.input());
         }
         if (plan instanceof RelJoin join) {
-            double cost = costModel.joinCost(join.left(), join.right());
-            String joinType = cost < 1000 ? "HASH_JOIN" : "NESTED_LOOP_JOIN";
-            return joinType + "(cost=" + String.format("%.1f", cost) + ")\n" +
+            JoinAlgorithm algo = costModel.chooseJoinAlgorithm(join.left(), join.right(), join.condition());
+            CostModel.JoinCostDetail detail = costModel.joinCostDetail(join.left(), join.right(), join.condition());
+            return algo.name() + "(chosen by CBO)\n" +
+                   "  costs: " + detail + "\n" +
                    "  left: " + decidePhysicalPlan(join.left()) + "\n" +
                    "  right: " + decidePhysicalPlan(join.right());
         }
@@ -48,5 +73,12 @@ public class CostOptimizer {
             return "TABLE_SCAN[" + scan.tableName() + "](rows=" + scan.tableMeta().rowCount() + ")";
         }
         return "UNKNOWN";
+    }
+
+    /**
+     * 为 RelJoin 选择最优 JOIN 算法（供 PhysicalPlanner 调用）
+     */
+    public JoinAlgorithm chooseJoinAlgorithm(RelJoin join) {
+        return costModel.chooseJoinAlgorithm(join.left(), join.right(), join.condition());
     }
 }
