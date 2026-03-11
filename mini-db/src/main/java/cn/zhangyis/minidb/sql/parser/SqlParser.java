@@ -2,6 +2,7 @@ package cn.zhangyis.minidb.sql.parser;
 
 import cn.zhangyis.minidb.sql.lexer.*;
 import cn.zhangyis.minidb.sql.ast.*;
+import cn.zhangyis.minidb.sql.types.SqlType;
 
 public class SqlParser {
     private final TokenStream tokens;
@@ -19,6 +20,9 @@ public class SqlParser {
             case INSERT -> parseInsert();
             case UPDATE -> parseUpdate();
             case DELETE -> parseDelete();
+            case CREATE -> parseCreate();
+            case DROP -> parseDrop();
+            case ALTER -> parseAlterTable();
             default -> throw new SqlParseException("Unsupported statement: " + type);
         };
         // 允许可选的分号结尾
@@ -190,6 +194,137 @@ public class SqlParser {
         }
 
         return new SqlDelete(table, where);
+    }
+
+    // ==================== CREATE (TABLE / INDEX) ====================
+
+    private SqlNode parseCreate() {
+        tokens.expect(TokenType.CREATE);
+        if (tokens.current().type() == TokenType.TABLE) {
+            return parseCreateTable();
+        }
+        if (tokens.current().type() == TokenType.INDEX) {
+            return parseCreateIndex();
+        }
+        throw new SqlParseException("Expected TABLE or INDEX after CREATE, got " + tokens.current());
+    }
+
+    private SqlCreateTable parseCreateTable() {
+        tokens.expect(TokenType.TABLE);
+
+        boolean ifNotExists = false;
+        if (tokens.current().type() == TokenType.IF) {
+            tokens.next();
+            tokens.expect(TokenType.NOT);
+            tokens.expect(TokenType.EXISTS);
+            ifNotExists = true;
+        }
+
+        SqlIdentifier table = parseIdentifier();
+        tokens.expect(TokenType.LPAREN);
+
+        java.util.List<SqlCreateTable.ColumnDef> columnDefs = new java.util.ArrayList<>();
+        do {
+            columnDefs.add(parseColumnDef());
+        } while (tokens.match(TokenType.COMMA));
+
+        tokens.expect(TokenType.RPAREN);
+        return new SqlCreateTable(table, columnDefs, ifNotExists);
+    }
+
+    private SqlCreateTable.ColumnDef parseColumnDef() {
+        String name = tokens.current().value();
+        tokens.expect(TokenType.IDENTIFIER);
+
+        SqlType type = parseColumnType();
+
+        boolean primaryKey = false;
+        if (tokens.current().type() == TokenType.PRIMARY) {
+            tokens.next();
+            tokens.expect(TokenType.KEY);
+            primaryKey = true;
+        }
+
+        return new SqlCreateTable.ColumnDef(name, type, primaryKey);
+    }
+
+    private SqlType parseColumnType() {
+        String typeName = tokens.current().value();
+        tokens.expect(TokenType.IDENTIFIER);
+        return switch (typeName.toUpperCase()) {
+            case "INT", "INTEGER" -> SqlType.INT32;
+            case "VARCHAR", "TEXT", "STRING" -> SqlType.VARCHAR;
+            case "DECIMAL", "DOUBLE", "FLOAT" -> SqlType.DECIMAL;
+            case "DATETIME", "TIMESTAMP" -> SqlType.DATETIME;
+            default -> throw new SqlParseException("Unknown column type: " + typeName);
+        };
+    }
+
+    private SqlCreateIndex parseCreateIndex() {
+        tokens.expect(TokenType.INDEX);
+        String indexName = tokens.current().value();
+        tokens.expect(TokenType.IDENTIFIER);
+        tokens.expect(TokenType.ON);
+        SqlIdentifier table = parseIdentifier();
+        tokens.expect(TokenType.LPAREN);
+        java.util.List<String> columns = new java.util.ArrayList<>();
+        do {
+            columns.add(tokens.current().value());
+            tokens.expect(TokenType.IDENTIFIER);
+        } while (tokens.match(TokenType.COMMA));
+        tokens.expect(TokenType.RPAREN);
+        return new SqlCreateIndex(indexName, table, columns);
+    }
+
+    // ==================== DROP (TABLE / INDEX) ====================
+
+    private SqlNode parseDrop() {
+        tokens.expect(TokenType.DROP);
+        if (tokens.current().type() == TokenType.TABLE) {
+            return parseDropTable();
+        }
+        if (tokens.current().type() == TokenType.INDEX) {
+            return parseDropIndex();
+        }
+        throw new SqlParseException("Expected TABLE or INDEX after DROP, got " + tokens.current());
+    }
+
+    private SqlDropTable parseDropTable() {
+        tokens.expect(TokenType.TABLE);
+
+        boolean ifExists = false;
+        if (tokens.current().type() == TokenType.IF) {
+            tokens.next();
+            tokens.expect(TokenType.EXISTS);
+            ifExists = true;
+        }
+
+        SqlIdentifier table = parseIdentifier();
+        return new SqlDropTable(table, ifExists);
+    }
+
+    private SqlDropIndex parseDropIndex() {
+        tokens.expect(TokenType.INDEX);
+        String indexName = tokens.current().value();
+        tokens.expect(TokenType.IDENTIFIER);
+        tokens.expect(TokenType.ON);
+        SqlIdentifier table = parseIdentifier();
+        return new SqlDropIndex(indexName, table);
+    }
+
+    // ==================== ALTER TABLE ====================
+
+    private SqlAlterTable parseAlterTable() {
+        tokens.expect(TokenType.ALTER);
+        tokens.expect(TokenType.TABLE);
+        SqlIdentifier table = parseIdentifier();
+        tokens.expect(TokenType.ADD);
+        // COLUMN 关键字可选
+        tokens.match(TokenType.COLUMN);
+        String colName = tokens.current().value();
+        tokens.expect(TokenType.IDENTIFIER);
+        SqlType colType = parseColumnType();
+        return new SqlAlterTable(table, colName, colType);
     }
 
     // ==================== 表达式解析 ====================

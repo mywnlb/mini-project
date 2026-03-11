@@ -1,14 +1,22 @@
 package cn.zhangyis.minidb.sql.exec;
 
 import java.util.*;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /**
- * 模拟数据源：提供表的行数据
+ * 模拟数据源：提供表的行数据，支持读写
  */
 public class MockDataSource {
     private static final Map<String, List<Row>> DATA = new HashMap<>();
 
     static {
+        reset();
+    }
+
+    public static void reset() {
+        DATA.clear();
+
         // users 表
         List<Row> users = new ArrayList<>();
         users.add(row("users.id", 1, "users.name", "alice"));
@@ -29,7 +37,32 @@ public class MockDataSource {
     }
 
     public static List<Row> getTableData(String tableName) {
-        return DATA.getOrDefault(tableName.toUpperCase(), List.of());
+        return DATA.getOrDefault(tableName.toUpperCase(), new ArrayList<>());
+    }
+
+    public static void insertRow(String tableName, Row row) {
+        DATA.computeIfAbsent(tableName.toUpperCase(), k -> new ArrayList<>()).add(row);
+    }
+
+    public static int deleteRows(String tableName, Predicate<Row> condition) {
+        List<Row> rows = DATA.get(tableName.toUpperCase());
+        if (rows == null) return 0;
+        int before = rows.size();
+        rows.removeIf(condition);
+        return before - rows.size();
+    }
+
+    public static int updateRows(String tableName, Predicate<Row> condition, Consumer<Row> updater) {
+        List<Row> rows = DATA.get(tableName.toUpperCase());
+        if (rows == null) return 0;
+        int count = 0;
+        for (Row row : rows) {
+            if (condition.test(row)) {
+                updater.accept(row);
+                count++;
+            }
+        }
+        return count;
     }
 
     private static Row row(String k1, Object v1, String k2, Object v2) {

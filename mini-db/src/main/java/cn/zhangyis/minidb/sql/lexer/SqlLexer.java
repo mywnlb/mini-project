@@ -39,6 +39,27 @@ public class SqlLexer {
         keywords.put("UPDATE", TokenType.UPDATE);
         keywords.put("SET", TokenType.SET);
         keywords.put("DELETE", TokenType.DELETE);
+        keywords.put("CREATE", TokenType.CREATE);
+        keywords.put("DROP", TokenType.DROP);
+        keywords.put("TABLE", TokenType.TABLE);
+        keywords.put("PRIMARY", TokenType.PRIMARY);
+        keywords.put("KEY", TokenType.KEY);
+        keywords.put("IF", TokenType.IF);
+        keywords.put("EXISTS", TokenType.EXISTS);
+        keywords.put("NOT", TokenType.NOT);
+        keywords.put("ALTER", TokenType.ALTER);
+        keywords.put("ADD", TokenType.ADD);
+        keywords.put("COLUMN", TokenType.COLUMN);
+        keywords.put("INDEX", TokenType.INDEX);
+        keywords.put("DISTINCT", TokenType.DISTINCT);
+        keywords.put("ASC", TokenType.ASC);
+        keywords.put("DESC", TokenType.DESC);
+        keywords.put("LIKE", TokenType.LIKE);
+        keywords.put("BETWEEN", TokenType.BETWEEN);
+        keywords.put("IN", TokenType.IN);
+        keywords.put("IS", TokenType.IS);
+        keywords.put("NULL", TokenType.NULL);
+        keywords.put("AS", TokenType.AS);
     }
 
     public Token nextToken() {

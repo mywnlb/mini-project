@@ -28,6 +28,27 @@ public class Row {
         return null;
     }
 
+    /**
+     * 设置列值，支持 table.column 和 column 两种格式匹配
+     */
+    public void put(String column, Object value) {
+        if (columns.containsKey(column)) {
+            columns.put(column, value);
+            return;
+        }
+        for (String key : columns.keySet()) {
+            if (key.contains(".") && key.substring(key.indexOf('.') + 1).equalsIgnoreCase(column)) {
+                columns.put(key, value);
+                return;
+            }
+            if (key.equalsIgnoreCase(column)) {
+                columns.put(key, value);
+                return;
+            }
+        }
+        columns.put(column, value);
+    }
+
     public Map<String, Object> columns() { return columns; }
 
     /**

@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.sql.planner;
 
 import cn.zhangyis.minidb.sql.ast.*;
+import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
 import cn.zhangyis.minidb.sql.catalog.TableMeta;
 import cn.zhangyis.minidb.sql.rel.*;
 import cn.zhangyis.minidb.sql.validation.ValidatedDml;
@@ -11,19 +12,34 @@ import java.util.List;
 
 public class SqlToRelConverter {
     private final RelFactories factories;
+    private final CatalogSpi catalog;
 
     public SqlToRelConverter() {
-        this(DefaultRelFactories.INSTANCE);
+        this(DefaultRelFactories.INSTANCE, null);
+    }
+
+    public SqlToRelConverter(CatalogSpi catalog) {
+        this(DefaultRelFactories.INSTANCE, catalog);
     }
 
     public SqlToRelConverter(RelFactories factories) {
+        this(factories, null);
+    }
+
+    public SqlToRelConverter(RelFactories factories, CatalogSpi catalog) {
         this.factories = factories;
+        this.catalog = catalog;
     }
 
     public RelNode convert(SqlNode validated) {
         return switch (validated) {
             case ValidatedSqlSelect select -> convertSelect(select);
             case ValidatedDml dml -> convertDml(dml);
+            case SqlCreateTable create -> new RelCreateTable(create, catalog);
+            case SqlDropTable drop -> new RelDropTable(drop, catalog);
+            case SqlAlterTable alter -> new RelAlterTable(alter, catalog);
+            case SqlCreateIndex createIdx -> new RelCreateIndex(createIdx, catalog);
+            case SqlDropIndex dropIdx -> new RelDropIndex(dropIdx, catalog);
             default -> throw new IllegalArgumentException("Unsupported: " + validated.kind());
         };
     }

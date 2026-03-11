@@ -9,5 +9,7 @@ public enum SqlKind {
     // 聚合函数
     AGG_CALL,
     // DML
-    INSERT, UPDATE, DELETE
+    INSERT, UPDATE, DELETE,
+    // DDL
+    CREATE_TABLE, DROP_TABLE, ALTER_TABLE, CREATE_INDEX, DROP_INDEX
 }

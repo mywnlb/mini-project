@@ -71,12 +71,29 @@ public class PhysicalPlanner {
             }
             return new SortExec(input, sort.orderBy(), limit);
         }
-        if (relNode instanceof RelInsert || relNode instanceof RelUpdate || relNode instanceof RelDelete) {
-            return new ExecNode() {
-                @Override public void open() {}
-                @Override public Row next() { return null; }
-                @Override public void close() {}
-            };
+        if (relNode instanceof RelInsert insert) {
+            return new InsertExec(insert);
+        }
+        if (relNode instanceof RelUpdate update) {
+            return new UpdateExec(update);
+        }
+        if (relNode instanceof RelDelete delete) {
+            return new DeleteExec(delete);
+        }
+        if (relNode instanceof RelCreateTable create) {
+            return new CreateTableExec(create);
+        }
+        if (relNode instanceof RelDropTable drop) {
+            return new DropTableExec(drop);
+        }
+        if (relNode instanceof RelAlterTable alter) {
+            return new AlterTableExec(alter);
+        }
+        if (relNode instanceof RelCreateIndex createIdx) {
+            return new CreateIndexExec(createIdx);
+        }
+        if (relNode instanceof RelDropIndex dropIdx) {
+            return new DropIndexExec(dropIdx);
         }
         throw new IllegalArgumentException("Unknown RelNode: " + relNode.getClass().getSimpleName());
     }

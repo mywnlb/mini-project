@@ -12,7 +12,8 @@
       "Bash(wc:*)",
       "Bash(gh api:*)",
       "Bash(find src/main/java -path '*/minidb/sql/*' -name '*.java' | wc -l; ls -la src/main/java/cn/zhangyis/minidb/sql/; echo '=== Test compile ==='; javac -d /tmp/target src/main/java/cn/zhangyis/minidb/sql/**/*.java 2>&1 || echo 'Compile errors')",
-      "Bash(javac -d /tmp/target src/main/java/cn/zhangyis/minidb/sql/**/*.java 2>&1 || echo 'Still errors'; echo 'File count:'; find src/main/java -path '*/sql/*' -name '*.java' | wc -l)"
+      "Bash(javac -d /tmp/target src/main/java/cn/zhangyis/minidb/sql/**/*.java 2>&1 || echo 'Still errors'; echo 'File count:'; find src/main/java -path '*/sql/*' -name '*.java' | wc -l)",
+      "Bash(cd D:/code/java/mini-project && ./gradlew :mini-db:compileJava 2>&1)"
     ]
   }
 }

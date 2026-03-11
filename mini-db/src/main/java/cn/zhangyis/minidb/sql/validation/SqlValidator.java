@@ -19,6 +19,11 @@ public class SqlValidator {
             case SqlInsert insert -> validateInsert(insert);
             case SqlUpdate update -> validateUpdate(update);
             case SqlDelete delete -> validateDelete(delete);
+            case SqlCreateTable create -> validateCreateTable(create);
+            case SqlDropTable drop -> validateDropTable(drop);
+            case SqlAlterTable alter -> validateAlterTable(alter);
+            case SqlCreateIndex createIdx -> validateCreateIndex(createIdx);
+            case SqlDropIndex dropIdx -> validateDropIndex(dropIdx);
             default -> throw new ValidationException("Unsupported statement: " + node.kind());
         };
     }
@@ -124,6 +129,72 @@ public class SqlValidator {
         }
 
         return new ValidatedDml(delete, table);
+    }
+
+    // ==================== CREATE TABLE ====================
+
+    private SqlCreateTable validateCreateTable(SqlCreateTable create) {
+        String tableName = create.table().name();
+        if (!create.ifNotExists() && catalog.tableExists(tableName)) {
+            throw new ValidationException("Table '" + tableName + "' already exists");
+        }
+        if (create.columnDefs().isEmpty()) {
+            throw new ValidationException("CREATE TABLE must have at least one column");
+        }
+        return create;
+    }
+
+    // ==================== DROP TABLE ====================
+
+    private SqlDropTable validateDropTable(SqlDropTable drop) {
+        String tableName = drop.table().name();
+        if (!drop.ifExists() && !catalog.tableExists(tableName)) {
+            throw new ValidationException("Table '" + tableName + "' does not exist");
+        }
+        return drop;
+    }
+
+    // ==================== ALTER TABLE ====================
+
+    private SqlAlterTable validateAlterTable(SqlAlterTable alter) {
+        String tableName = alter.table().name();
+        if (!catalog.tableExists(tableName)) {
+            throw new ValidationException("Table '" + tableName + "' does not exist");
+        }
+        TableMeta table = catalog.getTable(tableName);
+        boolean exists = table.columns().stream()
+            .anyMatch(c -> c.name().equalsIgnoreCase(alter.columnName()));
+        if (exists) {
+            throw new ValidationException("Column '" + alter.columnName() + "' already exists in table '" + tableName + "'");
+        }
+        return alter;
+    }
+
+    // ==================== CREATE INDEX ====================
+
+    private SqlCreateIndex validateCreateIndex(SqlCreateIndex createIdx) {
+        String tableName = createIdx.table().name();
+        if (!catalog.tableExists(tableName)) {
+            throw new ValidationException("Table '" + tableName + "' does not exist");
+        }
+        TableMeta table = catalog.getTable(tableName);
+        List<TableMeta> tables = List.of(table);
+        for (String col : createIdx.columns()) {
+            if (!columnExists(col, tables)) {
+                throw new ValidationException("Column '" + col + "' not found in table '" + tableName + "'");
+            }
+        }
+        return createIdx;
+    }
+
+    // ==================== DROP INDEX ====================
+
+    private SqlDropIndex validateDropIndex(SqlDropIndex dropIdx) {
+        String tableName = dropIdx.table().name();
+        if (!catalog.tableExists(tableName)) {
+            throw new ValidationException("Table '" + tableName + "' does not exist");
+        }
+        return dropIdx;
     }
 
     // ==================== 通用校验 ====================

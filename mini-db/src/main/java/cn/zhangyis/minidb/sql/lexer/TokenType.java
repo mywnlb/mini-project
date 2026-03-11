@@ -2,13 +2,19 @@ package cn.zhangyis.minidb.sql.lexer;
 
 public enum TokenType {
     // Keywords - Query
-    SELECT, FROM, WHERE, JOIN, ON, GROUP, BY, ORDER, LIMIT,
+    SELECT, FROM, WHERE, JOIN, ON, GROUP, BY, ORDER, LIMIT, DISTINCT, ASC, DESC,
 
     // Keywords - Logic
-    AND, OR, HAVING,
+    AND, OR, HAVING, NOT,
 
     // Keywords - DML
     INSERT, INTO, VALUES, UPDATE, SET, DELETE,
+
+    // Keywords - DDL
+    CREATE, DROP, TABLE, PRIMARY, KEY, IF, EXISTS, ALTER, ADD, COLUMN, INDEX,
+
+    // Keywords - Predicate
+    LIKE, BETWEEN, IN, IS, NULL,
 
     // Keywords - Aggregate
     COUNT, SUM, AVG, MAX, MIN,
@@ -21,6 +27,9 @@ public enum TokenType {
 
     // Punctuation
     LPAREN, RPAREN, COMMA, SEMICOLON, DOT,
+
+    // Alias
+    AS,
 
     // Special
     EOF;
