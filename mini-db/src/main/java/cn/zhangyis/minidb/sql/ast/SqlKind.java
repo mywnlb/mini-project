@@ -1,7 +1,7 @@
 package cn.zhangyis.minidb.sql.ast;
 
 public enum SqlKind {
-    SELECT, IDENTIFIER, LITERAL, STAR, NULL_LITERAL, NODE_LIST, JOIN,
+    SELECT, IDENTIFIER, LITERAL, STAR, NULL_LITERAL, NODE_LIST, JOIN, TABLE_REF, ALIAS,
     // 比较运算符
     BINARY_EQ, BINARY_LT, BINARY_GT, BINARY_LE, BINARY_GE, BINARY_NE,
     // 逻辑运算符

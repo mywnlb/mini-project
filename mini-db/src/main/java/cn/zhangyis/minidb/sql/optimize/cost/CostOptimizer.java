@@ -49,6 +49,11 @@ public class CostOptimizer {
         if (plan instanceof RelProject project) {
             return "PHYSICAL_PROJECT\n  " + decidePhysicalPlan(project.input());
         }
+        if (plan instanceof RelDistinct distinct) {
+            double cost = costModel.distinctCost(distinct.input());
+            return "HASH_DISTINCT(cost=" + String.format("%.1f", cost) + ")\n" +
+                   "  " + decidePhysicalPlan(distinct.input());
+        }
         if (plan instanceof RelAggregate agg) {
             double cost = costModel.aggregateCost(agg.input());
             return "HASH_AGGREGATE(cost=" + String.format("%.1f", cost) + ")\n" +

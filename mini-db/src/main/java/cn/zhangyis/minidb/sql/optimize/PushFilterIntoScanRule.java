@@ -18,6 +18,6 @@ public class PushFilterIntoScanRule extends RelOptRule {
         RelScan scan = (RelScan) filter.input();
 
         // 创建带索引条件的扫描 (MVP简化)
-        return new RelIndexedScan(scan.tableName(), scan.tableMeta(), filter.condition());
+        return new RelIndexedScan(scan.tableName(), scan.tableMeta(), scan.outputName(), filter.condition());
     }
 }

@@ -41,6 +41,10 @@ public class RuleOptimizer {
             RelNode opt = optimize(project.input());
             return opt != project.input() ? project.copy(List.of(opt)) : node;
         }
+        if (node instanceof RelDistinct distinct) {
+            RelNode opt = optimize(distinct.input());
+            return opt != distinct.input() ? distinct.copy(List.of(opt)) : node;
+        }
         if (node instanceof RelFilter filter) {
             RelNode opt = optimize(filter.input());
             return opt != filter.input() ? filter.copy(List.of(opt)) : node;

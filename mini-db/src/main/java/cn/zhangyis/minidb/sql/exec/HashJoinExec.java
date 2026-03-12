@@ -40,7 +40,7 @@ public class HashJoinExec implements ExecNode {
             hashTable.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
         }
 
-        currentLeft = left.next();
+        currentLeft = null;
         matchIterator = Collections.emptyIterator();
     }
 

@@ -41,12 +41,12 @@ public class PhysicalPlanner {
     }
 
     private ExecNode planInternal(RelNode relNode, JoinAlgorithm overrideAlgo) {
-        if (relNode instanceof RelScan scan) {
-            return new ScanExec(scan.tableName());
-        }
         if (relNode instanceof RelIndexedScan indexed) {
-            ExecNode scan = new ScanExec(indexed.tableName());
+            ExecNode scan = new ScanExec(indexed.tableName(), indexed.outputName());
             return new FilterExec(scan, indexed.indexCondition());
+        }
+        if (relNode instanceof RelScan scan) {
+            return new ScanExec(scan.tableName(), scan.outputName());
         }
         if (relNode instanceof RelFilter filter) {
             ExecNode input = planInternal(filter.input(), overrideAlgo);
@@ -55,6 +55,10 @@ public class PhysicalPlanner {
         if (relNode instanceof RelProject project) {
             ExecNode input = planInternal(project.input(), overrideAlgo);
             return new ProjectExec(input, project.projection());
+        }
+        if (relNode instanceof RelDistinct distinct) {
+            ExecNode input = planInternal(distinct.input(), overrideAlgo);
+            return new DistinctExec(input);
         }
         if (relNode instanceof RelJoin join) {
             return planJoin(join, overrideAlgo);

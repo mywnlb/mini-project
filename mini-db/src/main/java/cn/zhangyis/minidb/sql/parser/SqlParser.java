@@ -37,6 +37,7 @@ public class SqlParser {
 
     private SqlSelect parseSelect() {
         tokens.expect(TokenType.SELECT);
+        boolean distinct = tokens.match(TokenType.DISTINCT);
 
         SqlNodeList projection = parseProjection();
         tokens.expect(TokenType.FROM);
@@ -71,14 +72,14 @@ public class SqlParser {
             limit = parsePrimary();
         }
 
-        return factory.select(projection, from, where, groupBy, having, orderBy, limit);
+        return factory.select(projection, from, where, distinct, groupBy, having, orderBy, limit);
     }
 
     private SqlNode parseFrom() {
-        SqlIdentifier left = parseIdentifier();
+        SqlTableRef left = parseTableRef();
         if (tokens.current().type() == TokenType.JOIN) {
             tokens.next();
-            SqlIdentifier right = parseIdentifier();
+            SqlTableRef right = parseTableRef();
             tokens.expect(TokenType.ON);
             SqlNode condition = parseExpression();
             return factory.join(left, right, condition);
@@ -99,10 +100,9 @@ public class SqlParser {
     }
 
     private SqlNode parseSelectItem() {
-        if (isAggFunction(tokens.current().type())) {
-            return parseAggCall();
-        }
-        return parsePrimary();
+        SqlNode item = isAggFunction(tokens.current().type()) ? parseAggCall() : parsePrimary();
+        String alias = parseOptionalAlias();
+        return alias != null ? factory.alias(item, alias) : item;
     }
 
     private SqlNodeList parseGroupByList() {
@@ -435,5 +435,20 @@ public class SqlParser {
         }
         tokens.next();
         return factory.identifier(token.value());
+    }
+
+    private SqlTableRef parseTableRef() {
+        SqlIdentifier table = parseIdentifier();
+        return factory.tableRef(table.name(), parseOptionalAlias());
+    }
+
+    private String parseOptionalAlias() {
+        if (tokens.match(TokenType.AS)) {
+            return parseIdentifier().name();
+        }
+        if (tokens.current().type() == TokenType.IDENTIFIER) {
+            return parseIdentifier().name();
+        }
+        return null;
     }
 }

@@ -52,14 +52,14 @@ public class SqlToRelConverter {
 
         if (validated.isJoin()) {
             SqlJoin join = (SqlJoin) select.from();
-            SqlIdentifier leftId = (SqlIdentifier) join.left();
-            SqlIdentifier rightId = (SqlIdentifier) join.right();
-            RelScan leftScan = factories.scan(leftId.name(), validated.leftTable());
-            RelScan rightScan = factories.scan(rightId.name(), validated.rightTable());
+            SqlTableRef leftRef = asTableRef(join.left());
+            SqlTableRef rightRef = asTableRef(join.right());
+            RelScan leftScan = factories.scan(leftRef.tableName(), validated.leftTable(), leftRef.visibleName());
+            RelScan rightScan = factories.scan(rightRef.tableName(), validated.rightTable(), rightRef.visibleName());
             plan = factories.join(leftScan, rightScan, join.condition());
         } else {
-            SqlIdentifier tableId = (SqlIdentifier) select.from();
-            plan = factories.scan(tableId.name(), validated.tableMeta());
+            SqlTableRef tableRef = asTableRef(select.from());
+            plan = factories.scan(tableRef.tableName(), validated.tableMeta(), tableRef.visibleName());
         }
 
         if (select.where() != null) {
@@ -75,6 +75,9 @@ public class SqlToRelConverter {
         }
 
         plan = factories.project(plan, select.projection());
+        if (select.distinct()) {
+            plan = new RelDistinct(plan);
+        }
 
         if (select.orderBy() != null || select.limit() != null) {
             plan = new RelSort(plan, select.orderBy(), select.limit());
@@ -86,11 +89,25 @@ public class SqlToRelConverter {
     private List<SqlAggCall> extractAggCalls(SqlSelect select) {
         List<SqlAggCall> aggCalls = new ArrayList<>();
         for (SqlNode node : select.projection().nodes()) {
-            if (node instanceof SqlAggCall agg) {
+            if (unwrapAlias(node) instanceof SqlAggCall agg) {
                 aggCalls.add(agg);
             }
         }
         return aggCalls;
+    }
+
+    private SqlTableRef asTableRef(SqlNode node) {
+        if (node instanceof SqlTableRef ref) {
+            return ref;
+        }
+        if (node instanceof SqlIdentifier id) {
+            return new SqlTableRef(id.name(), null);
+        }
+        throw new IllegalArgumentException("Expected table reference, got " + node);
+    }
+
+    private SqlNode unwrapAlias(SqlNode node) {
+        return node instanceof SqlAlias alias ? alias.expression() : node;
     }
 
     // ==================== DML ====================
@@ -109,7 +126,7 @@ public class SqlToRelConverter {
     }
 
     private RelNode convertUpdate(SqlUpdate update, TableMeta table) {
-        RelNode scan = factories.scan(update.table().name(), table);
+        RelNode scan = factories.scan(update.table().name(), table, update.table().name());
         RelNode plan = scan;
         if (update.where() != null) {
             plan = factories.filter(plan, update.where());
@@ -118,7 +135,7 @@ public class SqlToRelConverter {
     }
 
     private RelNode convertDelete(SqlDelete delete, TableMeta table) {
-        RelNode scan = factories.scan(delete.table().name(), table);
+        RelNode scan = factories.scan(delete.table().name(), table, delete.table().name());
         RelNode plan = scan;
         if (delete.where() != null) {
             plan = factories.filter(plan, delete.where());
@@ -128,7 +145,7 @@ public class SqlToRelConverter {
 }
 
 interface RelFactories {
-    RelScan scan(String tableName, TableMeta meta);
+    RelScan scan(String tableName, TableMeta meta, String outputName);
     RelFilter filter(RelNode input, SqlNode condition);
     RelProject project(RelNode input, SqlNodeList projection);
     RelJoin join(RelScan left, RelScan right, SqlNode condition);
@@ -138,8 +155,8 @@ class DefaultRelFactories implements RelFactories {
     public static final DefaultRelFactories INSTANCE = new DefaultRelFactories();
 
     @Override
-    public RelScan scan(String tableName, TableMeta meta) {
-        return new RelScan(tableName, meta);
+    public RelScan scan(String tableName, TableMeta meta, String outputName) {
+        return new RelScan(tableName, meta, outputName);
     }
 
     @Override

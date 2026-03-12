@@ -20,12 +20,26 @@ public class SqlNodeFactory {
         return new SqlSelect(projection, from, where, groupBy, having, orderBy, limit);
     }
 
+    public SqlSelect select(SqlNodeList projection, SqlNode from, SqlNode where,
+                            boolean distinct, SqlNodeList groupBy, SqlNode having,
+                            SqlNodeList orderBy, SqlNode limit) {
+        return new SqlSelect(projection, from, where, distinct, groupBy, having, orderBy, limit);
+    }
+
     public SqlJoin join(SqlNode left, SqlNode right, SqlNode condition) {
         return new SqlJoin(left, right, condition);
     }
 
+    public SqlTableRef tableRef(String tableName, String alias) {
+        return new SqlTableRef(tableName, alias);
+    }
+
     public SqlIdentifier identifier(String name) {
         return new SqlIdentifier(name);
+    }
+
+    public SqlAlias alias(SqlNode expression, String alias) {
+        return new SqlAlias(expression, alias);
     }
 
     public SqlLiteral number(String value) {

@@ -7,7 +7,11 @@ public class RelIndexedScan extends RelScan {
     private final SqlNode indexCondition;
 
     public RelIndexedScan(String tableName, TableMeta tableMeta, SqlNode indexCondition) {
-        super(tableName, tableMeta);
+        this(tableName, tableMeta, tableName, indexCondition);
+    }
+
+    public RelIndexedScan(String tableName, TableMeta tableMeta, String outputName, SqlNode indexCondition) {
+        super(tableName, tableMeta, outputName);
         this.indexCondition = indexCondition;
     }
 
@@ -15,6 +19,7 @@ public class RelIndexedScan extends RelScan {
 
     @Override
     public String explain() {
-        return "RelIndexedScan(table=" + tableName() + ", condition=" + indexCondition + ")";
+        String aliasPart = outputName().equalsIgnoreCase(tableName()) ? "" : ", alias=" + outputName();
+        return "RelIndexedScan(table=" + tableName() + aliasPart + ", condition=" + indexCondition + ")";
     }
 }

@@ -196,6 +196,7 @@ public class TestMain {
     private static RelJoin findJoin(RelNode node) {
         if (node instanceof RelJoin join) return join;
         if (node instanceof RelProject p) return findJoin(p.input());
+        if (node instanceof RelDistinct d) return findJoin(d.input());
         if (node instanceof RelFilter f) return findJoin(f.input());
         if (node instanceof RelSort s) return findJoin(s.input());
         if (node instanceof RelAggregate a) return findJoin(a.input());

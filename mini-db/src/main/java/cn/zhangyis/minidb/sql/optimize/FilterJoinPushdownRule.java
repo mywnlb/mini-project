@@ -42,9 +42,9 @@ public class FilterJoinPushdownRule extends RelOptRule {
     }
 
     private String extractTableName(RelNode node) {
-        if (node instanceof RelScan scan) return scan.tableName();
+        if (node instanceof RelScan scan) return scan.outputName();
         if (node instanceof RelFilter f) return extractTableName(f.input());
-        if (node instanceof RelIndexedScan s) return s.tableName();
+        if (node instanceof RelIndexedScan s) return s.outputName();
         return "";
     }
 
