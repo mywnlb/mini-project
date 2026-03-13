@@ -382,7 +382,7 @@ public class SqlParser {
     }
 
     private SqlNode parseComparison() {
-        SqlNode left = parsePrimary();
+        SqlNode left = parseAddSub();
 
         // NOT 前缀（用于 NOT LIKE / NOT BETWEEN / NOT IN）
         boolean negated = false;
@@ -396,7 +396,7 @@ public class SqlParser {
         // LIKE
         if (t == TokenType.LIKE) {
             tokens.next();
-            SqlNode pattern = parsePrimary();
+            SqlNode pattern = parseAddSub();
             SqlNode like = factory.binary(SqlKind.LIKE, left, pattern);
             return negated ? factory.binary(SqlKind.NOT_LIKE, left, pattern) : like;
         }
@@ -404,9 +404,9 @@ public class SqlParser {
         // BETWEEN expr AND expr
         if (t == TokenType.BETWEEN) {
             tokens.next();
-            SqlNode low = parsePrimary();
+            SqlNode low = parseAddSub();
             tokens.expect(TokenType.AND);
-            SqlNode high = parsePrimary();
+            SqlNode high = parseAddSub();
             SqlNode between = new SqlBetween(left, low, high);
             return negated ? factory.binary(SqlKind.NOT_BETWEEN, left, between) : between;
         }
@@ -417,7 +417,7 @@ public class SqlParser {
             tokens.expect(TokenType.LPAREN);
             SqlNodeList values = factory.nodeList();
             do {
-                values.add(parsePrimary());
+                values.add(parseAddSub());
             } while (tokens.match(TokenType.COMMA));
             tokens.expect(TokenType.RPAREN);
             SqlNode in = new SqlInList(left, values);
@@ -440,7 +440,7 @@ public class SqlParser {
 
         SqlKind kind = matchComparisonOp();
         if (kind != null) {
-            SqlNode right = parsePrimary();
+            SqlNode right = parseAddSub();
             return factory.binary(kind, left, right);
         }
         return left;
@@ -459,6 +459,41 @@ public class SqlParser {
         };
         if (kind != null) tokens.next();
         return kind;
+    }
+
+    // 优先级: 加减 < 乘除 < Primary
+    private SqlNode parseAddSub() {
+        SqlNode left = parseMulDiv();
+        while (true) {
+            TokenType t = tokens.current().type();
+            if (t == TokenType.PLUS) {
+                tokens.next();
+                left = factory.binary(SqlKind.ADD, left, parseMulDiv());
+            } else if (t == TokenType.MINUS) {
+                tokens.next();
+                left = factory.binary(SqlKind.SUB, left, parseMulDiv());
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    private SqlNode parseMulDiv() {
+        SqlNode left = parsePrimary();
+        while (true) {
+            TokenType t = tokens.current().type();
+            if (t == TokenType.STAR) {
+                tokens.next();
+                left = factory.binary(SqlKind.MUL, left, parsePrimary());
+            } else if (t == TokenType.DIV) {
+                tokens.next();
+                left = factory.binary(SqlKind.DIV, left, parsePrimary());
+            } else {
+                break;
+            }
+        }
+        return left;
     }
 
     private SqlNode parsePrimary() {

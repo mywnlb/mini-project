@@ -96,6 +96,24 @@ public class FilterExec implements ExecNode {
                 default -> lit.value();
             };
         }
+        // 算术表达式求值
+        if (node instanceof SqlBinaryOp binOp) {
+            SqlKind k = binOp.kind();
+            if (k == SqlKind.ADD || k == SqlKind.SUB || k == SqlKind.MUL || k == SqlKind.DIV) {
+                Object lv = resolveValue(binOp.left(), row);
+                Object rv = resolveValue(binOp.right(), row);
+                if (lv instanceof Number l && rv instanceof Number r) {
+                    return switch (k) {
+                        case ADD -> l.doubleValue() + r.doubleValue();
+                        case SUB -> l.doubleValue() - r.doubleValue();
+                        case MUL -> l.doubleValue() * r.doubleValue();
+                        case DIV -> r.doubleValue() == 0 ? null : l.doubleValue() / r.doubleValue();
+                        default -> null;
+                    };
+                }
+                return null;
+            }
+        }
         return null;
     }
 

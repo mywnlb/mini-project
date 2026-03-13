@@ -6,6 +6,8 @@ public enum SqlKind {
     BINARY_EQ, BINARY_LT, BINARY_GT, BINARY_LE, BINARY_GE, BINARY_NE,
     // 逻辑运算符
     AND, OR,
+    // 算术运算符
+    ADD, SUB, MUL, DIV,
     // 聚合函数
     AGG_CALL,
     // DML
