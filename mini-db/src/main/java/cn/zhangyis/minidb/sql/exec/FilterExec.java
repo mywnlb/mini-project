@@ -42,10 +42,47 @@ public class FilterExec implements ExecNode {
                 case BINARY_LE -> compareValues(resolveValue(binOp.left(), row), resolveValue(binOp.right(), row)) <= 0;
                 case BINARY_GE -> compareValues(resolveValue(binOp.left(), row), resolveValue(binOp.right(), row)) >= 0;
                 case BINARY_NE -> compareValues(resolveValue(binOp.left(), row), resolveValue(binOp.right(), row)) != 0;
+                case LIKE -> evaluateLike(resolveValue(binOp.left(), row), resolveValue(binOp.right(), row));
+                case NOT_LIKE -> !evaluateLike(resolveValue(binOp.left(), row), resolveValue(binOp.right(), row));
+                case IS_NULL -> resolveValue(binOp.left(), row) == null;
+                case IS_NOT_NULL -> resolveValue(binOp.left(), row) != null;
+                case NOT_BETWEEN -> !evaluate(binOp.right(), row); // right 是 SqlBetween
+                case NOT_IN -> !evaluate(binOp.right(), row); // right 是 SqlInList
                 default -> false;
             };
         }
+        if (condition instanceof SqlBetween between) {
+            Object val = resolveValue(between.expr(), row);
+            if (val == null) return false;
+            Object low = resolveValue(between.low(), row);
+            Object high = resolveValue(between.high(), row);
+            return compareValues(val, low) >= 0 && compareValues(val, high) <= 0;
+        }
+        if (condition instanceof SqlInList inList) {
+            Object val = resolveValue(inList.expr(), row);
+            if (val == null) return false;
+            for (SqlNode node : inList.values().nodes()) {
+                Object item = resolveValue(node, row);
+                if (compareValues(val, item) == 0) return true;
+            }
+            return false;
+        }
         return false;
+    }
+
+    /**
+     * SQL LIKE 匹配：% 匹配任意字符序列，_ 匹配单个字符
+     */
+    private static boolean evaluateLike(Object value, Object pattern) {
+        if (value == null || pattern == null) return false;
+        String str = String.valueOf(value);
+        String pat = String.valueOf(pattern);
+        // 将 SQL LIKE 模式转为 Java 正则
+        String regex = pat
+            .replace(".", "\\.")
+            .replace("%", ".*")
+            .replace("_", ".");
+        return str.matches("(?i)" + regex);
     }
 
     static Object resolveValue(SqlNode node, Row row) {

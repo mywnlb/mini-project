@@ -383,6 +383,61 @@ public class SqlParser {
 
     private SqlNode parseComparison() {
         SqlNode left = parsePrimary();
+
+        // NOT 前缀（用于 NOT LIKE / NOT BETWEEN / NOT IN）
+        boolean negated = false;
+        if (tokens.current().type() == TokenType.NOT) {
+            negated = true;
+            tokens.next();
+        }
+
+        TokenType t = tokens.current().type();
+
+        // LIKE
+        if (t == TokenType.LIKE) {
+            tokens.next();
+            SqlNode pattern = parsePrimary();
+            SqlNode like = factory.binary(SqlKind.LIKE, left, pattern);
+            return negated ? factory.binary(SqlKind.NOT_LIKE, left, pattern) : like;
+        }
+
+        // BETWEEN expr AND expr
+        if (t == TokenType.BETWEEN) {
+            tokens.next();
+            SqlNode low = parsePrimary();
+            tokens.expect(TokenType.AND);
+            SqlNode high = parsePrimary();
+            SqlNode between = new SqlBetween(left, low, high);
+            return negated ? factory.binary(SqlKind.NOT_BETWEEN, left, between) : between;
+        }
+
+        // IN (v1, v2, ...)
+        if (t == TokenType.IN) {
+            tokens.next();
+            tokens.expect(TokenType.LPAREN);
+            SqlNodeList values = factory.nodeList();
+            do {
+                values.add(parsePrimary());
+            } while (tokens.match(TokenType.COMMA));
+            tokens.expect(TokenType.RPAREN);
+            SqlNode in = new SqlInList(left, values);
+            return negated ? factory.binary(SqlKind.NOT_IN, left, in) : in;
+        }
+
+        // IS [NOT] NULL
+        if (t == TokenType.IS) {
+            tokens.next();
+            boolean isNot = tokens.match(TokenType.NOT);
+            tokens.expect(TokenType.NULL);
+            boolean resultNot = negated != isNot; // NOT IS NULL = IS NOT NULL, NOT IS NOT NULL = IS NULL
+            return factory.binary(resultNot ? SqlKind.IS_NOT_NULL : SqlKind.IS_NULL, left, factory.nullLiteral());
+        }
+
+        // 如果有 NOT 但后面不是谓词关键字，回退不了，报错
+        if (negated) {
+            throw new SqlParseException("Expected LIKE, BETWEEN, IN, or IS after NOT, got " + tokens.current());
+        }
+
         SqlKind kind = matchComparisonOp();
         if (kind != null) {
             SqlNode right = parsePrimary();
@@ -408,6 +463,10 @@ public class SqlParser {
 
     private SqlNode parsePrimary() {
         Token token = tokens.current();
+        if (token.type() == TokenType.NULL) {
+            tokens.next();
+            return factory.nullLiteral();
+        }
         if (token.type() == TokenType.NUMBER) {
             tokens.next();
             return factory.number(token.value());
