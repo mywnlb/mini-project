@@ -1,5 +1,9 @@
 package cn.zhangyis.minidb.sql.optimize;
 
+import cn.zhangyis.minidb.sql.ast.SqlBinaryOp;
+import cn.zhangyis.minidb.sql.ast.SqlIdentifier;
+import cn.zhangyis.minidb.sql.ast.SqlKind;
+import cn.zhangyis.minidb.sql.ast.SqlNode;
 import cn.zhangyis.minidb.sql.rel.*;
 
 public class JoinCommuteRule extends RelOptRule {
@@ -16,7 +20,7 @@ public class JoinCommuteRule extends RelOptRule {
     @Override
     public RelNode apply(RelNode node) {
         RelJoin join = (RelJoin) node;
-        return new RelJoin(join.right(), join.left(), join.condition());
+        return new RelJoin(join.right(), join.left(), commuteCondition(join.condition()));
     }
 
     private long leftRowCount(RelJoin join) {
@@ -25,5 +29,15 @@ public class JoinCommuteRule extends RelOptRule {
 
     private long rightRowCount(RelJoin join) {
         return join.right() instanceof RelScan s ? s.tableMeta().rowCount() : Long.MAX_VALUE;
+    }
+
+    private SqlNode commuteCondition(SqlNode condition) {
+        if (condition instanceof SqlBinaryOp binOp
+            && binOp.kind() == SqlKind.BINARY_EQ
+            && binOp.left() instanceof SqlIdentifier
+            && binOp.right() instanceof SqlIdentifier) {
+            return new SqlBinaryOp(SqlKind.BINARY_EQ, binOp.right(), binOp.left());
+        }
+        return condition;
     }
 }

@@ -145,10 +145,7 @@ class UndoCompressionTest {
         undoChain.add(updateUndo);
 
         // INSERT Undo（会导致链段停止）
-        InsertUndoRecord insertUndo = new InsertUndoRecord(
-                trx1, tableId, RollbackPointer.NULL,
-                primaryKey
-        );
+        InsertUndoRecord insertUndo = new InsertUndoRecord(trx1, tableId, primaryKey);
         undoChain.add((UpdateUndoRecord) (Object) insertUndo); // 类型转换用于演示
 
         // 实际上这个测试需要真实的 InsertUndoRecord，这里只是演示逻辑

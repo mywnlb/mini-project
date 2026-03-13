@@ -120,7 +120,7 @@ class PurgeCompressionIntegrationTest {
         assertTrue(thread.isPaused());
 
         // 恢复
-        thread.resume();
+        thread.resumeCompression();
         assertFalse(thread.isPaused());
 
         thread.shutdown();

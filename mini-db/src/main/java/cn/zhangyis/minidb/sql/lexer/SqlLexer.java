@@ -5,13 +5,11 @@ import java.util.Map;
 
 public class SqlLexer {
     private final String sql;
-    private final String originalSql;
     private int pos = 0;
     private final Map<String, TokenType> keywords = new HashMap<>();
 
     public SqlLexer(String sql) {
-        this.originalSql = sql;
-        this.sql = sql.toUpperCase();
+        this.sql = sql;
         initKeywords();
     }
 
@@ -60,6 +58,10 @@ public class SqlLexer {
         keywords.put("IS", TokenType.IS);
         keywords.put("NULL", TokenType.NULL);
         keywords.put("AS", TokenType.AS);
+        keywords.put("BEGIN", TokenType.BEGIN);
+        keywords.put("COMMIT", TokenType.COMMIT);
+        keywords.put("ROLLBACK", TokenType.ROLLBACK);
+        keywords.put("TRANSACTION", TokenType.TRANSACTION);
     }
 
     public Token nextToken() {
@@ -92,6 +94,9 @@ public class SqlLexer {
         // 单字符运算符和标点
         switch (c) {
             case '*': pos++; return new Token(TokenType.STAR, "*", start, pos);
+            case '+': pos++; return new Token(TokenType.PLUS, "+", start, pos);
+            case '-': pos++; return new Token(TokenType.MINUS, "-", start, pos);
+            case '/': pos++; return new Token(TokenType.DIV, "/", start, pos);
             case '=': pos++; return new Token(TokenType.EQ, "=", start, pos);
             case '<': pos++; return new Token(TokenType.LT, "<", start, pos);
             case '>': pos++; return new Token(TokenType.GT, ">", start, pos);
@@ -112,8 +117,9 @@ public class SqlLexer {
         if (Character.isLetter(c) || c == '_') {
             while (pos < sql.length() && (Character.isLetterOrDigit(sql.charAt(pos)) || sql.charAt(pos) == '_')) pos++;
             String word = sql.substring(start, pos);
-            TokenType type = keywords.getOrDefault(word, TokenType.IDENTIFIER);
-            return new Token(type, word, start, pos);
+            TokenType type = keywords.getOrDefault(word.toUpperCase(), TokenType.IDENTIFIER);
+            String value = word.toUpperCase();
+            return new Token(type, value, start, pos);
         }
 
         throw new SqlParseException("Unexpected character '" + c + "' at position " + pos);

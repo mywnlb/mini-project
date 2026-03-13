@@ -4,6 +4,7 @@ import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.transaction.core.Transaction;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
+import cn.zhangyis.minidb.storage.transaction.core.TransactionState;
 import cn.zhangyis.minidb.storage.transaction.mvcc.ReadView;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static cn.zhangyis.minidb.testutil.TransactionTestSupport.forceState;
 
 /**
  * Purge 安全门控测试
@@ -46,7 +48,7 @@ public class PurgeSafetyTest {
 
     @Test
     @DisplayName("测试：ReadView 自动注册到 Purge 协调器")
-    public void testReadViewAutoRegistration() {
+    public void testReadViewAutoRegistration() throws Exception {
         // 事务 T1 创建 ReadView
         Transaction t1 = transactionManager.begin();
         ReadView readView = t1.getOrCreateReadView();
@@ -57,12 +59,12 @@ public class PurgeSafetyTest {
         PurgeCoordinator coordinator = transactionManager.getPurgeCoordinator();
         assertEquals(1, coordinator.getActiveReadViewCount(), "应该有 1 个活跃 ReadView");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：事务提交时 ReadView 自动注销")
-    public void testReadViewAutoUnregistration() {
+    public void testReadViewAutoUnregistration() throws Exception {
         // 事务 T1 创建 ReadView
         Transaction t1 = transactionManager.begin();
         ReadView readView = t1.getOrCreateReadView();
@@ -83,7 +85,7 @@ public class PurgeSafetyTest {
 
     @Test
     @DisplayName("测试：Purge 边界计算（无活跃 ReadView）")
-    public void testPurgeLimitWithoutActiveReadViews() {
+    public void testPurgeLimitWithoutActiveReadViews() throws Exception {
         // 创建并提交事务 T1
         Transaction t1 = transactionManager.begin();
         try {
@@ -111,7 +113,7 @@ public class PurgeSafetyTest {
 
     @Test
     @DisplayName("测试：Purge 边界计算（有活跃 ReadView）")
-    public void testPurgeLimitWithActiveReadViews() {
+    public void testPurgeLimitWithActiveReadViews() throws Exception {
         // 事务 T1 创建 ReadView
         Transaction t1 = transactionManager.begin();
         ReadView readView1 = t1.getOrCreateReadView();
@@ -132,13 +134,13 @@ public class PurgeSafetyTest {
                 "Purge 边界应该小于等于最小活跃 TRX_ID");
 
         // 清理
-        t1.setState(Transaction.TransactionState.COMMITTED);
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：多个 ReadView 的 Purge 边界")
-    public void testPurgeLimitWithMultipleReadViews() {
+    public void testPurgeLimitWithMultipleReadViews() throws Exception {
         // 创建 3 个事务，每个都有 ReadView
         Transaction t1 = transactionManager.begin();
         ReadView rv1 = t1.getOrCreateReadView();
@@ -187,7 +189,7 @@ public class PurgeSafetyTest {
 
     @Test
     @DisplayName("测试：canPurge() 方法")
-    public void testCanPurgeMethod() {
+    public void testCanPurgeMethod() throws Exception {
         // 事务 T1 创建 ReadView
         Transaction t1 = transactionManager.begin();
         ReadView readView = t1.getOrCreateReadView();
@@ -203,12 +205,12 @@ public class PurgeSafetyTest {
         TransactionId largerId = new TransactionId(purgeLimit.getValue() + 1);
         assertFalse(coordinator.canPurge(largerId), "大于等于 Purge 边界的 TRX_ID 不应该被清理");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：REPEATABLE_READ 隔离级别的 ReadView 缓存")
-    public void testRepeatableReadViewCaching() {
+    public void testRepeatableReadViewCaching() throws Exception {
         // 事务 T1 使用 REPEATABLE_READ 隔离级别
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.REPEATABLE_READ);
 
@@ -224,12 +226,12 @@ public class PurgeSafetyTest {
         PurgeCoordinator coordinator = transactionManager.getPurgeCoordinator();
         assertEquals(1, coordinator.getActiveReadViewCount(), "应该只有 1 个活跃 ReadView");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：READ_COMMITTED 隔离级别的 ReadView 创建")
-    public void testReadCommittedReadViewCreation() {
+    public void testReadCommittedReadViewCreation() throws Exception {
         // 事务 T1 使用 READ_COMMITTED 隔离级别
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.READ_COMMITTED);
 
@@ -245,12 +247,12 @@ public class PurgeSafetyTest {
         PurgeCoordinator coordinator = transactionManager.getPurgeCoordinator();
         assertEquals(2, coordinator.getActiveReadViewCount(), "应该有 2 个活跃 ReadView");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：事务回滚时的 ReadView 清理")
-    public void testReadViewCleanupOnRollback() {
+    public void testReadViewCleanupOnRollback() throws Exception {
         // 事务 T1 创建 ReadView
         Transaction t1 = transactionManager.begin();
         ReadView readView = t1.getOrCreateReadView();
@@ -271,7 +273,7 @@ public class PurgeSafetyTest {
 
     @Test
     @DisplayName("测试：Purge 协调器缓存失效")
-    public void testPurgeCoordinatorCacheInvalidation() {
+    public void testPurgeCoordinatorCacheInvalidation() throws Exception {
         PurgeCoordinator coordinator = transactionManager.getPurgeCoordinator();
 
         // 获取初始 Purge 边界
@@ -288,6 +290,6 @@ public class PurgeSafetyTest {
         assertNotEquals(limit1.getValue(), limit2.getValue(),
                 "添加新 ReadView 后 Purge 边界应该改变");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 }

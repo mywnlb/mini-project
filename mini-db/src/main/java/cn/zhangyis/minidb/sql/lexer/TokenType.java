@@ -10,6 +10,9 @@ public enum TokenType {
     // Keywords - DML
     INSERT, INTO, VALUES, UPDATE, SET, DELETE,
 
+    // Keywords - Transaction
+    BEGIN, COMMIT, ROLLBACK, TRANSACTION,
+
     // Keywords - DDL
     CREATE, DROP, TABLE, PRIMARY, KEY, IF, EXISTS, ALTER, ADD, COLUMN, INDEX,
 
@@ -37,6 +40,9 @@ public enum TokenType {
     public String getLiteral() {
         return switch (this) {
             case STAR -> "*";
+            case PLUS -> "+";
+            case MINUS -> "-";
+            case DIV -> "/";
             case EQ -> "=";
             case LT -> "<";
             case GT -> ">";

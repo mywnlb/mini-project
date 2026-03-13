@@ -222,6 +222,15 @@ public final class ReadView {
     }
 
     /**
+     * 获取活跃事务列表（兼容旧测试命名）
+     *
+     * @return 活跃事务 ID 列表（不可变）
+     */
+    public List<TransactionId> getActiveList() {
+        return getActiveTrxIds();
+    }
+
+    /**
      * 获取活跃事务数量
      *
      * @return 活跃事务数量

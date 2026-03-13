@@ -117,7 +117,7 @@ class UndoSpaceMonitorTest {
         when(undoLogManager.getTotalUndoSpaceUsed()).thenReturn(10L * 1024 * 1024 * 1024);
 
         HistoryList historyList = mock(HistoryList.class);
-        when(historyList.size()).thenReturn(UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD + 10000);
+        when(historyList.size()).thenReturn((int) (UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD + 10000));
         when(undoLogManager.getHistoryList()).thenReturn(historyList);
 
         when(purgeCoordinator.getActiveReadViews()).thenReturn(new ArrayList<>());
@@ -135,7 +135,7 @@ class UndoSpaceMonitorTest {
 
         HistoryList historyList = mock(HistoryList.class);
         // 设置 History List 长度为阈值的 2.5 倍
-        long historyLen = (long) (UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD * 2.5);
+        int historyLen = (int) (UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD * 2.5);
         when(historyList.size()).thenReturn(historyLen);
         when(undoLogManager.getHistoryList()).thenReturn(historyList);
 
@@ -242,7 +242,7 @@ class UndoSpaceMonitorTest {
         when(undoLogManager.getTotalUndoSpaceUsed()).thenReturn(usedSpace);
 
         HistoryList historyList = mock(HistoryList.class);
-        when(historyList.size()).thenReturn(UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD + 50000);
+        when(historyList.size()).thenReturn((int) (UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD + 50000));
         when(undoLogManager.getHistoryList()).thenReturn(historyList);
 
         ReadView oldReadView = mock(ReadView.class);
@@ -257,7 +257,7 @@ class UndoSpaceMonitorTest {
         UndoSpaceMonitor.Metrics metrics = monitor.getMetrics();
         assertTrue(metrics.undoSpaceRatio > UndoSpaceMonitor.WARNING_SPACE_RATIO);
         assertTrue(metrics.historyListLength > UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD);
-        assertTrue(metrics.isWarning());
+        assertTrue(metrics.isWarning);
     }
 
     @Test

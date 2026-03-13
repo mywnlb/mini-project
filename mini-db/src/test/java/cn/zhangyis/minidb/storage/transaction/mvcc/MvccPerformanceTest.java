@@ -5,6 +5,7 @@ import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.record.logical.DataTuple;
 import cn.zhangyis.minidb.storage.transaction.core.Transaction;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
+import cn.zhangyis.minidb.storage.transaction.core.TransactionState;
 import cn.zhangyis.minidb.storage.transaction.dml.TransactionalDml;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static cn.zhangyis.minidb.testutil.TransactionTestSupport.forceState;
 
 /**
  * MVCC 性能测试
@@ -52,14 +54,14 @@ public class MvccPerformanceTest {
 
     @Test
     @DisplayName("测试：ReadView 创建性能")
-    public void testReadViewCreationPerformance() {
+    public void testReadViewCreationPerformance() throws Exception {
         long startTime = System.nanoTime();
 
         for (int i = 0; i < ITERATION_COUNT; i++) {
             Transaction t = transactionManager.begin();
             ReadView rv = t.getOrCreateReadView();
             assertNotNull(rv, "ReadView 应该被创建");
-            t.setState(Transaction.TransactionState.COMMITTED);
+            forceState(t, TransactionState.COMMITTED);
         }
 
         long endTime = System.nanoTime();
@@ -74,7 +76,7 @@ public class MvccPerformanceTest {
 
     @Test
     @DisplayName("测试：可见性判断性能")
-    public void testVisibilityCheckPerformance() {
+    public void testVisibilityCheckPerformance() throws Exception {
         // 创建 ReadView
         Transaction t = transactionManager.begin();
         ReadView readView = t.getOrCreateReadView();
@@ -92,12 +94,12 @@ public class MvccPerformanceTest {
         System.out.println("可见性判断性能: " + ITERATION_COUNT + " 次操作耗时 " + duration + " ms");
         System.out.println("平均时间: " + (duration / (double) ITERATION_COUNT) + " ms/op");
 
-        t.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：版本链遍历性能")
-    public void testVersionChainTraversalPerformance() {
+    public void testVersionChainTraversalPerformance() throws Exception {
         // 创建多个版本
         Transaction t1 = transactionManager.begin();
         byte[] primaryKey = "key1".getBytes();
@@ -120,7 +122,7 @@ public class MvccPerformanceTest {
             DataTuple tuple = createTestTuple("key1", "value" + i);
 
             try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-                dml.update(mtr, t, tuple, primaryKey);
+                dml.update(mtr, t, primaryKey, tuple, java.util.List.of());
                 mtr.commit();
             }
 
@@ -141,7 +143,7 @@ public class MvccPerformanceTest {
                 assertNotNull(read, "应该能读到数据");
                 mtr.commit();
             }
-            t.setState(Transaction.TransactionState.COMMITTED);
+            forceState(t, TransactionState.COMMITTED);
         }
 
         long endTime = System.nanoTime();
@@ -153,7 +155,7 @@ public class MvccPerformanceTest {
 
     @Test
     @DisplayName("测试：范围扫描性能")
-    public void testRangeScanPerformance() {
+    public void testRangeScanPerformance() throws Exception {
         // 插入大量数据
         Transaction t1 = transactionManager.begin();
 
@@ -182,7 +184,7 @@ public class MvccPerformanceTest {
                 // TODO: 实现范围扫描
                 mtr.commit();
             }
-            t.setState(Transaction.TransactionState.COMMITTED);
+            forceState(t, TransactionState.COMMITTED);
         }
 
         long endTime = System.nanoTime();
@@ -194,7 +196,7 @@ public class MvccPerformanceTest {
 
     @Test
     @DisplayName("测试：并发事务性能")
-    public void testConcurrentTransactionPerformance() {
+    public void testConcurrentTransactionPerformance() throws Exception {
         long startTime = System.nanoTime();
 
         for (int i = 0; i < TRANSACTION_COUNT; i++) {
@@ -223,7 +225,7 @@ public class MvccPerformanceTest {
 
     @Test
     @DisplayName("测试：ReadView 缓存性能")
-    public void testReadViewCachePerformance() {
+    public void testReadViewCachePerformance() throws Exception {
         Transaction t = transactionManager.begin(Transaction.IsolationLevel.REPEATABLE_READ);
 
         long startTime = System.nanoTime();
@@ -242,12 +244,12 @@ public class MvccPerformanceTest {
         // 验证缓存性能（应该非常快）
         assertTrue(duration < 100, "缓存 ReadView 应该非常快");
 
-        t.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：Purge 协调器性能")
-    public void testPurgeCoordinatorPerformance() {
+    public void testPurgeCoordinatorPerformance() throws Exception {
         long startTime = System.nanoTime();
 
         for (int i = 0; i < TRANSACTION_COUNT; i++) {
@@ -271,7 +273,7 @@ public class MvccPerformanceTest {
 
     @Test
     @DisplayName("测试：内存使用情况")
-    public void testMemoryUsage() {
+    public void testMemoryUsage() throws Exception {
         Runtime runtime = Runtime.getRuntime();
         long beforeMemory = runtime.totalMemory() - runtime.freeMemory();
 
@@ -280,7 +282,7 @@ public class MvccPerformanceTest {
             Transaction t = transactionManager.begin();
             ReadView rv = t.getOrCreateReadView();
             assertNotNull(rv, "ReadView 应该被创建");
-            t.setState(Transaction.TransactionState.COMMITTED);
+            forceState(t, TransactionState.COMMITTED);
         }
 
         long afterMemory = runtime.totalMemory() - runtime.freeMemory();
@@ -295,7 +297,9 @@ public class MvccPerformanceTest {
      * 创建测试数据元组
      */
     private DataTuple createTestTuple(String key, String value) {
-        // TODO: 实现创建测试数据元组的逻辑
-        return null;
+        return DataTuple.builder()
+                .addString(key)
+                .addString(value)
+                .build();
     }
 }

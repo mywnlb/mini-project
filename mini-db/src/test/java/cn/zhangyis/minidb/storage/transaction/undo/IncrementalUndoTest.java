@@ -301,8 +301,8 @@ class IncrementalUndoTest {
         // 当前记录
         Map<Integer, byte[]> currentRecord = new HashMap<>();
         currentRecord.put(1, new byte[]{100});
-        currentRecord.put(2, new byte[]{200});
-        currentRecord.put(3, new byte[]{300});
+        currentRecord.put(2, new byte[]{(byte) 200});
+        currentRecord.put(3, new byte[]{(byte) 300});
 
         // Undo 链：3 个记录
         List<UpdateUndoRecord> undoChain = new ArrayList<>();
@@ -353,7 +353,7 @@ class IncrementalUndoTest {
         assertEquals(2, version.getColumnsReconstructed());
         assertArrayEquals(new byte[]{10}, version.getColumnValue(1));
         assertArrayEquals(new byte[]{20}, version.getColumnValue(2));
-        assertArrayEquals(new byte[]{300}, version.getColumnValue(3));
+        assertArrayEquals(new byte[]{(byte) 300}, version.getColumnValue(3));
     }
 
     @Test
@@ -362,7 +362,7 @@ class IncrementalUndoTest {
         // 当前记录
         Map<Integer, byte[]> currentRecord = new HashMap<>();
         currentRecord.put(1, new byte[]{100});
-        currentRecord.put(2, new byte[]{200});
+        currentRecord.put(2, new byte[]{(byte) 200});
 
         // Undo 链：5 个记录，但只需要前 2 个就能补齐所有列
         List<UpdateUndoRecord> undoChain = new ArrayList<>();

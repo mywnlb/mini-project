@@ -23,6 +23,9 @@ public class SqlParser {
             case CREATE -> parseCreate();
             case DROP -> parseDrop();
             case ALTER -> parseAlterTable();
+            case BEGIN -> parseBegin();
+            case COMMIT -> parseCommit();
+            case ROLLBACK -> parseRollback();
             default -> throw new SqlParseException("Unsupported statement: " + type);
         };
         // 允许可选的分号结尾
@@ -332,6 +335,24 @@ public class SqlParser {
         tokens.expect(TokenType.IDENTIFIER);
         SqlType colType = parseColumnType();
         return new SqlAlterTable(table, colName, colType);
+    }
+
+    // ==================== 事务控制 ====================
+
+    private SqlTransaction parseBegin() {
+        tokens.expect(TokenType.BEGIN);
+        tokens.match(TokenType.TRANSACTION); // 可选的 TRANSACTION 关键字
+        return new SqlTransaction(SqlKind.BEGIN_TXN);
+    }
+
+    private SqlTransaction parseCommit() {
+        tokens.expect(TokenType.COMMIT);
+        return new SqlTransaction(SqlKind.COMMIT_TXN);
+    }
+
+    private SqlTransaction parseRollback() {
+        tokens.expect(TokenType.ROLLBACK);
+        return new SqlTransaction(SqlKind.ROLLBACK_TXN);
     }
 
     // ==================== 表达式解析 ====================

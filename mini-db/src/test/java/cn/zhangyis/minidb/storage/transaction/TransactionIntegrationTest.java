@@ -95,16 +95,16 @@ class TransactionIntegrationTest {
             ReadView readView = txnMgr.createReadView(t1);
 
             // 分析 T2（已提交）
-            VisibilityChecker.VisibilityAnalysis analysisT2 =
-                    VisibilityChecker.analyzeVisibility(readView, t2.getId());
-            assertTrue(analysisT2.isVisible());
-            assertNotNull(analysisT2.getReason());
+            VisibilityChecker.VisibilityResult analysisT2 =
+                    VisibilityChecker.analyzeVisibility(t2.getId(), readView);
+            assertTrue(VisibilityChecker.isVisible(t2.getId(), readView));
+            assertNotNull(analysisT2);
 
             // 分析 T3（ReadView 后开始）
-            VisibilityChecker.VisibilityAnalysis analysisT3 =
-                    VisibilityChecker.analyzeVisibility(readView, t3.getId());
-            assertFalse(analysisT3.isVisible());
-            assertTrue(analysisT3.getReason().contains(">=") || analysisT3.getReason().contains("low_limit"));
+            VisibilityChecker.VisibilityResult analysisT3 =
+                    VisibilityChecker.analyzeVisibility(t3.getId(), readView);
+            assertFalse(VisibilityChecker.isVisible(t3.getId(), readView));
+            assertEquals(VisibilityChecker.VisibilityResult.NOT_VISIBLE_ABOVE_LOW_LIMIT, analysisT3);
         }
 
         @Test

@@ -6,8 +6,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
-import java.util.Optional;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -42,8 +40,8 @@ public class VersionChainReaderTest {
     public void testBasicVersionChainTraversal() {
         // 创建版本链：V1 -> V2 -> V3
         RecordVersion v1 = createRecordVersion(1, RollbackPointer.NULL, false);
-        RecordVersion v2 = createRecordVersion(2, RollbackPointer.encode(0, 0, 0), false);
-        RecordVersion v3 = createRecordVersion(3, RollbackPointer.encode(0, 0, 1), false);
+        RecordVersion v2 = createRecordVersion(2, RollbackPointer.forUpdate(0, 0, 0), false);
+        RecordVersion v3 = createRecordVersion(3, RollbackPointer.forUpdate(0, 0, 1), false);
 
         // 验证版本链的结构
         assertNotNull(v1, "版本 V1 应该存在");
@@ -67,8 +65,8 @@ public class VersionChainReaderTest {
 
         // 创建版本链
         RecordVersion v1 = createRecordVersion(3, RollbackPointer.NULL, false);
-        RecordVersion v2 = createRecordVersion(8, RollbackPointer.encode(0, 0, 0), false);
-        RecordVersion v3 = createRecordVersion(15, RollbackPointer.encode(0, 0, 1), false);
+        RecordVersion v2 = createRecordVersion(8, RollbackPointer.forUpdate(0, 0, 0), false);
+        RecordVersion v3 = createRecordVersion(15, RollbackPointer.forUpdate(0, 0, 1), false);
 
         // 查找可见版本
         // 对于 ReadView，应该能看到 TRX_ID < up_limit_id 的版本
@@ -82,7 +80,7 @@ public class VersionChainReaderTest {
     public void testDeleteMarkInVersionChain() {
         // 创建版本链，其中某个版本被标记为删除
         RecordVersion v1 = createRecordVersion(1, RollbackPointer.NULL, false);
-        RecordVersion v2 = createRecordVersion(2, RollbackPointer.encode(0, 0, 0), true);  // 删除标记
+        RecordVersion v2 = createRecordVersion(2, RollbackPointer.forUpdate(0, 0, 0), true);  // 删除标记
 
         // 验证删除标记
         assertFalse(v1.isDeleteMarked(), "V1 不应该被标记为删除");
@@ -105,7 +103,7 @@ public class VersionChainReaderTest {
         // 创建一个长版本链
         RecordVersion[] versions = new RecordVersion[10];
         for (int i = 0; i < 10; i++) {
-            long rollPtr = (i == 0) ? RollbackPointer.NULL : RollbackPointer.encode(0, 0, i - 1);
+            RollbackPointer rollPtr = (i == 0) ? RollbackPointer.NULL : RollbackPointer.forUpdate(0, 0, i - 1);
             versions[i] = createRecordVersion(i + 1, rollPtr, false);
         }
 
@@ -124,20 +122,20 @@ public class VersionChainReaderTest {
     public void testTrxIdOrderInVersionChain() {
         // 创建版本链，TRX_ID 应该递增
         RecordVersion v1 = createRecordVersion(1, RollbackPointer.NULL, false);
-        RecordVersion v2 = createRecordVersion(2, RollbackPointer.encode(0, 0, 0), false);
-        RecordVersion v3 = createRecordVersion(3, RollbackPointer.encode(0, 0, 1), false);
+        RecordVersion v2 = createRecordVersion(2, RollbackPointer.forUpdate(0, 0, 0), false);
+        RecordVersion v3 = createRecordVersion(3, RollbackPointer.forUpdate(0, 0, 1), false);
 
         // 验证 TRX_ID 顺序
-        assertTrue(v1.getTrxId() < v2.getTrxId(), "V1 的 TRX_ID 应该小于 V2");
-        assertTrue(v2.getTrxId() < v3.getTrxId(), "V2 的 TRX_ID 应该小于 V3");
+        assertTrue(v1.getTrxId().isBefore(v2.getTrxId()), "V1 的 TRX_ID 应该小于 V2");
+        assertTrue(v2.getTrxId().isBefore(v3.getTrxId()), "V2 的 TRX_ID 应该小于 V3");
     }
 
     @Test
     @DisplayName("测试：版本链的循环检测")
     public void testVersionChainCycleDetection() {
         // 创建一个可能有循环的版本链
-        RecordVersion v1 = createRecordVersion(1, RollbackPointer.encode(0, 0, 1), false);  // 指向自己
-        RecordVersion v2 = createRecordVersion(2, RollbackPointer.encode(0, 0, 0), false);
+        RecordVersion v1 = createRecordVersion(1, RollbackPointer.forUpdate(0, 0, 1), false);  // 指向自己
+        RecordVersion v2 = createRecordVersion(2, RollbackPointer.forUpdate(0, 0, 0), false);
 
         // 验证版本链不应该有循环
         // 这取决于具体的实现
@@ -159,8 +157,8 @@ public class VersionChainReaderTest {
     public void testDeleteMarkPropagation() {
         // 创建版本链
         RecordVersion v1 = createRecordVersion(1, RollbackPointer.NULL, false);
-        RecordVersion v2 = createRecordVersion(2, RollbackPointer.encode(0, 0, 0), true);  // 删除标记
-        RecordVersion v3 = createRecordVersion(3, RollbackPointer.encode(0, 0, 1), false);
+        RecordVersion v2 = createRecordVersion(2, RollbackPointer.forUpdate(0, 0, 0), true);  // 删除标记
+        RecordVersion v3 = createRecordVersion(3, RollbackPointer.forUpdate(0, 0, 1), false);
 
         // 验证删除标记
         assertFalse(v1.isDeleteMarked(), "V1 不应该被标记为删除");
@@ -176,7 +174,7 @@ public class VersionChainReaderTest {
         // 创建大量版本
         RecordVersion[] versions = new RecordVersion[1000];
         for (int i = 0; i < 1000; i++) {
-            long rollPtr = (i == 0) ? RollbackPointer.NULL : RollbackPointer.encode(0, 0, i - 1);
+            RollbackPointer rollPtr = (i == 0) ? RollbackPointer.NULL : RollbackPointer.forUpdate(0, 0, i - 1);
             versions[i] = createRecordVersion(i + 1, rollPtr, false);
         }
 
@@ -192,7 +190,7 @@ public class VersionChainReaderTest {
     public void testVersionChainConcurrentAccess() {
         // 创建版本链
         RecordVersion v1 = createRecordVersion(1, RollbackPointer.NULL, false);
-        RecordVersion v2 = createRecordVersion(2, RollbackPointer.encode(0, 0, 0), false);
+        RecordVersion v2 = createRecordVersion(2, RollbackPointer.forUpdate(0, 0, 0), false);
 
         // 多个线程并发访问版本链
         // TODO: 实现并发访问测试
@@ -203,7 +201,7 @@ public class VersionChainReaderTest {
     /**
      * 创建测试记录版本
      */
-    private RecordVersion createRecordVersion(long trxId, long rollPtr, boolean deleteMarked) {
-        return new RecordVersion(trxId, 0, RollbackPointer.decode(rollPtr), deleteMarked);
+    private RecordVersion createRecordVersion(long trxId, RollbackPointer rollPtr, boolean deleteMarked) {
+        return new RecordVersion(trxId, 0, rollPtr, deleteMarked);
     }
 }

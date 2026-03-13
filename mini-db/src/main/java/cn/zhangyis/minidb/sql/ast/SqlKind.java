@@ -17,5 +17,7 @@ public enum SqlKind {
     // 谓词
     LIKE, NOT_LIKE, BETWEEN, NOT_BETWEEN, IN, NOT_IN, IS_NULL, IS_NOT_NULL,
     // ORDER BY
-    ORDER_BY_ITEM
+    ORDER_BY_ITEM,
+    // 事务控制
+    BEGIN_TXN, COMMIT_TXN, ROLLBACK_TXN
 }

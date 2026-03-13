@@ -13,6 +13,8 @@ import cn.zhangyis.minidb.sql.rel.*;
  */
 public class PhysicalPlanner {
 
+    private record JoinKeys(String leftKey, String rightKey) {}
+
     public enum JoinAlgorithm {
         NESTED_LOOP, HASH_JOIN, SORT_MERGE, INDEX_NESTED_LOOP
     }
@@ -20,6 +22,7 @@ public class PhysicalPlanner {
     private final CostOptimizer costOptimizer;
     private final DataSourceSpi dataSource;
     private final CatalogSpi catalog;
+    private ExecutionContext executionContext;
 
     public PhysicalPlanner() {
         this(new CostOptimizer(), MockDataSourceAdapter.INSTANCE, null);
@@ -41,6 +44,28 @@ public class PhysicalPlanner {
         this.costOptimizer = costOptimizer;
         this.dataSource = dataSource;
         this.catalog = catalog;
+    }
+
+    public void setExecutionContext(ExecutionContext ctx) {
+        this.executionContext = ctx;
+    }
+
+    /**
+     * 直接从 SqlNode 生成执行器（用于事务控制语句，不经过 SqlToRelConverter）
+     */
+    public ExecNode planSqlNode(SqlNode sqlNode) {
+        if (sqlNode instanceof SqlTransaction txn) {
+            if (executionContext == null) {
+                throw new IllegalStateException("ExecutionContext not set, cannot execute transaction control");
+            }
+            return switch (txn.kind()) {
+                case BEGIN_TXN -> new BeginExec(executionContext);
+                case COMMIT_TXN -> new CommitExec(executionContext);
+                case ROLLBACK_TXN -> new RollbackExec(executionContext);
+                default -> throw new IllegalArgumentException("Unknown transaction kind: " + txn.kind());
+            };
+        }
+        throw new IllegalArgumentException("planSqlNode only handles transaction control, got: " + sqlNode.kind());
     }
 
     /**
@@ -128,37 +153,118 @@ public class PhysicalPlanner {
             ? overrideAlgo
             : costOptimizer.chooseJoinAlgorithm(join);
 
-        String[] keys = extractJoinKeys(join.condition());
+        JoinKeys keys = extractJoinKeys(join);
 
         return switch (algo) {
             case NESTED_LOOP -> new NestedLoopJoinExec(left, right, join.condition());
             case HASH_JOIN -> {
                 if (keys != null) {
-                    yield new HashJoinExec(left, right, keys[0], keys[1]);
+                    yield new HashJoinExec(left, right, keys.leftKey(), keys.rightKey());
                 }
                 yield new NestedLoopJoinExec(left, right, join.condition());
             }
             case SORT_MERGE -> {
                 if (keys != null) {
-                    yield new SortMergeJoinExec(left, right, keys[0], keys[1]);
+                    yield new SortMergeJoinExec(left, right, keys.leftKey(), keys.rightKey());
                 }
                 yield new NestedLoopJoinExec(left, right, join.condition());
             }
             case INDEX_NESTED_LOOP -> {
                 if (keys != null) {
-                    yield new IndexNestedLoopJoinExec(left, right, keys[0], keys[1]);
+                    yield new IndexNestedLoopJoinExec(left, right, keys.leftKey(), keys.rightKey());
                 }
                 yield new NestedLoopJoinExec(left, right, join.condition());
             }
         };
     }
 
-    private String[] extractJoinKeys(SqlNode condition) {
-        if (condition instanceof SqlBinaryOp binOp && binOp.kind() == SqlKind.BINARY_EQ) {
-            if (binOp.left() instanceof SqlIdentifier left && binOp.right() instanceof SqlIdentifier right) {
-                return new String[]{left.name(), right.name()};
-            }
+    private JoinKeys extractJoinKeys(RelJoin join) {
+        if (!(join.condition() instanceof SqlBinaryOp binOp) || binOp.kind() != SqlKind.BINARY_EQ) {
+            return null;
+        }
+        if (!(binOp.left() instanceof SqlIdentifier first) || !(binOp.right() instanceof SqlIdentifier second)) {
+            return null;
+        }
+
+        String firstName = first.name();
+        String secondName = second.name();
+
+        boolean firstQualified = isQualified(firstName);
+        boolean secondQualified = isQualified(secondName);
+        if (firstQualified != secondQualified) {
+            return null;
+        }
+
+        if (firstQualified) {
+            return alignQualifiedKeys(join, firstName, secondName);
+        }
+        if (isSafeBareSameNameEquiJoin(join, firstName, secondName)) {
+            return new JoinKeys(firstName, secondName);
         }
         return null;
+    }
+
+    private JoinKeys alignQualifiedKeys(RelJoin join, String firstName, String secondName) {
+        boolean firstOnLeft = identifierBelongsTo(join.left(), firstName);
+        boolean firstOnRight = identifierBelongsTo(join.right(), firstName);
+        boolean secondOnLeft = identifierBelongsTo(join.left(), secondName);
+        boolean secondOnRight = identifierBelongsTo(join.right(), secondName);
+
+        if (firstOnLeft && secondOnRight) {
+            return new JoinKeys(firstName, secondName);
+        }
+        if (secondOnLeft && firstOnRight) {
+            return new JoinKeys(secondName, firstName);
+        }
+        return null;
+    }
+
+    private boolean isSafeBareSameNameEquiJoin(RelJoin join, String firstName, String secondName) {
+        return firstName.equalsIgnoreCase(secondName)
+            && identifierBelongsTo(join.left(), firstName)
+            && identifierBelongsTo(join.right(), secondName);
+    }
+
+    private boolean isQualified(String identifier) {
+        return identifier.contains(".");
+    }
+
+    private boolean identifierBelongsTo(RelNode node, String identifier) {
+        if (node instanceof RelScan scan) {
+            return scanOutputsIdentifier(scan, identifier);
+        }
+        if (node instanceof RelFilter filter) {
+            return identifierBelongsTo(filter.input(), identifier);
+        }
+        if (node instanceof RelProject project) {
+            return identifierBelongsTo(project.input(), identifier);
+        }
+        if (node instanceof RelDistinct distinct) {
+            return identifierBelongsTo(distinct.input(), identifier);
+        }
+        if (node instanceof RelAggregate aggregate) {
+            return identifierBelongsTo(aggregate.input(), identifier);
+        }
+        if (node instanceof RelSort sort) {
+            return identifierBelongsTo(sort.input(), identifier);
+        }
+        if (node instanceof RelJoin join) {
+            return identifierBelongsTo(join.left(), identifier) || identifierBelongsTo(join.right(), identifier);
+        }
+        return false;
+    }
+
+    private boolean scanOutputsIdentifier(RelScan scan, String identifier) {
+        String normalized = identifier.toUpperCase();
+        if (normalized.contains(".")) {
+            String[] parts = normalized.split("\\.", 2);
+            if (!scan.outputName().equalsIgnoreCase(parts[0])) {
+                return false;
+            }
+            return scan.tableMeta().columns().stream()
+                .anyMatch(column -> column.name().equalsIgnoreCase(parts[1]));
+        }
+        return scan.tableMeta().columns().stream()
+            .anyMatch(column -> column.name().equalsIgnoreCase(normalized));
     }
 }

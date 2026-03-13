@@ -9,6 +9,7 @@ import cn.zhangyis.minidb.storage.record.physical.SystemLayout;
 import cn.zhangyis.minidb.storage.transaction.core.Transaction;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
+import cn.zhangyis.minidb.storage.transaction.core.TransactionState;
 import cn.zhangyis.minidb.storage.transaction.mvcc.ReadView;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static cn.zhangyis.minidb.testutil.TransactionTestSupport.forceState;
 
 /**
  * TransactionalDml 读路径测试
@@ -56,7 +58,7 @@ public class TransactionalDmlReadTest {
 
     @Test
     @DisplayName("测试：事务可以读取自己的修改")
-    public void testReadOwnModification() {
+    public void testReadOwnModification() throws Exception {
         // 事务 T1 插入记录
         Transaction t1 = transactionManager.begin();
         DataTuple tuple = createTestTuple("key1", "value1");
@@ -72,16 +74,16 @@ public class TransactionalDmlReadTest {
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             DataTuple read = dml.read(mtr, t1, primaryKey);
             assertNotNull(read, "T1 应该能读到自己插入的记录");
-            assertEquals("value1", read.getColumnValue("col1"), "读取的值应该正确");
+            assertEquals("value1", read.getField(1).asString(), "读取的值应该正确");
             mtr.commit();
         }
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：事务不能读取未提交的修改")
-    public void testCannotReadUncommittedModification() {
+    public void testCannotReadUncommittedModification() throws Exception {
         // 事务 T1 插入记录（未提交）
         Transaction t1 = transactionManager.begin();
         DataTuple tuple = createTestTuple("key2", "value2");
@@ -101,13 +103,13 @@ public class TransactionalDmlReadTest {
             mtr.commit();
         }
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：事务可以读取已提交的修改")
-    public void testReadCommittedModification() {
+    public void testReadCommittedModification() throws Exception {
         // 事务 T1 插入记录并提交
         Transaction t1 = transactionManager.begin();
         DataTuple tuple = createTestTuple("key3", "value3");
@@ -119,23 +121,23 @@ public class TransactionalDmlReadTest {
             mtr.commit();
         }
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
 
         // 事务 T2 读取记录
         Transaction t2 = transactionManager.begin();
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             DataTuple read = dml.read(mtr, t2, primaryKey);
             assertNotNull(read, "T2 应该能读到 T1 已提交的记录");
-            assertEquals("value3", read.getColumnValue("col1"), "读取的值应该正确");
+            assertEquals("value3", read.getField(1).asString(), "读取的值应该正确");
             mtr.commit();
         }
 
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：REPEATABLE_READ 隔离级别")
-    public void testRepeatableRead() {
+    public void testRepeatableRead() throws Exception {
         // 事务 T1 开始（创建 ReadView）
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.REPEATABLE_READ);
         ReadView readView1 = t1.getOrCreateReadView();
@@ -152,7 +154,7 @@ public class TransactionalDmlReadTest {
             mtr.commit();
         }
 
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
 
         // 事务 T1 读取（第一次）
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
@@ -172,7 +174,7 @@ public class TransactionalDmlReadTest {
             mtr.commit();
         }
 
-        t3.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t3, TransactionState.COMMITTED);
 
         // 事务 T1 读取（第二次）
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
@@ -185,12 +187,12 @@ public class TransactionalDmlReadTest {
         ReadView readView2 = t1.getCachedReadView();
         assertSame(readView1, readView2, "REPEATABLE_READ 应该复用同一个 ReadView");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：范围扫描的可见性过滤")
-    public void testRangeScanVisibility() {
+    public void testRangeScanVisibility() throws Exception {
         // 插入多条记录
         Transaction t0 = transactionManager.begin();
         byte[][] keys = {"k1".getBytes(), "k2".getBytes(), "k3".getBytes(), "k4".getBytes(), "k5".getBytes()};
@@ -204,7 +206,7 @@ public class TransactionalDmlReadTest {
             }
         }
 
-        t0.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t0, TransactionState.COMMITTED);
 
         // 事务 T1 删除部分记录
         Transaction t1 = transactionManager.begin();
@@ -220,7 +222,7 @@ public class TransactionalDmlReadTest {
             mtr.commit();
         }
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
 
         // 事务 T2 范围扫描
         Transaction t2 = transactionManager.begin();
@@ -230,7 +232,7 @@ public class TransactionalDmlReadTest {
             mtr.commit();
         }
 
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     // ==================== 辅助方法 ====================
@@ -239,7 +241,9 @@ public class TransactionalDmlReadTest {
      * 创建测试数据元组
      */
     private DataTuple createTestTuple(String key, String value) {
-        // TODO: 实现创建测试数据元组的逻辑
-        return null;
+        return DataTuple.builder()
+                .addString(key)
+                .addString(value)
+                .build();
     }
 }

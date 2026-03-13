@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static cn.zhangyis.minidb.testutil.TransactionTestSupport.forceState;
 
 /**
  * 隔离级别支持测试
@@ -46,7 +47,7 @@ public class IsolationLevelTest {
 
     @Test
     @DisplayName("测试：READ_UNCOMMITTED 隔离级别允许脏读")
-    public void testReadUncommittedAllowsDirtyRead() {
+    public void testReadUncommittedAllowsDirtyRead() throws Exception {
         // 事务 T1 修改数据（未提交）
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.READ_UNCOMMITTED);
         byte[] primaryKey = "key1".getBytes();
@@ -66,13 +67,13 @@ public class IsolationLevelTest {
             mtr.commit();
         }
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：READ_COMMITTED 隔离级别不允许脏读")
-    public void testReadCommittedPreventsDirtyRead() {
+    public void testReadCommittedPreventsDirtyRead() throws Exception {
         // 事务 T1 修改数据（未提交）
         Transaction t1 = transactionManager.begin();
         byte[] primaryKey = "key2".getBytes();
@@ -92,13 +93,13 @@ public class IsolationLevelTest {
             mtr.commit();
         }
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：READ_COMMITTED 隔离级别可能出现不可重复读")
-    public void testReadCommittedNonRepeatableRead() {
+    public void testReadCommittedNonRepeatableRead() throws Exception {
         // 事务 T1 插入数据并提交
         Transaction t1 = transactionManager.begin();
         byte[] primaryKey = "key3".getBytes();
@@ -130,7 +131,7 @@ public class IsolationLevelTest {
         DataTuple tuple3 = createTestTuple("key3", "value3_modified");
 
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-            boolean updated = dml.update(mtr, t3, tuple3, primaryKey);
+            boolean updated = dml.update(mtr, t3, primaryKey, tuple3, java.util.List.of());
             assertTrue(updated, "更新应该成功");
             mtr.commit();
         }
@@ -152,12 +153,12 @@ public class IsolationLevelTest {
         // 验证：READ_COMMITTED 可能出现不可重复读
         // 注意：这取决于具体的实现，可能两次读取结果相同或不同
 
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：REPEATABLE_READ 隔离级别保证可重复读")
-    public void testRepeatableReadGuaranteesConsistency() {
+    public void testRepeatableReadGuaranteesConsistency() throws Exception {
         // 事务 T1 插入数据并提交
         Transaction t1 = transactionManager.begin();
         byte[] primaryKey = "key4".getBytes();
@@ -191,7 +192,7 @@ public class IsolationLevelTest {
         DataTuple tuple3 = createTestTuple("key4", "value4_modified");
 
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-            boolean updated = dml.update(mtr, t3, tuple3, primaryKey);
+            boolean updated = dml.update(mtr, t3, primaryKey, tuple3, java.util.List.of());
             assertTrue(updated, "更新应该成功");
             mtr.commit();
         }
@@ -211,15 +212,15 @@ public class IsolationLevelTest {
         }
 
         // 验证：REPEATABLE_READ 保证可重复读
-        assertEquals(read1.getColumnValue("col1"), read2.getColumnValue("col1"),
+        assertEquals(read1.getField(1), read2.getField(1),
                 "REPEATABLE_READ 应该保证两次读取结果相同");
 
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：REPEATABLE_READ 隔离级别使用相同的 ReadView")
-    public void testRepeatableReadUsesSameReadView() {
+    public void testRepeatableReadUsesSameReadView() throws Exception {
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.REPEATABLE_READ);
 
         // 第一次创建 ReadView
@@ -234,12 +235,12 @@ public class IsolationLevelTest {
         ReadView rv3 = t1.getOrCreateReadView();
         assertSame(rv1, rv3, "REPEATABLE_READ 应该始终复用同一个 ReadView");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：READ_COMMITTED 隔离级别每次创建新 ReadView")
-    public void testReadCommittedCreatesNewReadView() {
+    public void testReadCommittedCreatesNewReadView() throws Exception {
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.READ_COMMITTED);
 
         // 第一次创建 ReadView
@@ -253,34 +254,34 @@ public class IsolationLevelTest {
         // 验证：两个 ReadView 不同
         assertNotSame(rv1, rv2, "READ_COMMITTED 应该创建不同的 ReadView");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：READ_UNCOMMITTED 隔离级别不创建 ReadView")
-    public void testReadUncommittedNoReadView() {
+    public void testReadUncommittedNoReadView() throws Exception {
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.READ_UNCOMMITTED);
 
         // 获取 ReadView
         ReadView rv = t1.getOrCreateReadView();
         assertNull(rv, "READ_UNCOMMITTED 不应该创建 ReadView");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：隔离级别的默认值")
-    public void testDefaultIsolationLevel() {
+    public void testDefaultIsolationLevel() throws Exception {
         Transaction t1 = transactionManager.begin();
         assertEquals(Transaction.IsolationLevel.REPEATABLE_READ, t1.getIsolationLevel(),
                 "默认隔离级别应该是 REPEATABLE_READ");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：隔离级别的获取")
-    public void testGetIsolationLevel() {
+    public void testGetIsolationLevel() throws Exception {
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.READ_COMMITTED);
         assertEquals(Transaction.IsolationLevel.READ_COMMITTED, t1.getIsolationLevel(),
                 "应该能正确获取隔离级别");
@@ -293,14 +294,14 @@ public class IsolationLevelTest {
         assertEquals(Transaction.IsolationLevel.SERIALIZABLE, t3.getIsolationLevel(),
                 "应该能正确获取隔离级别");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
-        t2.setState(Transaction.TransactionState.COMMITTED);
-        t3.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
+        forceState(t3, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：多个隔离级别的并发执行")
-    public void testConcurrentIsolationLevels() {
+    public void testConcurrentIsolationLevels() throws Exception {
         // 创建不同隔离级别的事务
         Transaction t1 = transactionManager.begin(Transaction.IsolationLevel.READ_UNCOMMITTED);
         Transaction t2 = transactionManager.begin(Transaction.IsolationLevel.READ_COMMITTED);
@@ -319,10 +320,10 @@ public class IsolationLevelTest {
         assertNotNull(t3.getOrCreateReadView(), "REPEATABLE_READ 应该创建 ReadView");
         assertNotNull(t4.getOrCreateReadView(), "SERIALIZABLE 应该创建 ReadView");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
-        t2.setState(Transaction.TransactionState.COMMITTED);
-        t3.setState(Transaction.TransactionState.COMMITTED);
-        t4.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
+        forceState(t3, TransactionState.COMMITTED);
+        forceState(t4, TransactionState.COMMITTED);
     }
 
     // ==================== 辅助方法 ====================
@@ -331,7 +332,9 @@ public class IsolationLevelTest {
      * 创建测试数据元组
      */
     private DataTuple createTestTuple(String key, String value) {
-        // TODO: 实现创建测试数据元组的逻辑
-        return null;
+        return DataTuple.builder()
+                .addString(key)
+                .addString(value)
+                .build();
     }
 }

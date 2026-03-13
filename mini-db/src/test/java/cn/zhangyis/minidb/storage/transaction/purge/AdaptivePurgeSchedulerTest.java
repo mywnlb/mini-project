@@ -68,7 +68,7 @@ class AdaptivePurgeSchedulerTest {
         when(undoLogManager.getTotalUndoSpaceUsed()).thenReturn(50L * 1024 * 1024 * 1024);
 
         HistoryList historyList = mock(HistoryList.class);
-        when(historyList.size()).thenReturn(UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD + 1000);
+        when(historyList.size()).thenReturn((int) (UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD + 1000));
         when(undoLogManager.getHistoryList()).thenReturn(historyList);
 
         when(purgeCoordinator.getActiveReadViews()).thenReturn(new ArrayList<>());
@@ -159,7 +159,7 @@ class AdaptivePurgeSchedulerTest {
 
         HistoryList historyList = mock(HistoryList.class);
         // 设置 History List 长度远超阈值，导致滞后比率 > 2
-        when(historyList.size()).thenReturn((long) (UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD * 2.5));
+        when(historyList.size()).thenReturn((int) (UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD * 2.5));
         when(undoLogManager.getHistoryList()).thenReturn(historyList);
 
         when(purgeCoordinator.getActiveReadViews()).thenReturn(new ArrayList<>());
@@ -224,7 +224,7 @@ class AdaptivePurgeSchedulerTest {
 
         // 第二次：转换到警告状态
         HistoryList historyList = mock(HistoryList.class);
-        when(historyList.size()).thenReturn(UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD + 1000);
+        when(historyList.size()).thenReturn((int) (UndoSpaceMonitor.HISTORY_LIST_WARNING_THRESHOLD + 1000));
         when(undoLogManager.getHistoryList()).thenReturn(historyList);
 
         monitor.updateMetrics();

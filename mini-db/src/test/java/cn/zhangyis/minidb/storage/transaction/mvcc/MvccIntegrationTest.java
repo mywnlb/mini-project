@@ -6,6 +6,7 @@ import cn.zhangyis.minidb.storage.record.logical.DataTuple;
 import cn.zhangyis.minidb.storage.transaction.core.Transaction;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionId;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
+import cn.zhangyis.minidb.storage.transaction.core.TransactionState;
 import cn.zhangyis.minidb.storage.transaction.dml.TransactionalDml;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static cn.zhangyis.minidb.testutil.TransactionTestSupport.forceState;
 
 /**
  * MVCC 集成测试
@@ -49,7 +51,7 @@ public class MvccIntegrationTest {
 
     @Test
     @DisplayName("测试：基本的 MVCC 读取")
-    public void testBasicMvccRead() {
+    public void testBasicMvccRead() throws Exception {
         // 事务 T1 插入数据
         Transaction t1 = transactionManager.begin();
         byte[] primaryKey = "key1".getBytes();
@@ -72,16 +74,16 @@ public class MvccIntegrationTest {
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             DataTuple read = dml.read(mtr, t2, primaryKey);
             assertNotNull(read, "应该能读到已提交的数据");
-            assertEquals("value1", read.getColumnValue("col1"), "读取的值应该正确");
+            assertEquals("value1", read.getField(1).asString(), "读取的值应该正确");
             mtr.commit();
         }
 
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：版本链遍历")
-    public void testVersionChainTraversal() {
+    public void testVersionChainTraversal() throws Exception {
         // 事务 T1 插入数据
         Transaction t1 = transactionManager.begin();
         byte[] primaryKey = "key2".getBytes();
@@ -104,7 +106,7 @@ public class MvccIntegrationTest {
         DataTuple tuple2 = createTestTuple("key2", "value2");
 
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-            boolean updated = dml.update(mtr, t2, tuple2, primaryKey);
+            boolean updated = dml.update(mtr, t2, primaryKey, tuple2, java.util.List.of());
             assertTrue(updated, "更新应该成功");
             mtr.commit();
         }
@@ -120,16 +122,16 @@ public class MvccIntegrationTest {
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             DataTuple read = dml.read(mtr, t3, primaryKey);
             assertNotNull(read, "应该能读到数据");
-            assertEquals("value2", read.getColumnValue("col1"), "应该读到最新版本");
+            assertEquals("value2", read.getField(1).asString(), "应该读到最新版本");
             mtr.commit();
         }
 
-        t3.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t3, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：删除标记检查")
-    public void testDeleteMarkCheck() {
+    public void testDeleteMarkCheck() throws Exception {
         // 事务 T1 插入数据
         Transaction t1 = transactionManager.begin();
         byte[] primaryKey = "key3".getBytes();
@@ -170,12 +172,12 @@ public class MvccIntegrationTest {
             mtr.commit();
         }
 
-        t3.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t3, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：快照隔离")
-    public void testSnapshotIsolation() {
+    public void testSnapshotIsolation() throws Exception {
         // 事务 T1 插入数据
         Transaction t1 = transactionManager.begin();
         byte[] primaryKey = "key4".getBytes();
@@ -203,7 +205,7 @@ public class MvccIntegrationTest {
         DataTuple tuple3 = createTestTuple("key4", "value2");
 
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-            boolean updated = dml.update(mtr, t3, tuple3, primaryKey);
+            boolean updated = dml.update(mtr, t3, primaryKey, tuple3, java.util.List.of());
             assertTrue(updated, "更新应该成功");
             mtr.commit();
         }
@@ -227,7 +229,7 @@ public class MvccIntegrationTest {
         DataTuple tuple4 = createTestTuple("key4", "value3");
 
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-            boolean updated = dml.update(mtr, t4, tuple4, primaryKey);
+            boolean updated = dml.update(mtr, t4, primaryKey, tuple4, java.util.List.of());
             assertTrue(updated, "更新应该成功");
             mtr.commit();
         }
@@ -247,15 +249,15 @@ public class MvccIntegrationTest {
         }
 
         // 验证快照隔离
-        assertEquals(read1.getColumnValue("col1"), read2.getColumnValue("col1"),
+        assertEquals(read1.getField(1), read2.getField(1),
                 "快照隔离应该保证两次读取结果相同");
 
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：多个并发事务")
-    public void testConcurrentTransactions() {
+    public void testConcurrentTransactions() throws Exception {
         // 创建多个事务
         Transaction t1 = transactionManager.begin();
         Transaction t2 = transactionManager.begin();
@@ -270,14 +272,14 @@ public class MvccIntegrationTest {
         assertTrue(t2.isActive(), "事务 T2 应该是活跃的");
         assertTrue(t3.isActive(), "事务 T3 应该是活跃的");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
-        t2.setState(Transaction.TransactionState.COMMITTED);
-        t3.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
+        forceState(t3, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：ReadView 的可见性判断")
-    public void testReadViewVisibility() {
+    public void testReadViewVisibility() throws Exception {
         // 创建事务 T1
         Transaction t1 = transactionManager.begin();
         ReadView rv1 = t1.getOrCreateReadView();
@@ -290,12 +292,12 @@ public class MvccIntegrationTest {
         assertNotNull(rv1.getUpLimitId(), "ReadView 应该有 up_limit_id");
         assertNotNull(rv1.getActiveList(), "ReadView 应该有活跃列表");
 
-        t1.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t1, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：事务提交时的 ReadView 清理")
-    public void testReadViewCleanupOnCommit() {
+    public void testReadViewCleanupOnCommit() throws Exception {
         Transaction t1 = transactionManager.begin();
         ReadView rv1 = t1.getOrCreateReadView();
 
@@ -314,7 +316,7 @@ public class MvccIntegrationTest {
 
     @Test
     @DisplayName("测试：事务回滚时的 ReadView 清理")
-    public void testReadViewCleanupOnRollback() {
+    public void testReadViewCleanupOnRollback() throws Exception {
         Transaction t1 = transactionManager.begin();
         ReadView rv1 = t1.getOrCreateReadView();
 
@@ -333,7 +335,7 @@ public class MvccIntegrationTest {
 
     @Test
     @DisplayName("测试：范围扫描的 MVCC 过滤")
-    public void testRangeScanMvccFiltering() {
+    public void testRangeScanMvccFiltering() throws Exception {
         // 插入多条数据
         Transaction t1 = transactionManager.begin();
         byte[] key1 = "key1".getBytes();
@@ -360,12 +362,12 @@ public class MvccIntegrationTest {
             mtr.commit();
         }
 
-        t2.setState(Transaction.TransactionState.COMMITTED);
+        forceState(t2, TransactionState.COMMITTED);
     }
 
     @Test
     @DisplayName("测试：Purge 安全性")
-    public void testPurgeSafety() {
+    public void testPurgeSafety() throws Exception {
         // 创建事务 T1 并创建 ReadView
         Transaction t1 = transactionManager.begin();
         ReadView rv1 = t1.getOrCreateReadView();
@@ -392,7 +394,9 @@ public class MvccIntegrationTest {
      * 创建测试数据元组
      */
     private DataTuple createTestTuple(String key, String value) {
-        // TODO: 实现创建测试数据元组的逻辑
-        return null;
+        return DataTuple.builder()
+                .addString(key)
+                .addString(value)
+                .build();
     }
 }

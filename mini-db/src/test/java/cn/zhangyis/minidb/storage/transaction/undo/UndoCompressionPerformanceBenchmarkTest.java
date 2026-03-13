@@ -32,7 +32,7 @@ class UndoCompressionPerformanceBenchmarkTest {
     private MiniTransaction mtr;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         undoLogManager = mock(UndoLogManager.class);
         purgeCoordinator = mock(PurgeCoordinator.class);
         compressionManager = new UndoCompressionManager(undoLogManager, purgeCoordinator);

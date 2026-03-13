@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static cn.zhangyis.minidb.testutil.TransactionTestSupport.forceCommitTime;
 
 /**
  * TransactionManager 单元测试
@@ -567,12 +568,12 @@ class TransactionManagerTest {
             assertTrue(trx.isActive());
 
             // ACTIVE -> COMMIT_PENDING
-            trx.setState(TransactionState.COMMIT_PENDING);
+            assertTrue(trx.compareAndSetState(TransactionState.ACTIVE, TransactionState.COMMIT_PENDING));
             assertEquals(TransactionState.COMMIT_PENDING, trx.getState());
             assertFalse(trx.isActive());
 
             // COMMIT_PENDING -> COMMITTED
-            trx.setState(TransactionState.COMMITTED);
+            assertTrue(trx.compareAndSetState(TransactionState.COMMIT_PENDING, TransactionState.COMMITTED));
             assertEquals(TransactionState.COMMITTED, trx.getState());
         }
 
@@ -586,7 +587,7 @@ class TransactionManagerTest {
 
             Thread.sleep(10);
 
-            trx.setCommitTime(System.currentTimeMillis());
+            forceCommitTime(trx, System.currentTimeMillis());
             assertTrue(trx.getCommitTime() > trx.getStartTime());
             assertTrue(trx.getDuration() >= 10);
         }
