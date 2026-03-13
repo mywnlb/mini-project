@@ -14,11 +14,17 @@ import java.util.Map;
  */
 public class InsertExec implements ExecNode {
     private final RelInsert relInsert;
+    private final DataSourceSpi dataSource;
     private int affectedRows;
     private boolean returned;
 
     public InsertExec(RelInsert relInsert) {
+        this(relInsert, MockDataSourceAdapter.INSTANCE);
+    }
+
+    public InsertExec(RelInsert relInsert, DataSourceSpi dataSource) {
         this.relInsert = relInsert;
+        this.dataSource = dataSource;
     }
 
     @Override
@@ -48,7 +54,7 @@ public class InsertExec implements ExecNode {
                 Object value = resolveValue(rowList.get(i));
                 map.put(qualifiedName, value);
             }
-            MockDataSource.insertRow(tableName, new Row(map));
+            dataSource.insertRow(tableName, new Row(map));
             affectedRows++;
         }
         returned = false;

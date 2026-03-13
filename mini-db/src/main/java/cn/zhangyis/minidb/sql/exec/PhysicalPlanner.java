@@ -17,13 +17,23 @@ public class PhysicalPlanner {
     }
 
     private final CostOptimizer costOptimizer;
+    private final DataSourceSpi dataSource;
 
     public PhysicalPlanner() {
-        this.costOptimizer = new CostOptimizer();
+        this(new CostOptimizer(), MockDataSourceAdapter.INSTANCE);
     }
 
     public PhysicalPlanner(CostOptimizer costOptimizer) {
+        this(costOptimizer, MockDataSourceAdapter.INSTANCE);
+    }
+
+    public PhysicalPlanner(DataSourceSpi dataSource) {
+        this(new CostOptimizer(), dataSource);
+    }
+
+    public PhysicalPlanner(CostOptimizer costOptimizer, DataSourceSpi dataSource) {
         this.costOptimizer = costOptimizer;
+        this.dataSource = dataSource;
     }
 
     /**
@@ -42,11 +52,11 @@ public class PhysicalPlanner {
 
     private ExecNode planInternal(RelNode relNode, JoinAlgorithm overrideAlgo) {
         if (relNode instanceof RelIndexedScan indexed) {
-            ExecNode scan = new ScanExec(indexed.tableName(), indexed.outputName());
+            ExecNode scan = new ScanExec(indexed.tableName(), indexed.outputName(), dataSource);
             return new FilterExec(scan, indexed.indexCondition());
         }
         if (relNode instanceof RelScan scan) {
-            return new ScanExec(scan.tableName(), scan.outputName());
+            return new ScanExec(scan.tableName(), scan.outputName(), dataSource);
         }
         if (relNode instanceof RelFilter filter) {
             ExecNode input = planInternal(filter.input(), overrideAlgo);
@@ -76,13 +86,13 @@ public class PhysicalPlanner {
             return new SortExec(input, sort.orderBy(), limit);
         }
         if (relNode instanceof RelInsert insert) {
-            return new InsertExec(insert);
+            return new InsertExec(insert, dataSource);
         }
         if (relNode instanceof RelUpdate update) {
-            return new UpdateExec(update);
+            return new UpdateExec(update, dataSource);
         }
         if (relNode instanceof RelDelete delete) {
-            return new DeleteExec(delete);
+            return new DeleteExec(delete, dataSource);
         }
         if (relNode instanceof RelCreateTable create) {
             return new CreateTableExec(create);

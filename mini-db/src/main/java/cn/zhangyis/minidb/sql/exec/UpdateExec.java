@@ -12,11 +12,17 @@ import java.util.Map;
  */
 public class UpdateExec implements ExecNode {
     private final RelUpdate relUpdate;
+    private final DataSourceSpi dataSource;
     private int affectedRows;
     private boolean returned;
 
     public UpdateExec(RelUpdate relUpdate) {
+        this(relUpdate, MockDataSourceAdapter.INSTANCE);
+    }
+
+    public UpdateExec(RelUpdate relUpdate, DataSourceSpi dataSource) {
         this.relUpdate = relUpdate;
+        this.dataSource = dataSource;
     }
 
     @Override
@@ -25,7 +31,7 @@ public class UpdateExec implements ExecNode {
         String tableName = extractTableName(relUpdate.input());
         SqlNode whereCondition = extractCondition(relUpdate.input());
 
-        affectedRows = MockDataSource.updateRows(tableName,
+        affectedRows = dataSource.updateRows(tableName,
             row -> whereCondition == null || FilterExec.evaluate(whereCondition, row),
             row -> {
                 for (SqlNode node : relUpdate.assignments().nodes()) {

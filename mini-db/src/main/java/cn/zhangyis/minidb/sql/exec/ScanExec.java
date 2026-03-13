@@ -1,5 +1,6 @@
 package cn.zhangyis.minidb.sql.exec;
 
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -12,20 +13,31 @@ import java.util.stream.Collectors;
 public class ScanExec implements ExecNode {
     private final String tableName;
     private final String outputName;
+    private final DataSourceSpi dataSource;
     private Iterator<Row> iterator;
 
     public ScanExec(String tableName) {
-        this(tableName, tableName);
+        this(tableName, tableName, MockDataSourceAdapter.INSTANCE);
     }
 
     public ScanExec(String tableName, String outputName) {
+        this(tableName, outputName, MockDataSourceAdapter.INSTANCE);
+    }
+
+    public ScanExec(String tableName, String outputName, DataSourceSpi dataSource) {
         this.tableName = tableName;
         this.outputName = outputName;
+        this.dataSource = dataSource;
     }
 
     @Override
     public void open() {
-        List<Row> data = MockDataSource.getTableData(tableName);
+        List<Row> data = new ArrayList<>();
+        Iterator<Row> srcIter = dataSource.scan(tableName);
+        while (srcIter.hasNext()) {
+            data.add(srcIter.next());
+        }
+
         if (outputName.equalsIgnoreCase(tableName)) {
             iterator = data.iterator();
             return;

@@ -12,11 +12,17 @@ import java.util.Map;
  */
 public class DeleteExec implements ExecNode {
     private final RelDelete relDelete;
+    private final DataSourceSpi dataSource;
     private int affectedRows;
     private boolean returned;
 
     public DeleteExec(RelDelete relDelete) {
+        this(relDelete, MockDataSourceAdapter.INSTANCE);
+    }
+
+    public DeleteExec(RelDelete relDelete, DataSourceSpi dataSource) {
         this.relDelete = relDelete;
+        this.dataSource = dataSource;
     }
 
     @Override
@@ -24,7 +30,7 @@ public class DeleteExec implements ExecNode {
         String tableName = extractTableName(relDelete.input());
         SqlNode whereCondition = extractCondition(relDelete.input());
 
-        affectedRows = MockDataSource.deleteRows(tableName,
+        affectedRows = dataSource.deleteRows(tableName,
             row -> whereCondition == null || FilterExec.evaluate(whereCondition, row)
         );
         returned = false;
