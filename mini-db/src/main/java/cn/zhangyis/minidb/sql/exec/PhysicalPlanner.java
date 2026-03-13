@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.sql.exec;
 
 import cn.zhangyis.minidb.sql.ast.*;
+import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
 import cn.zhangyis.minidb.sql.optimize.cost.CostOptimizer;
 import cn.zhangyis.minidb.sql.rel.*;
 
@@ -18,22 +19,28 @@ public class PhysicalPlanner {
 
     private final CostOptimizer costOptimizer;
     private final DataSourceSpi dataSource;
+    private final CatalogSpi catalog;
 
     public PhysicalPlanner() {
-        this(new CostOptimizer(), MockDataSourceAdapter.INSTANCE);
+        this(new CostOptimizer(), MockDataSourceAdapter.INSTANCE, null);
     }
 
     public PhysicalPlanner(CostOptimizer costOptimizer) {
-        this(costOptimizer, MockDataSourceAdapter.INSTANCE);
+        this(costOptimizer, MockDataSourceAdapter.INSTANCE, null);
     }
 
     public PhysicalPlanner(DataSourceSpi dataSource) {
-        this(new CostOptimizer(), dataSource);
+        this(new CostOptimizer(), dataSource, null);
     }
 
     public PhysicalPlanner(CostOptimizer costOptimizer, DataSourceSpi dataSource) {
+        this(costOptimizer, dataSource, null);
+    }
+
+    public PhysicalPlanner(CostOptimizer costOptimizer, DataSourceSpi dataSource, CatalogSpi catalog) {
         this.costOptimizer = costOptimizer;
         this.dataSource = dataSource;
+        this.catalog = catalog;
     }
 
     /**
@@ -89,7 +96,7 @@ public class PhysicalPlanner {
             return new InsertExec(insert, dataSource);
         }
         if (relNode instanceof RelUpdate update) {
-            return new UpdateExec(update, dataSource);
+            return new UpdateExec(update, dataSource, catalog);
         }
         if (relNode instanceof RelDelete delete) {
             return new DeleteExec(delete, dataSource);

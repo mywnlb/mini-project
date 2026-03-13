@@ -4,6 +4,7 @@ import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.catalog.ColumnMeta;
 import cn.zhangyis.minidb.sql.catalog.TableMeta;
 import cn.zhangyis.minidb.sql.rel.RelInsert;
+import cn.zhangyis.minidb.sql.types.TypeCoercion;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,15 +45,25 @@ public class InsertExec implements ExecNode {
                 .toList();
         }
 
+        // 构建列类型映射
+        List<ColumnMeta> allColumns = meta.columns();
+
         // 逐行插入
         affectedRows = 0;
         for (SqlNode rowNode : relInsert.valueRows().nodes()) {
             SqlNodeList rowList = (SqlNodeList) rowNode;
             Map<String, Object> map = new LinkedHashMap<>();
             for (int i = 0; i < colNames.size(); i++) {
-                String qualifiedName = tableName + "." + colNames.get(i);
-                Object value = resolveValue(rowList.get(i));
-                map.put(qualifiedName, value);
+                String colName = colNames.get(i);
+                String qualifiedName = tableName + "." + colName;
+                Object rawValue = resolveValue(rowList.get(i));
+
+                // 查找列类型并做类型校验和转换
+                ColumnMeta colMeta = findColumn(allColumns, colName);
+                if (colMeta != null) {
+                    rawValue = TypeCoercion.coerce(rawValue, colMeta.type(), colName);
+                }
+                map.put(qualifiedName, rawValue);
             }
             dataSource.insertRow(tableName, new Row(map));
             affectedRows++;
@@ -81,5 +92,12 @@ public class InsertExec implements ExecNode {
             };
         }
         return null;
+    }
+
+    private ColumnMeta findColumn(List<ColumnMeta> columns, String name) {
+        return columns.stream()
+            .filter(c -> c.name().equalsIgnoreCase(name))
+            .findFirst()
+            .orElse(null);
     }
 }
