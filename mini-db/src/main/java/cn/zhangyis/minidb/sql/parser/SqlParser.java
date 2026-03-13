@@ -116,7 +116,14 @@ public class SqlParser {
     private SqlNodeList parseOrderByList() {
         SqlNodeList orderBy = factory.nodeList();
         do {
-            orderBy.add(parsePrimary());
+            SqlNode column = parsePrimary();
+            boolean ascending = true;
+            if (tokens.match(TokenType.DESC)) {
+                ascending = false;
+            } else {
+                tokens.match(TokenType.ASC); // 可选，默认 ASC
+            }
+            orderBy.add(new SqlOrderByItem(column, ascending));
         } while (tokens.match(TokenType.COMMA));
         return orderBy;
     }

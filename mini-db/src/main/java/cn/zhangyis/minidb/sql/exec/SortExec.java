@@ -89,10 +89,20 @@ public class SortExec implements ExecNode {
 
         return (a, b) -> {
             for (SqlNode node : orderBy.nodes()) {
-                if (node instanceof SqlIdentifier id) {
-                    int cmp = FilterExec.compareValues(a.get(id.name()), b.get(id.name()));
-                    if (cmp != 0) return cmp;
+                String colName;
+                boolean ascending = true;
+
+                if (node instanceof SqlOrderByItem item) {
+                    colName = ((SqlIdentifier) item.column()).name();
+                    ascending = item.ascending();
+                } else if (node instanceof SqlIdentifier id) {
+                    colName = id.name();
+                } else {
+                    continue;
                 }
+
+                int cmp = FilterExec.compareValues(a.get(colName), b.get(colName));
+                if (cmp != 0) return ascending ? cmp : -cmp;
             }
             return 0;
         };
