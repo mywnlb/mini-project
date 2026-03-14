@@ -8,7 +8,9 @@ import cn.zhangyis.minidb.sql.validation.ValidatedDml;
 import cn.zhangyis.minidb.sql.validation.ValidatedSqlSelect;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 public class SqlToRelConverter {
     private final RelFactories factories;
@@ -66,11 +68,16 @@ public class SqlToRelConverter {
             plan = factories.filter(plan, select.where());
         }
 
-        if (select.groupBy() != null) {
-            List<SqlAggCall> aggCalls = extractAggCalls(select);
+        boolean needsAggregate = select.groupBy() != null
+                || select.having() != null
+                || containsAggCall(select.projection());
+
+        if (needsAggregate) {
+            List<SqlAggCall> aggCalls = collectAllAggCalls(select);
             plan = new RelAggregate(plan, select.groupBy(), aggCalls);
             if (select.having() != null) {
-                plan = factories.filter(plan, select.having());
+                SqlNode rewrittenHaving = rewriteAggCallsToSlotRefs(select.having());
+                plan = factories.filter(plan, rewrittenHaving);
             }
         }
 
@@ -86,14 +93,86 @@ public class SqlToRelConverter {
         return plan;
     }
 
-    private List<SqlAggCall> extractAggCalls(SqlSelect select) {
+    /**
+     * 收集 SELECT projection 和 HAVING 中的所有 SqlAggCall，去重。
+     */
+    private List<SqlAggCall> collectAllAggCalls(SqlSelect select) {
+        Set<String> seen = new LinkedHashSet<>();
         List<SqlAggCall> aggCalls = new ArrayList<>();
+
+        // 从 SELECT projection 收集
         for (SqlNode node : select.projection().nodes()) {
-            if (unwrapAlias(node) instanceof SqlAggCall agg) {
+            collectAggCallsFromTree(unwrapAlias(node), seen, aggCalls);
+        }
+
+        // 从 HAVING 收集
+        if (select.having() != null) {
+            collectAggCallsFromTree(select.having(), seen, aggCalls);
+        }
+
+        return aggCalls;
+    }
+
+    /**
+     * 递归遍历表达式树，收集所有 SqlAggCall。
+     */
+    private void collectAggCallsFromTree(SqlNode node, Set<String> seen, List<SqlAggCall> aggCalls) {
+        if (node instanceof SqlAggCall agg) {
+            String key = aggSlotKey(agg);
+            if (seen.add(key)) {
                 aggCalls.add(agg);
             }
+            return;
         }
-        return aggCalls;
+        if (node instanceof SqlBinaryOp binOp) {
+            collectAggCallsFromTree(binOp.left(), seen, aggCalls);
+            collectAggCallsFromTree(binOp.right(), seen, aggCalls);
+        }
+    }
+
+    /**
+     * 检查 projection 中是否包含聚合函数调用。
+     */
+    private boolean containsAggCall(SqlNodeList projection) {
+        for (SqlNode node : projection.nodes()) {
+            if (treeContainsAggCall(unwrapAlias(node))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean treeContainsAggCall(SqlNode node) {
+        if (node instanceof SqlAggCall) return true;
+        if (node instanceof SqlBinaryOp binOp) {
+            return treeContainsAggCall(binOp.left()) || treeContainsAggCall(binOp.right());
+        }
+        return false;
+    }
+
+    /**
+     * 将 HAVING 条件中的 SqlAggCall 替换为 SqlIdentifier，
+     * 引用 AggregateExec 输出 Row 中的聚合槽位 key。
+     */
+    private SqlNode rewriteAggCallsToSlotRefs(SqlNode node) {
+        if (node instanceof SqlAggCall agg) {
+            return new SqlIdentifier(aggSlotKey(agg));
+        }
+        if (node instanceof SqlBinaryOp binOp) {
+            SqlNode newLeft = rewriteAggCallsToSlotRefs(binOp.left());
+            SqlNode newRight = rewriteAggCallsToSlotRefs(binOp.right());
+            if (newLeft != binOp.left() || newRight != binOp.right()) {
+                return new SqlBinaryOp(binOp.opKind(), newLeft, newRight);
+            }
+        }
+        return node;
+    }
+
+    /**
+     * 聚合槽位 key，与 AggregateExec / ProjectExec 中的 key 格式一致。
+     */
+    private String aggSlotKey(SqlAggCall agg) {
+        return agg.funcName() + "(" + agg.arg() + ")";
     }
 
     private SqlTableRef asTableRef(SqlNode node) {
