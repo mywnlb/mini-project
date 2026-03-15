@@ -110,6 +110,10 @@ public class SqlLexer {
         // 数字
         if (Character.isDigit(c)) {
             while (pos < sql.length() && Character.isDigit(sql.charAt(pos))) pos++;
+            if (pos < sql.length() && sql.charAt(pos) == '.') {
+                pos++;
+                while (pos < sql.length() && Character.isDigit(sql.charAt(pos))) pos++;
+            }
             return new Token(TokenType.NUMBER, sql.substring(start, pos), start, pos);
         }
 

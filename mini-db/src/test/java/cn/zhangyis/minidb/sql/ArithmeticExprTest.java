@@ -51,6 +51,14 @@ class ArithmeticExprTest {
         assertEquals(SqlKind.ADD, add.kind());
     }
 
+    @Test
+    void parseBigintLiteral() {
+        SqlSelect select = (SqlSelect) parse("SELECT * FROM users WHERE id = 2147483648");
+        SqlBinaryOp where = assertInstanceOf(SqlBinaryOp.class, select.where());
+        SqlLiteral literal = assertInstanceOf(SqlLiteral.class, where.right());
+        assertEquals(cn.zhangyis.minidb.sql.types.SqlType.BIGINT, literal.type());
+    }
+
     // ==================== 执行：算术 WHERE ====================
 
     @Test
@@ -99,6 +107,12 @@ class ArithmeticExprTest {
         List<Row> rows = execute("SELECT * FROM users WHERE id + 1 = 3 - 0");
         assertEquals(1, rows.size());
         assertEquals(2, rows.get(0).get("id"));
+    }
+
+    @Test
+    void decimalLiteralWorksInPredicate() {
+        List<Row> rows = execute("SELECT * FROM orders WHERE amount > 79.5");
+        assertEquals(4, rows.size());
     }
 
     private SqlNode parse(String sql) {

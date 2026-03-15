@@ -93,7 +93,6 @@ class JoinCommuteRuleTest {
 
         assertInstanceOf(NestedLoopJoinExec.class, planner.plan(join, PhysicalPlanner.JoinAlgorithm.HASH_JOIN));
         assertInstanceOf(NestedLoopJoinExec.class, planner.plan(join, PhysicalPlanner.JoinAlgorithm.SORT_MERGE));
-        assertInstanceOf(NestedLoopJoinExec.class, planner.plan(join, PhysicalPlanner.JoinAlgorithm.INDEX_NESTED_LOOP));
     }
 
     @Test
@@ -103,11 +102,9 @@ class JoinCommuteRuleTest {
 
         assertEquals(5, executeNormalized(join, PhysicalPlanner.JoinAlgorithm.HASH_JOIN, "u", "v").size());
         assertEquals(5, executeNormalized(join, PhysicalPlanner.JoinAlgorithm.SORT_MERGE, "u", "v").size());
-        assertEquals(5, executeNormalized(join, PhysicalPlanner.JoinAlgorithm.INDEX_NESTED_LOOP, "u", "v").size());
 
         assertTrue(!(planner.plan(join, PhysicalPlanner.JoinAlgorithm.HASH_JOIN) instanceof NestedLoopJoinExec));
         assertTrue(!(planner.plan(join, PhysicalPlanner.JoinAlgorithm.SORT_MERGE) instanceof NestedLoopJoinExec));
-        assertTrue(!(planner.plan(join, PhysicalPlanner.JoinAlgorithm.INDEX_NESTED_LOOP) instanceof NestedLoopJoinExec));
     }
 
     @Test
@@ -206,8 +203,7 @@ class JoinCommuteRuleTest {
     private List<PhysicalPlanner.JoinAlgorithm> equiJoinAlgorithms() {
         return List.of(
             PhysicalPlanner.JoinAlgorithm.HASH_JOIN,
-            PhysicalPlanner.JoinAlgorithm.SORT_MERGE,
-            PhysicalPlanner.JoinAlgorithm.INDEX_NESTED_LOOP
+            PhysicalPlanner.JoinAlgorithm.SORT_MERGE
         );
     }
 

@@ -4,12 +4,27 @@ import cn.zhangyis.minidb.sql.rel.*;
 import java.util.List;
 
 public class RuleOptimizer {
-    private final List<RelOptRule> rules = List.of(
-        FilterProjectTransposeRule.INSTANCE,  // Filter 穿透 Project
-        FilterJoinPushdownRule.INSTANCE,       // Filter 下推到 Join 侧
-        PushFilterIntoScanRule.INSTANCE,       // Filter(Scan) → IndexedScan
-        JoinCommuteRule.INSTANCE               // 小表驱动大表
-    );
+    private final List<RelOptRule> rules;
+
+    public RuleOptimizer() {
+        this(false);
+    }
+
+    public RuleOptimizer(boolean enableIndexedLookup) {
+        this.rules = enableIndexedLookup
+            ? List.of(
+                FilterProjectTransposeRule.INSTANCE,
+                FilterJoinPushdownRule.INSTANCE,
+                new PushFilterIntoScanRule(),
+                JoinCommuteRule.INSTANCE
+            )
+            : List.of(
+                FilterProjectTransposeRule.INSTANCE,
+                FilterJoinPushdownRule.INSTANCE,
+                PushFilterIntoScanRule.INSTANCE,
+                JoinCommuteRule.INSTANCE
+            );
+    }
 
     public RelNode optimize(RelNode root) {
         // 先递归优化子节点，再对当前节点应用规则（bottom-up）

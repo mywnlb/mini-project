@@ -2,18 +2,26 @@ package cn.zhangyis.minidb.sql.exec;
 
 import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
+import cn.zhangyis.minidb.sql.catalog.MockCatalog;
 import cn.zhangyis.minidb.sql.optimize.cost.CostOptimizer;
+import cn.zhangyis.minidb.sql.planner.SqlToRelConverter;
 import cn.zhangyis.minidb.sql.rel.*;
+import cn.zhangyis.minidb.sql.validation.SqlValidator;
+import cn.zhangyis.minidb.sql.validation.ValidatedSqlSelect;
 
 /**
  * 物理计划生成器：RelNode → ExecNode
  * 支持两种模式：
  * 1. 手动指定 JOIN 算法
  * 2. 基于 CBO 自动选择 JOIN 算法（默认）
+ *
+ * <p>默认配置只在真实 capability 存在时启用索引路径；
+ * 手动启用 + 支持 lookup 的 DataSourceSpi 才会生成 INDEX_NESTED_LOOP。</p>
  */
 public class PhysicalPlanner {
 
     private record JoinKeys(String leftKey, String rightKey) {}
+    private record LookupTarget(String tableName, String outputName, String lookupColumn) {}
 
     public enum JoinAlgorithm {
         NESTED_LOOP, HASH_JOIN, SORT_MERGE, INDEX_NESTED_LOOP
@@ -83,16 +91,15 @@ public class PhysicalPlanner {
     }
 
     private ExecNode planInternal(RelNode relNode, JoinAlgorithm overrideAlgo) {
-        if (relNode instanceof RelIndexedScan indexed) {
-            ExecNode scan = new ScanExec(indexed.tableName(), indexed.outputName(), dataSource);
-            return new FilterExec(scan, indexed.indexCondition());
+        if (relNode instanceof RelIndexedScan indexedScan) {
+            return new IndexScanExec(indexedScan, dataSource);
         }
         if (relNode instanceof RelScan scan) {
             return new ScanExec(scan.tableName(), scan.outputName(), dataSource);
         }
         if (relNode instanceof RelFilter filter) {
             ExecNode input = planInternal(filter.input(), overrideAlgo);
-            return new FilterExec(input, filter.condition());
+            return new FilterExec(input, filter.condition(), createSubqueryEvaluator());
         }
         if (relNode instanceof RelProject project) {
             ExecNode input = planInternal(project.input(), overrideAlgo);
@@ -170,12 +177,45 @@ public class PhysicalPlanner {
                 yield new NestedLoopJoinExec(left, right, join.condition());
             }
             case INDEX_NESTED_LOOP -> {
+                ExecNode exec = keys == null ? null : planIndexJoin(join, left, right, keys);
+                if (exec != null) {
+                    yield exec;
+                }
                 if (keys != null) {
-                    yield new IndexNestedLoopJoinExec(left, right, keys.leftKey(), keys.rightKey());
+                    yield new HashJoinExec(left, right, keys.leftKey(), keys.rightKey());
                 }
                 yield new NestedLoopJoinExec(left, right, join.condition());
             }
         };
+    }
+
+    private ExecNode planIndexJoin(RelJoin join, ExecNode leftExec, ExecNode rightExec, JoinKeys keys) {
+        LookupTarget rightLookup = lookupTarget(join.right(), keys.rightKey());
+        if (rightLookup != null) {
+            return new IndexNestedLoopJoinExec(
+                leftExec,
+                keys.leftKey(),
+                rightLookup.tableName(),
+                rightLookup.outputName(),
+                rightLookup.lookupColumn(),
+                dataSource,
+                true
+            );
+        }
+
+        LookupTarget leftLookup = lookupTarget(join.left(), keys.leftKey());
+        if (leftLookup != null) {
+            return new IndexNestedLoopJoinExec(
+                rightExec,
+                keys.rightKey(),
+                leftLookup.tableName(),
+                leftLookup.outputName(),
+                leftLookup.lookupColumn(),
+                dataSource,
+                false
+            );
+        }
+        return null;
     }
 
     private JoinKeys extractJoinKeys(RelJoin join) {
@@ -233,6 +273,9 @@ public class PhysicalPlanner {
         if (node instanceof RelScan scan) {
             return scanOutputsIdentifier(scan, identifier);
         }
+        if (node instanceof RelIndexedScan scan) {
+            return scanOutputsIdentifier(scan, identifier);
+        }
         if (node instanceof RelFilter filter) {
             return identifierBelongsTo(filter.input(), identifier);
         }
@@ -266,5 +309,45 @@ public class PhysicalPlanner {
         }
         return scan.tableMeta().columns().stream()
             .anyMatch(column -> column.name().equalsIgnoreCase(normalized));
+    }
+
+    private LookupTarget lookupTarget(RelNode node, String identifier) {
+        if (!(node instanceof RelScan scan)) {
+            return null;
+        }
+        String lookupColumn = bareColumn(identifier);
+        boolean matchesPrimary = scan.tableMeta().columns().stream()
+            .anyMatch(column -> column.isPrimaryKey() && column.name().equalsIgnoreCase(lookupColumn));
+        if (!matchesPrimary || !dataSource.supportsLookup(scan.tableName(), lookupColumn)) {
+            return null;
+        }
+        return new LookupTarget(scan.tableName(), scan.outputName(), lookupColumn);
+    }
+
+    private String bareColumn(String identifier) {
+        return identifier.contains(".") ? identifier.split("\\.", 2)[1] : identifier;
+    }
+
+    private FilterExec.SubqueryEvaluator createSubqueryEvaluator() {
+        CatalogSpi cat = this.catalog != null ? this.catalog : new MockCatalog();
+        return subquery -> {
+            SqlValidator validator = new SqlValidator(cat);
+            SqlNode validated = validator.validate(subquery.select());
+            SqlToRelConverter converter = new SqlToRelConverter(cat);
+            RelNode rel = converter.convert(validated);
+            ExecNode exec = new PhysicalPlanner(costOptimizer, dataSource, cat).plan(rel);
+            exec.open();
+            try {
+                Row row = exec.next();
+                if (row == null) return null;
+                if (exec.next() != null) {
+                    throw new IllegalStateException("Scalar subquery returned more than one row");
+                }
+                // 返回第一列的值
+                return row.columns().values().iterator().next();
+            } finally {
+                exec.close();
+            }
+        };
     }
 }

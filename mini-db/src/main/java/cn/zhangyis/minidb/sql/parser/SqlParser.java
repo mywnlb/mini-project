@@ -79,13 +79,13 @@ public class SqlParser {
     }
 
     private SqlNode parseFrom() {
-        SqlTableRef left = parseTableRef();
-        if (tokens.current().type() == TokenType.JOIN) {
+        SqlNode left = parseTableRef();
+        while (tokens.current().type() == TokenType.JOIN) {
             tokens.next();
             SqlTableRef right = parseTableRef();
             tokens.expect(TokenType.ON);
             SqlNode condition = parseExpression();
-            return factory.join(left, right, condition);
+            left = factory.join(left, right, condition);
         }
         return left;
     }
@@ -103,7 +103,7 @@ public class SqlParser {
     }
 
     private SqlNode parseSelectItem() {
-        SqlNode item = isAggFunction(tokens.current().type()) ? parseAggCall() : parsePrimary();
+        SqlNode item = parseExpression();
         String alias = parseOptionalAlias();
         return alias != null ? factory.alias(item, alias) : item;
     }
@@ -111,7 +111,7 @@ public class SqlParser {
     private SqlNodeList parseGroupByList() {
         SqlNodeList groupBy = factory.nodeList();
         do {
-            groupBy.add(parsePrimary());
+            groupBy.add(parseExpression());
         } while (tokens.match(TokenType.COMMA));
         return groupBy;
     }
@@ -119,7 +119,7 @@ public class SqlParser {
     private SqlNodeList parseOrderByList() {
         SqlNodeList orderBy = factory.nodeList();
         do {
-            SqlNode column = parsePrimary();
+            SqlNode column = parseExpression();
             boolean ascending = true;
             if (tokens.match(TokenType.DESC)) {
                 ascending = false;
@@ -162,7 +162,7 @@ public class SqlParser {
         tokens.expect(TokenType.LPAREN);
         SqlNodeList row = factory.nodeList();
         do {
-            row.add(parsePrimary());
+            row.add(parseExpression());
         } while (tokens.match(TokenType.COMMA));
         tokens.expect(TokenType.RPAREN);
         return row;
@@ -179,7 +179,7 @@ public class SqlParser {
         do {
             SqlIdentifier col = parseIdentifier();
             tokens.expect(TokenType.EQ);
-            SqlNode value = parsePrimary();
+            SqlNode value = parseExpression();
             assignments.add(new SqlAssignment(col, value));
         } while (tokens.match(TokenType.COMMA));
 
@@ -263,6 +263,7 @@ public class SqlParser {
         tokens.expect(TokenType.IDENTIFIER);
         return switch (typeName.toUpperCase()) {
             case "INT", "INTEGER" -> SqlType.INT32;
+            case "BIGINT", "LONG" -> SqlType.BIGINT;
             case "VARCHAR", "TEXT", "STRING" -> SqlType.VARCHAR;
             case "DECIMAL", "DOUBLE", "FLOAT" -> SqlType.DECIMAL;
             case "DATETIME", "TIMESTAMP" -> SqlType.DATETIME;
@@ -432,10 +433,15 @@ public class SqlParser {
             return negated ? factory.binary(SqlKind.NOT_BETWEEN, left, between) : between;
         }
 
-        // IN (v1, v2, ...)
+        // IN (v1, v2, ...) 或 IN (SELECT ...)
         if (t == TokenType.IN) {
             tokens.next();
             tokens.expect(TokenType.LPAREN);
+            if (tokens.current().type() == TokenType.SELECT) {
+                SqlSelect sub = parseSelect();
+                tokens.expect(TokenType.RPAREN);
+                return new SqlInSubquery(left, sub, negated);
+            }
             SqlNodeList values = factory.nodeList();
             do {
                 values.add(parseAddSub());
@@ -523,6 +529,23 @@ public class SqlParser {
             tokens.next();
             return factory.nullLiteral();
         }
+        // NOT EXISTS (SELECT ...)
+        if (token.type() == TokenType.NOT && tokens.peek().type() == TokenType.EXISTS) {
+            tokens.next(); // consume NOT
+            tokens.next(); // consume EXISTS
+            tokens.expect(TokenType.LPAREN);
+            SqlSelect sub = parseSelect();
+            tokens.expect(TokenType.RPAREN);
+            return new SqlExists(sub, true);
+        }
+        // EXISTS (SELECT ...)
+        if (token.type() == TokenType.EXISTS) {
+            tokens.next(); // consume EXISTS
+            tokens.expect(TokenType.LPAREN);
+            SqlSelect sub = parseSelect();
+            tokens.expect(TokenType.RPAREN);
+            return new SqlExists(sub, false);
+        }
         if (token.type() == TokenType.NUMBER) {
             tokens.next();
             return factory.number(token.value());
@@ -532,6 +555,12 @@ public class SqlParser {
             return factory.string(token.value());
         }
         if (token.type() == TokenType.LPAREN) {
+            if (tokens.peek().type() == TokenType.SELECT) {
+                tokens.next(); // consume '('
+                SqlSelect sub = parseSelect();
+                tokens.expect(TokenType.RPAREN);
+                return new SqlSubquery(sub);
+            }
             tokens.next();
             SqlNode expr = parseExpression();
             tokens.expect(TokenType.RPAREN);

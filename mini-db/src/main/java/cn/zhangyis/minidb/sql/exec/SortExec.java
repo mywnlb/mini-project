@@ -89,23 +89,29 @@ public class SortExec implements ExecNode {
 
         return (a, b) -> {
             for (SqlNode node : orderBy.nodes()) {
-                String colName;
+                SqlNode expression;
                 boolean ascending = true;
 
                 if (node instanceof SqlOrderByItem item) {
-                    colName = ((SqlIdentifier) item.column()).name();
+                    expression = item.column();
                     ascending = item.ascending();
-                } else if (node instanceof SqlIdentifier id) {
-                    colName = id.name();
                 } else {
-                    continue;
+                    expression = node;
                 }
 
-                int cmp = FilterExec.compareValues(a.get(colName), b.get(colName));
+                int cmp = FilterExec.compareValues(resolveOrderValue(a, expression), resolveOrderValue(b, expression));
                 if (cmp != 0) return ascending ? cmp : -cmp;
             }
             return 0;
         };
+    }
+
+    private Object resolveOrderValue(Row row, SqlNode expression) {
+        if (expression instanceof SqlIdentifier id) {
+            return row.get(id.name());
+        }
+        Object value = FilterExec.resolveValue(expression, row);
+        return value != null ? value : row.get(String.valueOf(expression));
     }
 
     @Override

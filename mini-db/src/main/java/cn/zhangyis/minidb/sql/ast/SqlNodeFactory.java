@@ -43,7 +43,15 @@ public class SqlNodeFactory {
     }
 
     public SqlLiteral number(String value) {
-        return new SqlLiteral(value, SqlType.INT32);
+        if (value.contains(".")) {
+            return new SqlLiteral(value, SqlType.DECIMAL);
+        }
+        try {
+            Integer.parseInt(value);
+            return new SqlLiteral(value, SqlType.INT32);
+        } catch (NumberFormatException ignored) {
+            return new SqlLiteral(value, SqlType.BIGINT);
+        }
     }
 
     public SqlLiteral string(String value) {

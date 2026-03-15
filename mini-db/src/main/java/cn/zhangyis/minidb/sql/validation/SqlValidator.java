@@ -4,8 +4,10 @@ import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
 import cn.zhangyis.minidb.sql.catalog.TableMeta;
 
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class SqlValidator {
@@ -30,36 +32,30 @@ public class SqlValidator {
         };
     }
 
-    // ==================== SELECT ====================
-
     private ValidatedSqlSelect validateSelect(SqlSelect select) {
-        if (select.from() instanceof SqlJoin join) {
-            return validateJoin(select, join);
-        }
-
-        SqlTableRef tableRef = asTableRef(select.from());
-        TableMeta table = resolveTable(tableRef.tableName());
-        List<TableScope> tables = List.of(new TableScope(tableRef.visibleName(), table));
-
-        validateCommon(select, tables);
-        return new ValidatedSqlSelect(select, table);
+        Map<String, TableMeta> tables = new LinkedHashMap<>();
+        validateFrom(select.from(), tables);
+        List<TableScope> scopes = tableScopes(tables);
+        validateCommon(select, scopes);
+        return new ValidatedSqlSelect(select, tables);
     }
 
-    private ValidatedSqlSelect validateJoin(SqlSelect select, SqlJoin join) {
-        SqlTableRef leftRef = asTableRef(join.left());
-        SqlTableRef rightRef = asTableRef(join.right());
-        TableMeta leftTable = resolveTable(leftRef.tableName());
-        TableMeta rightTable = resolveTable(rightRef.tableName());
-
-        List<TableScope> tables = List.of(
-            new TableScope(leftRef.visibleName(), leftTable),
-            new TableScope(rightRef.visibleName(), rightTable)
-        );
-        if (join.condition() != null) {
-            validateCondition(join.condition(), tables);
+    private void validateFrom(SqlNode from, Map<String, TableMeta> tables) {
+        if (from instanceof SqlJoin join) {
+            validateFrom(join.left(), tables);
+            validateFrom(join.right(), tables);
+            if (join.condition() != null) {
+                validateCondition(join.condition(), tableScopes(tables));
+            }
+            return;
         }
-        validateCommon(select, tables);
-        return new ValidatedSqlSelect(select, leftTable, rightTable);
+
+        SqlTableRef ref = asTableRef(from);
+        String visibleName = ref.visibleName().toUpperCase();
+        if (tables.containsKey(visibleName)) {
+            throw new ValidationException("Duplicate table alias '" + ref.visibleName() + "'");
+        }
+        tables.put(visibleName, resolveTable(ref.tableName()));
     }
 
     private void validateCommon(SqlSelect select, List<TableScope> tables) {
@@ -71,50 +67,45 @@ public class SqlValidator {
         if (select.orderBy() != null) validateOrderBy(select.orderBy(), tables, projectionAliases);
     }
 
-    // ==================== INSERT ====================
-
     private ValidatedDml validateInsert(SqlInsert insert) {
         TableMeta table = resolveTable(insert.table().name());
         List<TableScope> tables = List.of(new TableScope(table.name(), table));
 
-        // 校验列名
         if (insert.columns().size() > 0) {
             for (SqlNode col : insert.columns().nodes()) {
-                if (col instanceof SqlIdentifier id) {
-                    if (!columnExists(id.name(), tables)) {
-                        throw new ValidationException("Column '" + id.name() + "' not found in table '" + table.name() + "'");
-                    }
+                if (col instanceof SqlIdentifier id && !columnExists(id.name(), tables)) {
+                    throw new ValidationException(
+                        "Column '" + id.name() + "' not found in table '" + table.name() + "'");
                 }
             }
         }
 
-        // 校验每行值的数量
         int expectedCols = insert.columns().size() > 0 ? insert.columns().size() : table.columns().size();
         for (SqlNode row : insert.valueRows().nodes()) {
-            if (row instanceof SqlNodeList rowList) {
-                if (rowList.size() != expectedCols) {
-                    throw new ValidationException("VALUES row has " + rowList.size()
-                        + " values, expected " + expectedCols);
-                }
+            SqlNodeList rowList = (SqlNodeList) row;
+            if (rowList.size() != expectedCols) {
+                throw new ValidationException("VALUES row has " + rowList.size()
+                    + " values, expected " + expectedCols);
+            }
+            for (SqlNode value : rowList.nodes()) {
+                validateExpression(value, tables);
             }
         }
 
         return new ValidatedDml(insert, table);
     }
 
-    // ==================== UPDATE ====================
-
     private ValidatedDml validateUpdate(SqlUpdate update) {
         TableMeta table = resolveTable(update.table().name());
         List<TableScope> tables = List.of(new TableScope(table.name(), table));
 
-        // 校验 SET 子句中的列名
         for (SqlNode node : update.assignments().nodes()) {
-            if (node instanceof SqlAssignment assign) {
-                if (!columnExists(assign.column().name(), tables)) {
-                    throw new ValidationException("Column '" + assign.column().name() + "' not found in table '" + table.name() + "'");
-                }
+            SqlAssignment assign = (SqlAssignment) node;
+            if (!columnExists(assign.column().name(), tables)) {
+                throw new ValidationException(
+                    "Column '" + assign.column().name() + "' not found in table '" + table.name() + "'");
             }
+            validateExpression(assign.value(), tables);
         }
 
         if (update.where() != null) {
@@ -123,8 +114,6 @@ public class SqlValidator {
 
         return new ValidatedDml(update, table);
     }
-
-    // ==================== DELETE ====================
 
     private ValidatedDml validateDelete(SqlDelete delete) {
         TableMeta table = resolveTable(delete.table().name());
@@ -137,8 +126,6 @@ public class SqlValidator {
         return new ValidatedDml(delete, table);
     }
 
-    // ==================== CREATE TABLE ====================
-
     private SqlCreateTable validateCreateTable(SqlCreateTable create) {
         String tableName = create.table().name();
         if (!create.ifNotExists() && catalog.tableExists(tableName)) {
@@ -150,8 +137,6 @@ public class SqlValidator {
         return create;
     }
 
-    // ==================== DROP TABLE ====================
-
     private SqlDropTable validateDropTable(SqlDropTable drop) {
         String tableName = drop.table().name();
         if (!drop.ifExists() && !catalog.tableExists(tableName)) {
@@ -159,8 +144,6 @@ public class SqlValidator {
         }
         return drop;
     }
-
-    // ==================== ALTER TABLE ====================
 
     private SqlAlterTable validateAlterTable(SqlAlterTable alter) {
         String tableName = alter.table().name();
@@ -171,12 +154,11 @@ public class SqlValidator {
         boolean exists = table.columns().stream()
             .anyMatch(c -> c.name().equalsIgnoreCase(alter.columnName()));
         if (exists) {
-            throw new ValidationException("Column '" + alter.columnName() + "' already exists in table '" + tableName + "'");
+            throw new ValidationException(
+                "Column '" + alter.columnName() + "' already exists in table '" + tableName + "'");
         }
         return alter;
     }
-
-    // ==================== CREATE INDEX ====================
 
     private SqlCreateIndex validateCreateIndex(SqlCreateIndex createIdx) {
         String tableName = createIdx.table().name();
@@ -193,8 +175,6 @@ public class SqlValidator {
         return createIdx;
     }
 
-    // ==================== DROP INDEX ====================
-
     private SqlDropIndex validateDropIndex(SqlDropIndex dropIdx) {
         String tableName = dropIdx.table().name();
         if (!catalog.tableExists(tableName)) {
@@ -202,8 +182,6 @@ public class SqlValidator {
         }
         return dropIdx;
     }
-
-    // ==================== 通用校验 ====================
 
     private TableMeta resolveTable(String name) {
         TableMeta table = catalog.getTable(name);
@@ -217,91 +195,147 @@ public class SqlValidator {
         for (SqlNode node : projection.nodes()) {
             SqlNode expression = unwrapAlias(node);
             if (expression.kind() == SqlKind.STAR) continue;
-            if (expression instanceof SqlAggCall agg) {
-                validateAggCall(agg, tables);
-            } else if (expression instanceof SqlIdentifier id) {
-                if (!columnExists(id.name(), tables)) {
-                    throw new ValidationException("Column '" + id.name() + "' not found");
-                }
-            }
+            validateExpression(expression, tables);
         }
     }
 
     private void validateAggCall(SqlAggCall agg, List<TableScope> tables) {
         if (agg.arg().kind() == SqlKind.STAR) return;
-        if (agg.arg() instanceof SqlIdentifier id) {
-            if (!columnExists(id.name(), tables)) {
-                throw new ValidationException("Column '" + id.name() + "' in " + agg.funcName() + "() not found");
-            }
-        }
+        validateExpression(agg.arg(), tables);
     }
 
     private void validateGroupBy(SqlSelect select, List<TableScope> tables) {
+        Set<String> groupSignatures = new LinkedHashSet<>();
         for (SqlNode node : select.groupBy().nodes()) {
-            if (node instanceof SqlIdentifier id) {
-                if (!columnExists(id.name(), tables)) {
-                    throw new ValidationException("GROUP BY column '" + id.name() + "' not found");
-                }
-            }
+            validateExpression(node, tables);
+            groupSignatures.add(expressionSignature(node));
         }
+
         for (SqlNode node : select.projection().nodes()) {
             SqlNode expression = unwrapAlias(node);
             if (expression.kind() == SqlKind.STAR) {
                 throw new ValidationException("SELECT * not allowed with GROUP BY");
             }
-            if (expression instanceof SqlIdentifier id) {
-                if (!inGroupBy(id.name(), select.groupBy())) {
-                    throw new ValidationException(
-                        "Column '" + id.name() + "' must appear in GROUP BY or be in an aggregate function");
-                }
+            if (isLiteral(expression) || containsAggCall(expression)) {
+                continue;
+            }
+            if (!groupSignatures.contains(expressionSignature(expression))) {
+                throw new ValidationException(
+                    "Expression '" + expression + "' must appear in GROUP BY or be aggregated");
             }
         }
     }
 
     private void validateOrderBy(SqlNodeList orderBy, List<TableScope> tables, Set<String> projectionAliases) {
         for (SqlNode node : orderBy.nodes()) {
-            SqlNode expression = unwrapAlias(node);
-            if (expression instanceof SqlIdentifier id) {
-                if (projectionAliases.contains(id.name().toUpperCase())) {
-                    continue;
-                }
-                if (!columnExists(id.name(), tables)) {
-                    throw new ValidationException("ORDER BY column '" + id.name() + "' not found");
-                }
+            SqlNode expression = orderByExpression(node);
+            if (expression instanceof SqlIdentifier id
+                && projectionAliases.contains(id.name().toUpperCase())) {
+                continue;
             }
+            validateExpression(expression, tables);
         }
-    }
-
-    private boolean inGroupBy(String colName, SqlNodeList groupBy) {
-        return groupBy.nodes().stream()
-            .filter(n -> n instanceof SqlIdentifier)
-            .map(n -> ((SqlIdentifier) n).name())
-            .anyMatch(name -> name.equalsIgnoreCase(colName));
     }
 
     private void validateCondition(SqlNode condition, List<TableScope> tables) {
-        if (condition instanceof SqlBinaryOp binOp) {
-            SqlKind kind = binOp.kind();
-            if (kind == SqlKind.AND || kind == SqlKind.OR) {
-                validateCondition(binOp.left(), tables);
-                validateCondition(binOp.right(), tables);
-            } else {
-                validateColumnRef(binOp.left(), tables);
-                validateColumnRef(binOp.right(), tables);
-            }
-        }
+        validateExpression(condition, tables);
     }
 
-    private void validateColumnRef(SqlNode node, List<TableScope> tables) {
+    private void validateExpression(SqlNode node, List<TableScope> tables) {
         SqlNode expression = unwrapAlias(node);
+        if (expression == null || expression.kind() == SqlKind.NULL_LITERAL
+            || expression.kind() == SqlKind.STAR || expression instanceof SqlLiteral) {
+            return;
+        }
         if (expression instanceof SqlIdentifier id) {
             if (!columnExists(id.name(), tables)) {
                 throw new ValidationException("Column '" + id.name() + "' not found");
             }
+            return;
         }
         if (expression instanceof SqlAggCall agg) {
             validateAggCall(agg, tables);
+            return;
         }
+        if (expression instanceof SqlOrderByItem item) {
+            validateExpression(item.column(), tables);
+            return;
+        }
+        if (expression instanceof SqlBinaryOp binOp) {
+            validateExpression(binOp.left(), tables);
+            validateExpression(binOp.right(), tables);
+            return;
+        }
+        if (expression instanceof SqlBetween between) {
+            validateExpression(between.expr(), tables);
+            validateExpression(between.low(), tables);
+            validateExpression(between.high(), tables);
+            return;
+        }
+        if (expression instanceof SqlInList inList) {
+            validateExpression(inList.expr(), tables);
+            for (SqlNode value : inList.values().nodes()) {
+                validateExpression(value, tables);
+            }
+            return;
+        }
+        if (expression instanceof SqlSubquery subquery) {
+            ValidatedSqlSelect validated = validateSelect(subquery.select());
+            // 标量子查询必须只有一列
+            SqlNodeList proj = subquery.select().projection();
+            if (proj.size() != 1 || proj.get(0).kind() == SqlKind.STAR) {
+                throw new ValidationException(
+                    "Scalar subquery must return exactly one column");
+            }
+            return;
+        }
+        if (expression instanceof SqlExists exists) {
+            validateSelect(exists.select());
+            return;
+        }
+        if (expression instanceof SqlInSubquery inSub) {
+            validateExpression(inSub.expr(), tables);
+            validateSelect(inSub.select());
+            // IN 子查询必须返回单列
+            SqlNodeList proj = inSub.select().projection();
+            if (proj.size() != 1 || proj.get(0).kind() == SqlKind.STAR) {
+                throw new ValidationException(
+                    "IN subquery must return exactly one column");
+            }
+            return;
+        }
+    }
+
+    private boolean containsAggCall(SqlNode node) {
+        SqlNode expression = unwrapAlias(node);
+        if (expression instanceof SqlSubquery) return false; // 子查询内部的 agg 不属于外层
+        if (expression instanceof SqlAggCall) {
+            return true;
+        }
+        if (expression instanceof SqlBinaryOp binOp) {
+            return containsAggCall(binOp.left()) || containsAggCall(binOp.right());
+        }
+        if (expression instanceof SqlBetween between) {
+            return containsAggCall(between.expr())
+                || containsAggCall(between.low())
+                || containsAggCall(between.high());
+        }
+        if (expression instanceof SqlInList inList) {
+            if (containsAggCall(inList.expr())) {
+                return true;
+            }
+            for (SqlNode value : inList.values().nodes()) {
+                if (containsAggCall(value)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean isLiteral(SqlNode node) {
+        SqlNode expression = unwrapAlias(node);
+        return expression instanceof SqlLiteral || expression.kind() == SqlKind.NULL_LITERAL;
     }
 
     private boolean columnExists(String colName, List<TableScope> tables) {
@@ -327,6 +361,12 @@ public class SqlValidator {
         return aliases;
     }
 
+    private List<TableScope> tableScopes(Map<String, TableMeta> tables) {
+        return tables.entrySet().stream()
+            .map(entry -> new TableScope(entry.getKey(), entry.getValue()))
+            .toList();
+    }
+
     private SqlTableRef asTableRef(SqlNode node) {
         if (node instanceof SqlTableRef ref) {
             return ref;
@@ -339,6 +379,17 @@ public class SqlValidator {
 
     private SqlNode unwrapAlias(SqlNode node) {
         return node instanceof SqlAlias alias ? alias.expression() : node;
+    }
+
+    private SqlNode orderByExpression(SqlNode node) {
+        if (node instanceof SqlOrderByItem item) {
+            return item.column();
+        }
+        return unwrapAlias(node);
+    }
+
+    private String expressionSignature(SqlNode node) {
+        return String.valueOf(unwrapAlias(node));
     }
 }
 

@@ -41,35 +41,29 @@ public class ProjectExec implements ExecNode {
     public void close() { input.close(); }
 
     private void projectNode(Map<String, Object> projected, SqlNode node, Row row) {
-        if (node instanceof SqlAlias alias) {
-            projected.put(alias.alias(), resolveProjectionValue(alias.expression(), row));
-            return;
-        }
-        if (node instanceof SqlIdentifier id) {
-            projected.put(id.name(), row.get(id.name()));
-            return;
-        }
-        if (node instanceof SqlAggCall agg) {
-            String key = aggKey(agg);
-            projected.put(key, row.get(key));
-            return;
-        }
-        if (node instanceof SqlLiteral lit) {
-            projected.put(lit.value(), FilterExec.resolveValue(lit, row));
-        }
+        String label = projectionLabel(node);
+        SqlNode expression = node instanceof SqlAlias alias ? alias.expression() : node;
+        projected.put(label, resolveProjectionValue(expression, row));
     }
 
     private Object resolveProjectionValue(SqlNode node, Row row) {
-        if (node instanceof SqlIdentifier id) {
-            return row.get(id.name());
-        }
         if (node instanceof SqlAggCall agg) {
             return row.get(aggKey(agg));
         }
-        if (node instanceof SqlLiteral lit) {
-            return FilterExec.resolveValue(lit, row);
+        return FilterExec.resolveValue(node, row);
+    }
+
+    private String projectionLabel(SqlNode node) {
+        if (node instanceof SqlAlias alias) {
+            return alias.alias();
         }
-        return null;
+        if (node instanceof SqlIdentifier id) {
+            return id.name();
+        }
+        if (node instanceof SqlAggCall agg) {
+            return aggKey(agg);
+        }
+        return String.valueOf(node);
     }
 
     private String aggKey(SqlAggCall agg) {

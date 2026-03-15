@@ -58,6 +58,14 @@ class DataSourceSpiTest {
     }
 
     @Test
+    void updateExpressionViaAdapter() {
+        execute("UPDATE orders SET amount = amount + 20 WHERE order_id = 103");
+        List<Row> rows = execute("SELECT * FROM orders WHERE order_id = 103");
+        assertEquals(1, rows.size());
+        assertEquals(100.0, rows.get(0).get("amount"));
+    }
+
+    @Test
     void deleteViaAdapter() {
         execute("DELETE FROM users WHERE id = 5");
         List<Row> rows = execute("SELECT * FROM users");

@@ -48,7 +48,6 @@ public class TestMain {
         testExecWithJoinAlgo(joinSql, PhysicalPlanner.JoinAlgorithm.NESTED_LOOP);
         testExecWithJoinAlgo(joinSql, PhysicalPlanner.JoinAlgorithm.HASH_JOIN);
         testExecWithJoinAlgo(joinSql, PhysicalPlanner.JoinAlgorithm.SORT_MERGE);
-        testExecWithJoinAlgo(joinSql, PhysicalPlanner.JoinAlgorithm.INDEX_NESTED_LOOP);
 
         testExec("SELECT name, COUNT(*) FROM users GROUP BY name");
         testExec("SELECT * FROM users ORDER BY id");

@@ -46,38 +46,23 @@ public class SqlToRelConverter {
         };
     }
 
-    // ==================== SELECT ====================
-
     private RelNode convertSelect(ValidatedSqlSelect validated) {
         SqlSelect select = validated.original();
-        RelNode plan;
-
-        if (validated.isJoin()) {
-            SqlJoin join = (SqlJoin) select.from();
-            SqlTableRef leftRef = asTableRef(join.left());
-            SqlTableRef rightRef = asTableRef(join.right());
-            RelScan leftScan = factories.scan(leftRef.tableName(), validated.leftTable(), leftRef.visibleName());
-            RelScan rightScan = factories.scan(rightRef.tableName(), validated.rightTable(), rightRef.visibleName());
-            plan = factories.join(leftScan, rightScan, join.condition());
-        } else {
-            SqlTableRef tableRef = asTableRef(select.from());
-            plan = factories.scan(tableRef.tableName(), validated.tableMeta(), tableRef.visibleName());
-        }
+        RelNode plan = convertFrom(select.from(), validated);
 
         if (select.where() != null) {
             plan = factories.filter(plan, select.where());
         }
 
         boolean needsAggregate = select.groupBy() != null
-                || select.having() != null
-                || containsAggCall(select.projection());
+            || select.having() != null
+            || containsAggCall(select.projection());
 
         if (needsAggregate) {
             List<SqlAggCall> aggCalls = collectAllAggCalls(select);
             plan = new RelAggregate(plan, select.groupBy(), aggCalls);
             if (select.having() != null) {
-                SqlNode rewrittenHaving = rewriteAggCallsToSlotRefs(select.having());
-                plan = factories.filter(plan, rewrittenHaving);
+                plan = factories.filter(plan, rewriteAggCallsToSlotRefs(select.having()));
             }
         }
 
@@ -93,19 +78,28 @@ public class SqlToRelConverter {
         return plan;
     }
 
-    /**
-     * 收集 SELECT projection 和 HAVING 中的所有 SqlAggCall，去重。
-     */
+    private RelNode convertFrom(SqlNode from, ValidatedSqlSelect validated) {
+        if (from instanceof SqlJoin join) {
+            RelNode left = convertFrom(join.left(), validated);
+            RelNode right = convertFrom(join.right(), validated);
+            return factories.join(left, right, join.condition());
+        }
+
+        SqlTableRef ref = asTableRef(from);
+        TableMeta table = validated.table(ref.visibleName());
+        if (table == null) {
+            throw new IllegalArgumentException("Missing validated table scope for " + ref.visibleName());
+        }
+        return factories.scan(ref.tableName(), table, ref.visibleName());
+    }
+
     private List<SqlAggCall> collectAllAggCalls(SqlSelect select) {
         Set<String> seen = new LinkedHashSet<>();
         List<SqlAggCall> aggCalls = new ArrayList<>();
 
-        // 从 SELECT projection 收集
         for (SqlNode node : select.projection().nodes()) {
             collectAggCallsFromTree(unwrapAlias(node), seen, aggCalls);
         }
-
-        // 从 HAVING 收集
         if (select.having() != null) {
             collectAggCallsFromTree(select.having(), seen, aggCalls);
         }
@@ -113,10 +107,8 @@ public class SqlToRelConverter {
         return aggCalls;
     }
 
-    /**
-     * 递归遍历表达式树，收集所有 SqlAggCall。
-     */
     private void collectAggCallsFromTree(SqlNode node, Set<String> seen, List<SqlAggCall> aggCalls) {
+        if (node instanceof SqlSubquery) return; // 子查询内部的 agg 不属于外层
         if (node instanceof SqlAggCall agg) {
             String key = aggSlotKey(agg);
             if (seen.add(key)) {
@@ -127,12 +119,22 @@ public class SqlToRelConverter {
         if (node instanceof SqlBinaryOp binOp) {
             collectAggCallsFromTree(binOp.left(), seen, aggCalls);
             collectAggCallsFromTree(binOp.right(), seen, aggCalls);
+            return;
+        }
+        if (node instanceof SqlBetween between) {
+            collectAggCallsFromTree(between.expr(), seen, aggCalls);
+            collectAggCallsFromTree(between.low(), seen, aggCalls);
+            collectAggCallsFromTree(between.high(), seen, aggCalls);
+            return;
+        }
+        if (node instanceof SqlInList inList) {
+            collectAggCallsFromTree(inList.expr(), seen, aggCalls);
+            for (SqlNode value : inList.values().nodes()) {
+                collectAggCallsFromTree(value, seen, aggCalls);
+            }
         }
     }
 
-    /**
-     * 检查 projection 中是否包含聚合函数调用。
-     */
     private boolean containsAggCall(SqlNodeList projection) {
         for (SqlNode node : projection.nodes()) {
             if (treeContainsAggCall(unwrapAlias(node))) {
@@ -143,34 +145,56 @@ public class SqlToRelConverter {
     }
 
     private boolean treeContainsAggCall(SqlNode node) {
+        if (node instanceof SqlSubquery) return false; // 子查询内部的 agg 不属于外层
         if (node instanceof SqlAggCall) return true;
         if (node instanceof SqlBinaryOp binOp) {
             return treeContainsAggCall(binOp.left()) || treeContainsAggCall(binOp.right());
         }
+        if (node instanceof SqlBetween between) {
+            return treeContainsAggCall(between.expr())
+                || treeContainsAggCall(between.low())
+                || treeContainsAggCall(between.high());
+        }
+        if (node instanceof SqlInList inList) {
+            if (treeContainsAggCall(inList.expr())) {
+                return true;
+            }
+            for (SqlNode value : inList.values().nodes()) {
+                if (treeContainsAggCall(value)) {
+                    return true;
+                }
+            }
+        }
         return false;
     }
 
-    /**
-     * 将 HAVING 条件中的 SqlAggCall 替换为 SqlIdentifier，
-     * 引用 AggregateExec 输出 Row 中的聚合槽位 key。
-     */
     private SqlNode rewriteAggCallsToSlotRefs(SqlNode node) {
+        if (node instanceof SqlSubquery) return node; // 子查询不改写
         if (node instanceof SqlAggCall agg) {
             return new SqlIdentifier(aggSlotKey(agg));
         }
         if (node instanceof SqlBinaryOp binOp) {
-            SqlNode newLeft = rewriteAggCallsToSlotRefs(binOp.left());
-            SqlNode newRight = rewriteAggCallsToSlotRefs(binOp.right());
-            if (newLeft != binOp.left() || newRight != binOp.right()) {
-                return new SqlBinaryOp(binOp.opKind(), newLeft, newRight);
+            return new SqlBinaryOp(binOp.opKind(),
+                rewriteAggCallsToSlotRefs(binOp.left()),
+                rewriteAggCallsToSlotRefs(binOp.right()));
+        }
+        if (node instanceof SqlBetween between) {
+            return new SqlBetween(
+                rewriteAggCallsToSlotRefs(between.expr()),
+                rewriteAggCallsToSlotRefs(between.low()),
+                rewriteAggCallsToSlotRefs(between.high())
+            );
+        }
+        if (node instanceof SqlInList inList) {
+            SqlNodeList values = new SqlNodeList();
+            for (SqlNode value : inList.values().nodes()) {
+                values.add(rewriteAggCallsToSlotRefs(value));
             }
+            return new SqlInList(rewriteAggCallsToSlotRefs(inList.expr()), values);
         }
         return node;
     }
 
-    /**
-     * 聚合槽位 key，与 AggregateExec / ProjectExec 中的 key 格式一致。
-     */
     private String aggSlotKey(SqlAggCall agg) {
         return agg.funcName() + "(" + agg.arg() + ")";
     }
@@ -188,8 +212,6 @@ public class SqlToRelConverter {
     private SqlNode unwrapAlias(SqlNode node) {
         return node instanceof SqlAlias alias ? alias.expression() : node;
     }
-
-    // ==================== DML ====================
 
     private RelNode convertDml(ValidatedDml dml) {
         return switch (dml.original()) {
@@ -227,7 +249,7 @@ interface RelFactories {
     RelScan scan(String tableName, TableMeta meta, String outputName);
     RelFilter filter(RelNode input, SqlNode condition);
     RelProject project(RelNode input, SqlNodeList projection);
-    RelJoin join(RelScan left, RelScan right, SqlNode condition);
+    RelJoin join(RelNode left, RelNode right, SqlNode condition);
 }
 
 class DefaultRelFactories implements RelFactories {
@@ -249,7 +271,7 @@ class DefaultRelFactories implements RelFactories {
     }
 
     @Override
-    public RelJoin join(RelScan left, RelScan right, SqlNode condition) {
+    public RelJoin join(RelNode left, RelNode right, SqlNode condition) {
         return new RelJoin(left, right, condition);
     }
 }

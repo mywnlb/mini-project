@@ -10,16 +10,24 @@ import cn.zhangyis.minidb.sql.rel.*;
 import java.util.Map;
 
 public class CostModel {
+    private final boolean enableIndexLookup;
     private final Map<String, Long> tableStats = Map.of(
         "users", 10000L,
         "orders", 50000L
     );
 
+    public CostModel() {
+        this(false);
+    }
+
+    public CostModel(boolean enableIndexLookup) {
+        this.enableIndexLookup = enableIndexLookup;
+    }
+
     // ==================== 基数估计 ====================
 
     public double estimateRows(RelNode node) {
         if (node instanceof RelScan s) return s.tableMeta().rowCount();
-        if (node instanceof RelIndexedScan) return 10;
         if (node instanceof RelFilter f) return estimateRows(f.input()) * selectivity(f.condition());
         if (node instanceof RelJoin j) return estimateRows(j.left()) * estimateRows(j.right()) * 0.01;
         if (node instanceof RelAggregate a) return estimateRows(a.input()) * 0.1;
@@ -51,10 +59,6 @@ public class CostModel {
         return tableStats.getOrDefault(tableName, 100000L) * 0.01;
     }
 
-    public double indexScanCost(String tableName, SqlNode condition) {
-        return condition.toString().contains("id") ? 10.0 : 100.0;
-    }
-
     public double filterCost(double inputRows, SqlNode condition) {
         return inputRows * selectivity(condition);
     }
@@ -75,11 +79,10 @@ public class CostModel {
     // ==================== JOIN 算法代价对比 ====================
 
     /**
-     * 根据代价模型选择最优 JOIN 算法
-     * - NLJoin: O(M*N)，适用非等值 JOIN
-     * - HashJoin: O(M+N)，适用等值 JOIN，内表建哈希表
-     * - SortMergeJoin: O(M*logM + N*logN)，适用数据倾斜/已排序
-     * - IndexNLJoin: O(M*logN)，适用外表小、内表有索引
+     * 根据代价模型选择最优 JOIN 算法。
+     *
+     * <p>默认构造器不会考虑索引路径；启用后仅在 join key 命中主键点查时
+     * 才会评估 INDEX_NESTED_LOOP。</p>
      */
     public JoinAlgorithm chooseJoinAlgorithm(RelNode left, RelNode right, SqlNode condition) {
         boolean isEquiJoin = isEquiJoinCondition(condition);
@@ -93,19 +96,20 @@ public class CostModel {
         double nlCost = nestedLoopJoinCost(leftRows, rightRows);
         double hashCost = hashJoinCost(leftRows, rightRows);
         double smCost = sortMergeJoinCost(leftRows, rightRows);
-        double indexCost = indexNestedLoopJoinCost(leftRows, rightRows, right);
+        double indexLookupCost = enableIndexLookup && supportsLookupJoin(left, right, condition)
+            ? indexNestedLoopCost(left, right, leftRows, rightRows, condition)
+            : Double.MAX_VALUE;
 
-        // 选代价最小的
         double minCost = hashCost;
         JoinAlgorithm best = JoinAlgorithm.HASH_JOIN;
 
+        if (indexLookupCost <= minCost) {
+            minCost = indexLookupCost;
+            best = JoinAlgorithm.INDEX_NESTED_LOOP;
+        }
         if (smCost < minCost) {
             minCost = smCost;
             best = JoinAlgorithm.SORT_MERGE;
-        }
-        if (indexCost < minCost) {
-            minCost = indexCost;
-            best = JoinAlgorithm.INDEX_NESTED_LOOP;
         }
         if (nlCost < minCost) {
             best = JoinAlgorithm.NESTED_LOOP;
@@ -126,7 +130,9 @@ public class CostModel {
             nestedLoopJoinCost(leftRows, rightRows),
             isEquiJoin ? hashJoinCost(leftRows, rightRows) : Double.MAX_VALUE,
             isEquiJoin ? sortMergeJoinCost(leftRows, rightRows) : Double.MAX_VALUE,
-            isEquiJoin ? indexNestedLoopJoinCost(leftRows, rightRows, null) : Double.MAX_VALUE,
+            enableIndexLookup && supportsLookupJoin(left, right, condition)
+                ? indexNestedLoopCost(left, right, leftRows, rightRows, condition)
+                : Double.MAX_VALUE,
             leftRows, rightRows, isEquiJoin
         );
     }
@@ -153,11 +159,15 @@ public class CostModel {
         return sortLeft + sortRight + merge;
     }
 
-    private double indexNestedLoopJoinCost(double leftRows, double rightRows, RelNode right) {
-        // O(M * logN)，仅当内表有索引时有效
-        boolean hasIndex = right instanceof RelIndexedScan;
-        double indexFactor = hasIndex ? 1.0 : 3.0; // 无索引时惩罚
-        return leftRows * (rightRows > 0 ? Math.log(rightRows) : 1) * 0.01 * indexFactor;
+    private double indexNestedLoopCost(RelNode left, RelNode right,
+                                       double leftRows, double rightRows, SqlNode condition) {
+        if (lookupCandidate(right, rightIdentifier(condition))) {
+            return leftRows * 0.005;
+        }
+        if (lookupCandidate(left, leftIdentifier(condition))) {
+            return rightRows * 0.005;
+        }
+        return Double.MAX_VALUE;
     }
 
     // ==================== 辅助方法 ====================
@@ -169,11 +179,44 @@ public class CostModel {
         return false;
     }
 
+    private boolean supportsLookupJoin(RelNode left, RelNode right, SqlNode condition) {
+        return lookupCandidate(right, rightIdentifier(condition))
+            || lookupCandidate(left, leftIdentifier(condition));
+    }
+
+    private String leftIdentifier(SqlNode condition) {
+        if (condition instanceof SqlBinaryOp binOp
+            && binOp.left() instanceof SqlIdentifier id) {
+            return id.name();
+        }
+        return null;
+    }
+
+    private String rightIdentifier(SqlNode condition) {
+        if (condition instanceof SqlBinaryOp binOp
+            && binOp.right() instanceof SqlIdentifier id) {
+            return id.name();
+        }
+        return null;
+    }
+
+    private boolean lookupCandidate(RelNode node, String identifier) {
+        if (!(node instanceof RelScan scan) || identifier == null) {
+            return false;
+        }
+        String columnName = identifier.contains(".") ? identifier.split("\\.", 2)[1] : identifier;
+        return scan.tableMeta().columns().stream()
+            .anyMatch(column -> column.isPrimaryKey() && column.name().equalsIgnoreCase(columnName));
+    }
+
+    /**
+     * JOIN 代价明细
+     */
     public record JoinCostDetail(
         double nestedLoopCost,
         double hashJoinCost,
         double sortMergeCost,
-        double indexNLCost,
+        double indexNestedLoopCost,
         double leftRows,
         double rightRows,
         boolean isEquiJoin
@@ -186,7 +229,7 @@ public class CostModel {
                 nestedLoopCost,
                 hashJoinCost == Double.MAX_VALUE ? -1 : hashJoinCost,
                 sortMergeCost == Double.MAX_VALUE ? -1 : sortMergeCost,
-                indexNLCost == Double.MAX_VALUE ? -1 : indexNLCost));
+                indexNestedLoopCost == Double.MAX_VALUE ? -1 : indexNestedLoopCost));
             return sb.toString();
         }
     }

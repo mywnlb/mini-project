@@ -36,4 +36,19 @@ public interface DataSourceSpi {
      * @return 受影响行数
      */
     int deleteRows(String tableName, Predicate<Row> filter);
+
+    /**
+     * 是否支持基于某一列的真实索引点查。
+     */
+    default boolean supportsLookup(String tableName, String columnName) {
+        return false;
+    }
+
+    /**
+     * 基于索引的点查。
+     */
+    default Iterator<Row> lookup(String tableName, String outputName, String columnName, Object value) {
+        throw new UnsupportedOperationException(
+            "Indexed lookup not supported for table=" + tableName + ", column=" + columnName);
+    }
 }

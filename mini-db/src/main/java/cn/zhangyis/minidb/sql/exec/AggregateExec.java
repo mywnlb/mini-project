@@ -86,14 +86,24 @@ public class AggregateExec implements ExecNode {
     private Object computeAgg(SqlAggCall agg, List<Row> rows) {
         String func = agg.funcName().toUpperCase();
         return switch (func) {
-            case "COUNT" -> (long) rows.size();
+            case "COUNT" -> {
+                if (agg.arg().kind() == SqlKind.STAR) {
+                    yield (long) rows.size();
+                }
+                long count = 0;
+                for (Row r : rows) {
+                    if (resolveAggArg(agg.arg(), r) != null) count++;
+                }
+                yield count;
+            }
             case "SUM" -> {
                 double sum = 0;
+                boolean hasNonNull = false;
                 for (Row r : rows) {
                     Object val = resolveAggArg(agg.arg(), r);
-                    if (val instanceof Number n) sum += n.doubleValue();
+                    if (val instanceof Number n) { sum += n.doubleValue(); hasNonNull = true; }
                 }
-                yield sum;
+                yield hasNonNull ? sum : null;
             }
             case "AVG" -> {
                 double sum = 0;
@@ -102,12 +112,13 @@ public class AggregateExec implements ExecNode {
                     Object val = resolveAggArg(agg.arg(), r);
                     if (val instanceof Number n) { sum += n.doubleValue(); count++; }
                 }
-                yield count > 0 ? sum / count : 0.0;
+                yield count > 0 ? sum / count : null;
             }
             case "MAX" -> {
                 Object max = null;
                 for (Row r : rows) {
                     Object val = resolveAggArg(agg.arg(), r);
+                    if (val == null) continue;
                     if (max == null || FilterExec.compareValues(val, max) > 0) max = val;
                 }
                 yield max;
@@ -116,6 +127,7 @@ public class AggregateExec implements ExecNode {
                 Object min = null;
                 for (Row r : rows) {
                     Object val = resolveAggArg(agg.arg(), r);
+                    if (val == null) continue;
                     if (min == null || FilterExec.compareValues(val, min) < 0) min = val;
                 }
                 yield min;

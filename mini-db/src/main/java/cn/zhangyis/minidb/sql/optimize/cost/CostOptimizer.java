@@ -7,9 +7,20 @@ import cn.zhangyis.minidb.sql.rel.*;
 /**
  * CBO 代价优化器：基于 CostModel 做物理计划决策
  * 核心职责：为 RelJoin 选择最优 JOIN 算法
+ *
+ * <p>默认构造器保持索引路径关闭；只有显式启用后才会把 INDEX_NESTED_LOOP
+ * 纳入候选集合。</p>
  */
 public class CostOptimizer {
-    private final CostModel costModel = new CostModel();
+    private final CostModel costModel;
+
+    public CostOptimizer() {
+        this(false);
+    }
+
+    public CostOptimizer(boolean enableIndexLookup) {
+        this.costModel = new CostModel(enableIndexLookup);
+    }
 
     public CostModel costModel() {
         return costModel;
@@ -67,9 +78,8 @@ public class CostOptimizer {
                    "  left: " + decidePhysicalPlan(join.left()) + "\n" +
                    "  right: " + decidePhysicalPlan(join.right());
         }
-        if (plan instanceof RelIndexedScan indexed) {
-            double cost = costModel.indexScanCost(indexed.tableName(), indexed.indexCondition());
-            return "INDEX_SCAN[" + indexed.tableName() + "](cost=" + cost + ")";
+        if (plan instanceof RelIndexedScan scan) {
+            return "INDEX_SCAN[" + scan.tableName() + "](condition=" + scan.indexCondition() + ")";
         }
         if (plan instanceof RelFilter filter) {
             return "FILTER\n  " + decidePhysicalPlan(filter.input());

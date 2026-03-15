@@ -84,14 +84,7 @@ public class InsertExec implements ExecNode {
     public void close() {}
 
     private Object resolveValue(SqlNode node) {
-        if (node instanceof SqlLiteral lit) {
-            return switch (lit.type()) {
-                case INT32 -> Integer.parseInt(lit.value());
-                case DECIMAL -> Double.parseDouble(lit.value());
-                default -> lit.value();
-            };
-        }
-        return null;
+        return FilterExec.resolveValue(node, new Row(Map.of()));
     }
 
     private ColumnMeta findColumn(List<ColumnMeta> columns, String name) {

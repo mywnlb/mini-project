@@ -1,15 +1,21 @@
 package cn.zhangyis.minidb.sql.validation;
 
-import cn.zhangyis.minidb.sql.ast.*;
+import cn.zhangyis.minidb.sql.ast.SqlKind;
+import cn.zhangyis.minidb.sql.ast.SqlNode;
+import cn.zhangyis.minidb.sql.ast.SqlSelect;
 import cn.zhangyis.minidb.sql.catalog.TableMeta;
 
-public record ValidatedSqlSelect(SqlSelect original, TableMeta leftTable, TableMeta rightTable) implements SqlNode {
-    public ValidatedSqlSelect(SqlSelect original, TableMeta table) {
-        this(original, table, null);
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public record ValidatedSqlSelect(SqlSelect original, Map<String, TableMeta> tables) implements SqlNode {
+    public ValidatedSqlSelect {
+        tables = Map.copyOf(new LinkedHashMap<>(tables));
     }
 
-    public TableMeta tableMeta() { return leftTable; }
-    public boolean isJoin() { return rightTable != null; }
+    public TableMeta table(String visibleName) {
+        return tables.get(visibleName.toUpperCase());
+    }
 
     @Override
     public SqlKind kind() { return SqlKind.SELECT; }

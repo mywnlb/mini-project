@@ -17,6 +17,7 @@ public final class TypeCoercion {
      * <ul>
      *   <li>NULL → null（任何类型都接受 NULL）</li>
      *   <li>INT32: String→Integer, Number→Integer</li>
+     *   <li>BIGINT: String→Long, Number→Long</li>
      *   <li>DECIMAL: String→Double, Number→Double</li>
      *   <li>VARCHAR: 任意→String</li>
      *   <li>DATETIME: String→String（暂不做格式校验）</li>
@@ -33,6 +34,7 @@ public final class TypeCoercion {
 
         return switch (targetType) {
             case INT32 -> coerceToInt(value, columnName);
+            case BIGINT -> coerceToBigint(value, columnName);
             case DECIMAL -> coerceToDecimal(value, columnName);
             case VARCHAR -> coerceToVarchar(value);
             case DATETIME -> coerceToDatetime(value, columnName);
@@ -75,6 +77,24 @@ public final class TypeCoercion {
             }
         }
         throw new TypeMismatchException(columnName, SqlType.INT32, value);
+    }
+
+    private static Object coerceToBigint(Object value, String columnName) {
+        if (value instanceof Long) return value;
+        if (value instanceof Integer i) return i.longValue();
+        if (value instanceof Number n) {
+            double d = n.doubleValue();
+            if (d != Math.floor(d)) throw new TypeMismatchException(columnName, SqlType.BIGINT, value);
+            return n.longValue();
+        }
+        if (value instanceof String s) {
+            try {
+                return Long.parseLong(s.trim());
+            } catch (NumberFormatException e) {
+                throw new TypeMismatchException(columnName, SqlType.BIGINT, value);
+            }
+        }
+        throw new TypeMismatchException(columnName, SqlType.BIGINT, value);
     }
 
     private static Object coerceToDecimal(Object value, String columnName) {
