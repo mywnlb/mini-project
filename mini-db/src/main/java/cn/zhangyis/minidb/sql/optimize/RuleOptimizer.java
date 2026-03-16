@@ -13,12 +13,14 @@ public class RuleOptimizer {
     public RuleOptimizer(boolean enableIndexedLookup) {
         this.rules = enableIndexedLookup
             ? List.of(
+                ConstantFoldingRule.INSTANCE,
                 FilterProjectTransposeRule.INSTANCE,
                 FilterJoinPushdownRule.INSTANCE,
                 new PushFilterIntoScanRule(),
                 JoinCommuteRule.INSTANCE
             )
             : List.of(
+                ConstantFoldingRule.INSTANCE,
                 FilterProjectTransposeRule.INSTANCE,
                 FilterJoinPushdownRule.INSTANCE,
                 PushFilterIntoScanRule.INSTANCE,

@@ -13,13 +13,19 @@ public class SortExec implements ExecNode {
     private final ExecNode input;
     private final SqlNodeList orderBy;
     private final Integer limit;
+    private final Integer offset;
 
     private Iterator<Row> iterator;
 
-    public SortExec(ExecNode input, SqlNodeList orderBy, Integer limit) {
+    public SortExec(ExecNode input, SqlNodeList orderBy, Integer limit, Integer offset) {
         this.input = input;
         this.orderBy = orderBy;
         this.limit = limit;
+        this.offset = offset != null && offset > 0 ? offset : 0;
+    }
+
+    public SortExec(ExecNode input, SqlNodeList orderBy, Integer limit) {
+        this(input, orderBy, limit, 0);
     }
 
     @Override
@@ -77,8 +83,19 @@ public class SortExec implements ExecNode {
             rows.sort(comparator);
         }
 
-        if (limit != null && limit < rows.size()) {
-            rows = new ArrayList<>(rows.subList(0, limit));
+        // 应用 OFFSET 和 LIMIT
+        int start = offset != null ? offset : 0;
+        int end = rows.size();
+        if (limit != null && limit > 0) {
+            end = Math.min(start + limit, rows.size());
+        }
+        if (start > 0 || end < rows.size()) {
+            end = Math.min(end, rows.size());
+            if (start < end) {
+                rows = new ArrayList<>(rows.subList(start, end));
+            } else {
+                rows = new ArrayList<>();
+            }
         }
 
         return rows;

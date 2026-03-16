@@ -75,19 +75,45 @@ public class SqlParser {
             limit = parsePrimary();
         }
 
-        return factory.select(projection, from, where, distinct, groupBy, having, orderBy, limit);
+        SqlNode offset = null;
+        if (tokens.match(TokenType.OFFSET)) {
+            offset = parsePrimary();
+        }
+
+        return factory.select(projection, from, where, distinct, groupBy, having, orderBy, limit, offset);
     }
 
     private SqlNode parseFrom() {
-        SqlNode left = parseTableRef();
+        SqlNode left = parseFromItem();
         while (tokens.current().type() == TokenType.JOIN) {
             tokens.next();
-            SqlTableRef right = parseTableRef();
+            SqlNode right = parseFromItem();
             tokens.expect(TokenType.ON);
             SqlNode condition = parseExpression();
             left = factory.join(left, right, condition);
         }
         return left;
+    }
+
+    /**
+     * 解析 FROM 项：普通表引用 或 派生表 (SELECT ...) AS alias
+     */
+    private SqlNode parseFromItem() {
+        if (tokens.current().type() == TokenType.LPAREN) {
+            // 可能是派生表: (SELECT ...) AS alias
+            tokens.next();
+            if (tokens.current().type() == TokenType.SELECT) {
+                SqlSelect subSelect = parseSelect();
+                tokens.expect(TokenType.RPAREN);
+                String alias = parseOptionalAlias();
+                if (alias == null) {
+                    throw new SqlParseException("Derived table must have an alias");
+                }
+                return new SqlDerivedTable(subSelect, alias);
+            }
+            throw new SqlParseException("Expected SELECT after '(' in FROM clause, got " + tokens.current());
+        }
+        return parseTableRef();
     }
 
     private SqlNodeList parseProjection() {

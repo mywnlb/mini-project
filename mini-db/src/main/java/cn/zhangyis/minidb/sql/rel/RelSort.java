@@ -9,16 +9,22 @@ public class RelSort extends RelNode {
     private final RelNode input;
     private final SqlNodeList orderBy;
     private final SqlNode limit;
+    private final SqlNode offset;
 
     public RelSort(RelNode input, SqlNodeList orderBy, SqlNode limit) {
+        this(input, orderBy, limit, null);
+    }
+
+    public RelSort(RelNode input, SqlNodeList orderBy, SqlNode limit, SqlNode offset) {
         this.input = input;
         this.orderBy = orderBy;
         this.limit = limit;
+        this.offset = offset;
     }
 
     @Override
     public RelNode copy(List<RelNode> inputs) {
-        return new RelSort(inputs.get(0), orderBy, limit);
+        return new RelSort(inputs.get(0), orderBy, limit, offset);
     }
 
     @Override
@@ -27,11 +33,13 @@ public class RelSort extends RelNode {
             ? orderBy.nodes().stream().map(Object::toString).collect(Collectors.joining(", "))
             : "[]";
         String lim = limit != null ? limit.toString() : "none";
-        return "RelSort(orderBy=[" + order + "], limit=" + lim + ")\n" +
+        String off = offset != null ? offset.toString() : "none";
+        return "RelSort(orderBy=[" + order + "], limit=" + lim + ", offset=" + off + ")\n" +
                "  " + input.explain();
     }
 
     public RelNode input() { return input; }
     public SqlNodeList orderBy() { return orderBy; }
     public SqlNode limit() { return limit; }
+    public SqlNode offset() { return offset; }
 }

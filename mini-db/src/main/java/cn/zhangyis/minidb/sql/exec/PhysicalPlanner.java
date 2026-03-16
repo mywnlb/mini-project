@@ -97,9 +97,13 @@ public class PhysicalPlanner {
         if (relNode instanceof RelScan scan) {
             return new ScanExec(scan.tableName(), scan.outputName(), dataSource);
         }
+        if (relNode instanceof RelDerivedScan derived) {
+            ExecNode innerExec = planInternal(derived.input(), overrideAlgo);
+            return new SubqueryExec(innerExec, derived.alias());
+        }
         if (relNode instanceof RelFilter filter) {
             ExecNode input = planInternal(filter.input(), overrideAlgo);
-            return new FilterExec(input, filter.condition(), createSubqueryEvaluator());
+            return new FilterExec(input, filter.condition(), createSubqueryEvaluator(), createSubqueryExecutor());
         }
         if (relNode instanceof RelProject project) {
             ExecNode input = planInternal(project.input(), overrideAlgo);
@@ -119,10 +123,14 @@ public class PhysicalPlanner {
         if (relNode instanceof RelSort sort) {
             ExecNode input = planInternal(sort.input(), overrideAlgo);
             Integer limit = null;
+            Integer offset = null;
             if (sort.limit() instanceof SqlLiteral lit) {
                 limit = Integer.parseInt(lit.value());
             }
-            return new SortExec(input, sort.orderBy(), limit);
+            if (sort.offset() instanceof SqlLiteral lit) {
+                offset = Integer.parseInt(lit.value());
+            }
+            return new SortExec(input, sort.orderBy(), limit, offset);
         }
         if (relNode instanceof RelInsert insert) {
             return new InsertExec(insert, dataSource);
@@ -326,6 +334,20 @@ public class PhysicalPlanner {
 
     private String bareColumn(String identifier) {
         return identifier.contains(".") ? identifier.split("\\.", 2)[1] : identifier;
+    }
+
+    /**
+     * 创建 EXISTS/IN 子查询执行器：将 SqlSelect 编译为 ExecNode
+     */
+    private FilterExec.SubqueryExecutor createSubqueryExecutor() {
+        CatalogSpi cat = this.catalog != null ? this.catalog : new MockCatalog();
+        return select -> {
+            SqlValidator validator = new SqlValidator(cat);
+            SqlNode validated = validator.validate(select);
+            SqlToRelConverter converter = new SqlToRelConverter(cat);
+            RelNode rel = converter.convert(validated);
+            return new PhysicalPlanner(costOptimizer, dataSource, cat).plan(rel);
+        };
     }
 
     private FilterExec.SubqueryEvaluator createSubqueryEvaluator() {

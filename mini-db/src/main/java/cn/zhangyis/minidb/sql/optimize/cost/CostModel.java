@@ -7,14 +7,8 @@ import cn.zhangyis.minidb.sql.ast.SqlNode;
 import cn.zhangyis.minidb.sql.exec.PhysicalPlanner.JoinAlgorithm;
 import cn.zhangyis.minidb.sql.rel.*;
 
-import java.util.Map;
-
 public class CostModel {
     private final boolean enableIndexLookup;
-    private final Map<String, Long> tableStats = Map.of(
-        "users", 10000L,
-        "orders", 50000L
-    );
 
     public CostModel() {
         this(false);
@@ -55,8 +49,20 @@ public class CostModel {
 
     // ==================== 算子代价 ====================
 
+    /**
+     * 全表扫描代价
+     * 优先使用 RelScan 中 TableMeta 的真实行数
+     */
+    public double fullScanCost(RelScan scan) {
+        long rowCount = scan.tableMeta().rowCount();
+        return rowCount > 0 ? rowCount * 0.01 : 1000.0;
+    }
+
+    /**
+     * 兼容旧接口（用于字符串表名场景）
+     */
     public double fullScanCost(String tableName) {
-        return tableStats.getOrDefault(tableName, 100000L) * 0.01;
+        return 1000.0; // 默认值，实际应通过 RelScan 调用
     }
 
     public double filterCost(double inputRows, SqlNode condition) {

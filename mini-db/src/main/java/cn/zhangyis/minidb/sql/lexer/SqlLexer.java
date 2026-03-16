@@ -26,6 +26,7 @@ public class SqlLexer {
         keywords.put("HAVING", TokenType.HAVING);
         keywords.put("ORDER", TokenType.ORDER);
         keywords.put("LIMIT", TokenType.LIMIT);
+        keywords.put("OFFSET", TokenType.OFFSET);
         keywords.put("COUNT", TokenType.COUNT);
         keywords.put("SUM", TokenType.SUM);
         keywords.put("AVG", TokenType.AVG);

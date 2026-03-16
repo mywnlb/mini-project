@@ -2,8 +2,11 @@ package cn.zhangyis.minidb.sql.validation;
 
 import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
+import cn.zhangyis.minidb.sql.catalog.ColumnMeta;
 import cn.zhangyis.minidb.sql.catalog.TableMeta;
+import cn.zhangyis.minidb.sql.types.SqlType;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -50,12 +53,86 @@ public class SqlValidator {
             return;
         }
 
+        if (from instanceof SqlDerivedTable derived) {
+            // 递归验证内层 SELECT
+            validateSelect(derived.select());
+            // 从内层 projection 推导虚拟 TableMeta
+            String alias = derived.alias().toUpperCase();
+            if (tables.containsKey(alias)) {
+                throw new ValidationException("Duplicate table alias '" + derived.alias() + "'");
+            }
+            TableMeta virtualMeta = derivedTableMeta(derived);
+            tables.put(alias, virtualMeta);
+            return;
+        }
+
         SqlTableRef ref = asTableRef(from);
         String visibleName = ref.visibleName().toUpperCase();
         if (tables.containsKey(visibleName)) {
             throw new ValidationException("Duplicate table alias '" + ref.visibleName() + "'");
         }
         tables.put(visibleName, resolveTable(ref.tableName()));
+    }
+
+    /**
+     * 从派生表的内层 SELECT projection 推导虚拟 TableMeta
+     */
+    private TableMeta derivedTableMeta(SqlDerivedTable derived) {
+        SqlSelect inner = derived.select();
+        List<ColumnMeta> columns = new ArrayList<>();
+
+        if (inner.projection().size() == 1 && inner.projection().get(0).kind() == SqlKind.STAR) {
+            // SELECT * — 从内层 FROM 的所有表获取列
+            Map<String, TableMeta> innerTables = new LinkedHashMap<>();
+            collectFromTables(inner.from(), innerTables);
+            for (TableMeta tm : innerTables.values()) {
+                for (ColumnMeta cm : tm.columns()) {
+                    columns.add(new ColumnMeta(cm.name(), cm.type(), cm.isPrimaryKey()));
+                }
+            }
+        } else {
+            for (SqlNode node : inner.projection().nodes()) {
+                String colName = deriveColumnName(node);
+                columns.add(new ColumnMeta(colName, SqlType.VARCHAR, false));
+            }
+        }
+
+        return TableMeta.of(derived.alias(), columns, 0);
+    }
+
+    /**
+     * 从 FROM 子句收集所有物理表（用于 SELECT * 列推导）
+     */
+    private void collectFromTables(SqlNode from, Map<String, TableMeta> tables) {
+        if (from instanceof SqlJoin join) {
+            collectFromTables(join.left(), tables);
+            collectFromTables(join.right(), tables);
+            return;
+        }
+        if (from instanceof SqlDerivedTable derived) {
+            tables.put(derived.alias().toUpperCase(), derivedTableMeta(derived));
+            return;
+        }
+        SqlTableRef ref = asTableRef(from);
+        tables.put(ref.visibleName().toUpperCase(), resolveTable(ref.tableName()));
+    }
+
+    /**
+     * 推导 projection 项的输出列名
+     */
+    private String deriveColumnName(SqlNode node) {
+        if (node instanceof SqlAlias alias) {
+            return alias.alias();
+        }
+        if (node instanceof SqlIdentifier id) {
+            String name = id.name();
+            // table.column → column
+            return name.contains(".") ? name.substring(name.indexOf('.') + 1) : name;
+        }
+        if (node instanceof SqlAggCall agg) {
+            return agg.funcName() + "(" + agg.arg() + ")";
+        }
+        return node.toString();
     }
 
     private void validateCommon(SqlSelect select, List<TableScope> tables) {

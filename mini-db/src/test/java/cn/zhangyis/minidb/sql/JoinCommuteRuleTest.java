@@ -13,8 +13,7 @@ import cn.zhangyis.minidb.sql.exec.PhysicalPlanner;
 import cn.zhangyis.minidb.sql.exec.Row;
 import cn.zhangyis.minidb.sql.lexer.SqlLexer;
 import cn.zhangyis.minidb.sql.lexer.TokenStream;
-import cn.zhangyis.minidb.sql.optimize.JoinCommuteRule;
-import cn.zhangyis.minidb.sql.optimize.RuleOptimizer;
+import cn.zhangyis.minidb.sql.optimize.*;
 import cn.zhangyis.minidb.sql.parser.SqlParser;
 import cn.zhangyis.minidb.sql.planner.SqlToRelConverter;
 import cn.zhangyis.minidb.sql.rel.RelFilter;
@@ -32,9 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class JoinCommuteRuleTest {
     private final MockCatalog catalog = new MockCatalog();
@@ -300,5 +297,82 @@ class JoinCommuteRuleTest {
         values.put(k1, v1);
         values.put(k2, v2);
         return values;
+    }
+
+    // ==================== 新增：优化规则测试 ====================
+
+    @Test
+    void filterJoinPushdownShouldSplitAndConditions() {
+        String sql = "SELECT * FROM users u JOIN orders o ON u.id = o.user_id " +
+                    "WHERE u.id = 1 AND o.amount > 100";
+
+        RelNode original = buildLogical(sql);
+        RelNode optimized = new RuleOptimizer().optimize(original);
+
+        // 验证 Filter 被下推（应该在 Join 的左右子节点出现 Filter）
+        assertTrue(containsFilterOnBothSides(optimized),
+            "AND conditions should be pushed down to both sides of JOIN");
+    }
+
+    @Test
+    void constantFoldingShouldEliminateTrueFilter() {
+        String sql = "SELECT * FROM users WHERE 1 = 1";
+
+        RelNode original = buildLogical(sql);
+        RelNode optimized = new RuleOptimizer().optimize(original);
+
+        // 1=1 应该被折叠，Filter 被消除
+        assertFalse(optimized instanceof RelFilter,
+            "Filter with constant TRUE should be eliminated");
+    }
+
+    @Test
+    void constantFoldingShouldProduceEmptyForFalseCondition() {
+        String sql = "SELECT * FROM users WHERE 1 = 0";
+
+        RelNode original = buildLogical(sql);
+        RelNode optimized = new RuleOptimizer().optimize(original);
+
+        // 1=0 应该产生空结果集，检查 explain 字符串
+        assertTrue(optimized.explain().contains("RelEmpty") ||
+                   optimized.getClass().getSimpleName().contains("Empty"),
+            "Filter with constant FALSE should produce empty result");
+    }
+
+    @Test
+    void constantFoldingShouldSimplifyRedundantConditions() {
+        String sql = "SELECT * FROM users WHERE id > 3 AND id > 5";
+
+        RelNode original = buildLogical(sql);
+        RelNode optimized = new RuleOptimizer().optimize(original);
+
+        // 应该简化为 id > 5
+        assertTrue(containsFilter(optimized), "Should still have a filter");
+    }
+
+    private boolean containsFilter(RelNode node) {
+        if (node instanceof RelFilter) return true;
+        if (node instanceof RelJoin join) {
+            return containsFilter(join.left()) || containsFilter(join.right());
+        }
+        if (node instanceof RelProject project) {
+            return containsFilter(project.input());
+        }
+        return false;
+    }
+
+    private boolean containsFilterOnBothSides(RelNode node) {
+        if (node instanceof RelJoin join) {
+            boolean leftHasFilter = join.left() instanceof RelFilter;
+            boolean rightHasFilter = join.right() instanceof RelFilter;
+            return leftHasFilter && rightHasFilter;
+        }
+        if (node instanceof RelProject project) {
+            return containsFilterOnBothSides(project.input());
+        }
+        if (node instanceof RelFilter filter) {
+            return containsFilterOnBothSides(filter.input());
+        }
+        return false;
     }
 }

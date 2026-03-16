@@ -2,7 +2,7 @@ package cn.zhangyis.minidb.sql.lexer;
 
 public enum TokenType {
     // Keywords - Query
-    SELECT, FROM, WHERE, JOIN, ON, GROUP, BY, ORDER, LIMIT, DISTINCT, ASC, DESC,
+    SELECT, FROM, WHERE, JOIN, ON, GROUP, BY, ORDER, LIMIT, OFFSET, DISTINCT, ASC, DESC,
 
     // Keywords - Logic
     AND, OR, HAVING, NOT,

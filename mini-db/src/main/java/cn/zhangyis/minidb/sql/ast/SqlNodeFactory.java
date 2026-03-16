@@ -16,14 +16,14 @@ public class SqlNodeFactory {
 
     public SqlSelect select(SqlNodeList projection, SqlNode from, SqlNode where,
                             SqlNodeList groupBy, SqlNode having,
-                            SqlNodeList orderBy, SqlNode limit) {
-        return new SqlSelect(projection, from, where, groupBy, having, orderBy, limit);
+                            SqlNodeList orderBy, SqlNode limit, SqlNode offset) {
+        return new SqlSelect(projection, from, where, false, groupBy, having, orderBy, limit, offset);
     }
 
     public SqlSelect select(SqlNodeList projection, SqlNode from, SqlNode where,
                             boolean distinct, SqlNodeList groupBy, SqlNode having,
-                            SqlNodeList orderBy, SqlNode limit) {
-        return new SqlSelect(projection, from, where, distinct, groupBy, having, orderBy, limit);
+                            SqlNodeList orderBy, SqlNode limit, SqlNode offset) {
+        return new SqlSelect(projection, from, where, distinct, groupBy, having, orderBy, limit, offset);
     }
 
     public SqlJoin join(SqlNode left, SqlNode right, SqlNode condition) {

@@ -6,6 +6,7 @@ import cn.zhangyis.minidb.sql.catalog.TableMeta;
 import cn.zhangyis.minidb.sql.rel.*;
 import cn.zhangyis.minidb.sql.validation.ValidatedDml;
 import cn.zhangyis.minidb.sql.validation.ValidatedSqlSelect;
+import cn.zhangyis.minidb.sql.validation.SqlValidator;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -83,6 +84,14 @@ public class SqlToRelConverter {
             RelNode left = convertFrom(join.left(), validated);
             RelNode right = convertFrom(join.right(), validated);
             return factories.join(left, right, join.condition());
+        }
+
+        if (from instanceof SqlDerivedTable derived) {
+            // 递归验证并转换内层 SELECT
+            SqlValidator validator = new SqlValidator(catalog);
+            SqlNode innerValidated = validator.validate(derived.select());
+            RelNode innerPlan = convert(innerValidated);
+            return new RelDerivedScan(innerPlan, derived.alias(), derived.select());
         }
 
         SqlTableRef ref = asTableRef(from);
