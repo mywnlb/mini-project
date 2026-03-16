@@ -5,7 +5,7 @@ public enum SqlKind {
     // 比较运算符
     BINARY_EQ, BINARY_LT, BINARY_GT, BINARY_LE, BINARY_GE, BINARY_NE,
     // 逻辑运算符
-    AND, OR,
+    AND, OR,CASE,FUNCTION_CALL,ORDER_BY_ITEM,
     // 算术运算符
     ADD, SUB, MUL, DIV,
     // 聚合函数
@@ -16,10 +16,8 @@ public enum SqlKind {
     CREATE_TABLE, DROP_TABLE, ALTER_TABLE, CREATE_INDEX, DROP_INDEX,
     // 谓词
     LIKE, NOT_LIKE, BETWEEN, NOT_BETWEEN, IN, NOT_IN, IS_NULL, IS_NOT_NULL,
-    // ORDER BY
-    ORDER_BY_ITEM,
-    // 分页
-    OFFSET,
+    // 函数调用
+    SET_OPERATION,
     // 子查询
     SCALAR_SUBQUERY, EXISTS, IN_SUBQUERY, DERIVED_TABLE,
     // 事务控制

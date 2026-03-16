@@ -31,13 +31,16 @@ public class SqlValidator {
             case SqlAlterTable alter -> validateAlterTable(alter);
             case SqlCreateIndex createIdx -> validateCreateIndex(createIdx);
             case SqlDropIndex dropIdx -> validateDropIndex(dropIdx);
+            case SqlSetOperation setOp -> validateSetOperation(setOp);
             default -> throw new ValidationException("Unsupported statement: " + node.kind());
         };
     }
 
     private ValidatedSqlSelect validateSelect(SqlSelect select) {
         Map<String, TableMeta> tables = new LinkedHashMap<>();
-        validateFrom(select.from(), tables);
+        if (select.from() != null) {
+            validateFrom(select.from(), tables);
+        }
         List<TableScope> scopes = tableScopes(tables);
         validateCommon(select, scopes);
         return new ValidatedSqlSelect(select, tables);
@@ -463,6 +466,12 @@ public class SqlValidator {
             return item.column();
         }
         return unwrapAlias(node);
+    }
+
+    private SqlSetOperation validateSetOperation(SqlSetOperation setOp) {
+        validate(setOp.left());
+        validate(setOp.right());
+        return setOp;
     }
 
     private String expressionSignature(SqlNode node) {

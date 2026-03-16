@@ -53,16 +53,19 @@ public class SqlLexer {
         keywords.put("DISTINCT", TokenType.DISTINCT);
         keywords.put("ASC", TokenType.ASC);
         keywords.put("DESC", TokenType.DESC);
+        keywords.put("AS", TokenType.AS);
         keywords.put("LIKE", TokenType.LIKE);
         keywords.put("BETWEEN", TokenType.BETWEEN);
         keywords.put("IN", TokenType.IN);
         keywords.put("IS", TokenType.IS);
-        keywords.put("NULL", TokenType.NULL);
-        keywords.put("AS", TokenType.AS);
-        keywords.put("BEGIN", TokenType.BEGIN);
-        keywords.put("COMMIT", TokenType.COMMIT);
-        keywords.put("ROLLBACK", TokenType.ROLLBACK);
-        keywords.put("TRANSACTION", TokenType.TRANSACTION);
+        keywords.put("CAST", TokenType.CAST);
+        keywords.put("CASE", TokenType.CASE);
+        keywords.put("WHEN", TokenType.WHEN);
+        keywords.put("THEN", TokenType.THEN);
+        keywords.put("ELSE", TokenType.ELSE);
+        keywords.put("END", TokenType.END);
+        keywords.put("UNION", TokenType.UNION);
+        keywords.put("ALL", TokenType.ALL);
     }
 
     public Token nextToken() {

@@ -58,6 +58,10 @@ public class SqlNodeFactory {
         return new SqlLiteral(value, SqlType.VARCHAR);
     }
 
+    public SqlFunctionCall functionCall(String name, SqlNodeList args) {
+        return new SqlFunctionCall(name, args);
+    }
+
     public SqlNodeList nodeList() {
         return new SqlNodeList();
     }
@@ -76,6 +80,14 @@ public class SqlNodeFactory {
 
     public SqlAggCall aggCall(String funcName, SqlNode arg) {
         return new SqlAggCall(funcName, arg);
+    }
+
+    public SqlCase caseWhen(java.util.List<SqlCase.WhenThen> whenThens, SqlNode elseExpr) {
+        return new SqlCase(whenThens, elseExpr);
+    }
+
+    public SqlSetOperation setOperation(SqlNode left, SqlNode right, boolean all) {
+        return new SqlSetOperation(left, right, all);
     }
 
     public SqlNode nullLiteral() {

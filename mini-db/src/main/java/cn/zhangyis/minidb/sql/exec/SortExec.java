@@ -35,11 +35,11 @@ public class SortExec implements ExecNode {
         Comparator<Row> comparator = buildComparator();
 
         List<Row> result;
-        if (limit != null && limit > 0 && comparator != null) {
+        if (limit != null && limit > 0 && comparator != null && (offset == null || offset == 0)) {
             // TopN 优化：用最大堆维护 top-K 最小元素
             result = topN(comparator);
         } else {
-            // MemSort：全量物化 + 排序
+            // MemSort：全量物化 + 排序（支持 OFFSET + LIMIT）
             result = memSort(comparator);
         }
 

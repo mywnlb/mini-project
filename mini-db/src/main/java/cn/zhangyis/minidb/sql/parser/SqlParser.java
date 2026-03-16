@@ -16,7 +16,16 @@ public class SqlParser {
     public SqlNode parseStatement() {
         TokenType type = tokens.current().type();
         SqlNode result = switch (type) {
-            case SELECT -> parseSelect();
+            case SELECT -> {
+                SqlNode s = parseSelect();
+                if (tokens.current().type() == TokenType.UNION) {
+                    tokens.next();
+                    boolean all = tokens.match(TokenType.ALL);
+                    SqlNode right = parseSelect();
+                    yield factory.setOperation(s, right, all);
+                }
+                yield s;
+            }
             case INSERT -> parseInsert();
             case UPDATE -> parseUpdate();
             case DELETE -> parseDelete();
@@ -43,8 +52,12 @@ public class SqlParser {
         boolean distinct = tokens.match(TokenType.DISTINCT);
 
         SqlNodeList projection = parseProjection();
-        tokens.expect(TokenType.FROM);
-        SqlNode from = parseFrom();
+
+        SqlNode from = null;
+        if (tokens.current().type() == TokenType.FROM) {
+            tokens.next();
+            from = parseFrom();
+        }
 
         SqlNode where = null;
         if (tokens.match(TokenType.WHERE)) {
@@ -269,8 +282,15 @@ public class SqlParser {
     }
 
     private SqlCreateTable.ColumnDef parseColumnDef() {
-        String name = tokens.current().value();
-        tokens.expect(TokenType.IDENTIFIER);
+        Token token = tokens.current();
+        String name;
+        if (token.type() == TokenType.IDENTIFIER || token.type() == TokenType.DESC) {
+            name = token.value();
+            tokens.next();
+        } else {
+            tokens.expect(TokenType.IDENTIFIER);
+            name = token.value(); // unreachable
+        }
 
         SqlType type = parseColumnType();
 
@@ -396,6 +416,24 @@ public class SqlParser {
         }
         tokens.expect(TokenType.RPAREN);
         return factory.aggCall(funcName, arg);
+    }
+
+    private SqlNode parseCaseExpression() {
+        // CASE 已经被 parsePrimary() 消费，这里不再 expect
+        java.util.List<SqlCase.WhenThen> whenThens = new java.util.ArrayList<>();
+        while (tokens.current().type() == TokenType.WHEN) {
+            tokens.next();
+            SqlNode cond = parseExpression();
+            tokens.expect(TokenType.THEN);
+            SqlNode result = parseExpression();
+            whenThens.add(new SqlCase.WhenThen(cond, result));
+        }
+        SqlNode elseExpr = null;
+        if (tokens.match(TokenType.ELSE)) {
+            elseExpr = parseExpression();
+        }
+        tokens.expect(TokenType.END);
+        return factory.caseWhen(whenThens, elseExpr);
     }
 
     private boolean isAggFunction(TokenType type) {
@@ -555,6 +593,10 @@ public class SqlParser {
             tokens.next();
             return factory.nullLiteral();
         }
+        if (token.type() == TokenType.CASE) {
+            tokens.next();
+            return parseCaseExpression();
+        }
         // NOT EXISTS (SELECT ...)
         if (token.type() == TokenType.NOT && tokens.peek().type() == TokenType.EXISTS) {
             tokens.next(); // consume NOT
@@ -595,6 +637,25 @@ public class SqlParser {
         if (isAggFunction(token.type())) {
             return parseAggCall();
         }
+
+        // 支持标量函数 UPPER/LOWER/COALESCE(...)
+        Token currentToken = tokens.current();
+        if (currentToken.type() == TokenType.IDENTIFIER) {
+            String funcName = currentToken.value().toUpperCase();
+            if (funcName.equals("UPPER") || funcName.equals("LOWER") || funcName.equals("COALESCE")) {
+                tokens.next(); // consume function name
+                tokens.expect(TokenType.LPAREN);
+                SqlNodeList args = factory.nodeList();
+                if (!tokens.current().type().equals(TokenType.RPAREN)) {
+                    do {
+                        args.add(parseExpression());
+                    } while (tokens.match(TokenType.COMMA));
+                }
+                tokens.expect(TokenType.RPAREN);
+                return factory.functionCall(funcName, args);
+            }
+        }
+
         // IDENTIFIER or IDENTIFIER.IDENTIFIER
         SqlIdentifier id = parseIdentifier();
         if (tokens.current().type() == TokenType.DOT) {
@@ -607,7 +668,7 @@ public class SqlParser {
 
     private SqlIdentifier parseIdentifier() {
         Token token = tokens.current();
-        if (token.type() != TokenType.IDENTIFIER) {
+        if (token.type() != TokenType.IDENTIFIER && token.type() != TokenType.DESC) {
             throw new SqlParseException("Expected identifier, got " + token);
         }
         tokens.next();

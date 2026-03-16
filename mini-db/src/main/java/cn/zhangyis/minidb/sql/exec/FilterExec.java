@@ -1,6 +1,11 @@
 package cn.zhangyis.minidb.sql.exec;
 
 import cn.zhangyis.minidb.sql.ast.*;
+import cn.zhangyis.minidb.sql.functions.FunctionRegistry;
+import cn.zhangyis.minidb.sql.functions.ScalarFunction;
+
+import java.util.List;
+import java.util.ArrayList;
 
 /**
  * 过滤执行器：逐行判断条件（SQL 三值逻辑）
@@ -310,6 +315,33 @@ public class FilterExec implements ExecNode {
                 return null;
             }
         }
+
+        // 标量函数支持 (UPPER 等)
+        if (node instanceof SqlFunctionCall call) {
+            ScalarFunction func = FunctionRegistry.get(call.functionName());
+            if (func != null) {
+                List<Object> args = new ArrayList<>();
+                for (SqlNode arg : call.arguments().nodes()) {
+                    args.add(resolveValue(arg, row, evaluator));
+                }
+                return func.evaluate(null, args);  // row 参数暂不使用
+            }
+        }
+
+        // CASE WHEN 支持
+        if (node instanceof SqlCase caseExpr) {
+            for (SqlCase.WhenThen wt : caseExpr.whenThens()) {
+                Boolean cond = evaluate3VL(wt.condition(), row, evaluator);
+                if (Boolean.TRUE.equals(cond)) {
+                    return resolveValue(wt.result(), row, evaluator);
+                }
+            }
+            if (caseExpr.elseExpr() != null) {
+                return resolveValue(caseExpr.elseExpr(), row, evaluator);
+            }
+            return null; // no match, no ELSE -> NULL
+        }
+
         return null;
     }
 

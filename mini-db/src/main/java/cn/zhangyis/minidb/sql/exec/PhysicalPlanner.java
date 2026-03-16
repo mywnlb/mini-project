@@ -120,6 +120,11 @@ public class PhysicalPlanner {
             ExecNode input = planInternal(agg.input(), overrideAlgo);
             return new AggregateExec(input, agg.groupKeys(), agg.aggCalls());
         }
+        if (relNode instanceof RelUnion union) {
+            ExecNode left = planInternal(union.left(), overrideAlgo);
+            ExecNode right = planInternal(union.right(), overrideAlgo);
+            return new UnionExec(left, right, union.all());
+        }
         if (relNode instanceof RelSort sort) {
             ExecNode input = planInternal(sort.input(), overrideAlgo);
             Integer limit = null;
@@ -132,28 +137,36 @@ public class PhysicalPlanner {
             }
             return new SortExec(input, sort.orderBy(), limit, offset);
         }
-        if (relNode instanceof RelInsert insert) {
+        if (relNode instanceof RelInsert) {
+            RelInsert insert = (RelInsert) relNode;
             return new InsertExec(insert, dataSource);
         }
-        if (relNode instanceof RelUpdate update) {
+        if (relNode instanceof RelUpdate) {
+            RelUpdate update = (RelUpdate) relNode;
             return new UpdateExec(update, dataSource, catalog);
         }
-        if (relNode instanceof RelDelete delete) {
+        if (relNode instanceof RelDelete) {
+            RelDelete delete = (RelDelete) relNode;
             return new DeleteExec(delete, dataSource);
         }
-        if (relNode instanceof RelCreateTable create) {
+        if (relNode instanceof RelCreateTable) {
+            RelCreateTable create = (RelCreateTable) relNode;
             return new CreateTableExec(create);
         }
-        if (relNode instanceof RelDropTable drop) {
+        if (relNode instanceof RelDropTable) {
+            RelDropTable drop = (RelDropTable) relNode;
             return new DropTableExec(drop);
         }
-        if (relNode instanceof RelAlterTable alter) {
+        if (relNode instanceof RelAlterTable) {
+            RelAlterTable alter = (RelAlterTable) relNode;
             return new AlterTableExec(alter);
         }
-        if (relNode instanceof RelCreateIndex createIdx) {
+        if (relNode instanceof RelCreateIndex) {
+            RelCreateIndex createIdx = (RelCreateIndex) relNode;
             return new CreateIndexExec(createIdx);
         }
-        if (relNode instanceof RelDropIndex dropIdx) {
+        if (relNode instanceof RelDropIndex) {
+            RelDropIndex dropIdx = (RelDropIndex) relNode;
             return new DropIndexExec(dropIdx);
         }
         throw new IllegalArgumentException("Unknown RelNode: " + relNode.getClass().getSimpleName());

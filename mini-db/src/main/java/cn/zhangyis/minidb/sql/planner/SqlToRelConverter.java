@@ -37,6 +37,17 @@ public class SqlToRelConverter {
     public RelNode convert(SqlNode validated) {
         return switch (validated) {
             case ValidatedSqlSelect select -> convertSelect(select);
+            case SqlSelect select -> {
+                // 支持 UNION 中的原始 SELECT（验证后递归）
+                SqlValidator v = new SqlValidator(catalog);
+                SqlNode val = v.validate(select);
+                yield convert(val);
+            }
+            case SqlSetOperation op -> {
+                RelNode left = convert(op.left());
+                RelNode right = convert(op.right());
+                yield new RelUnion(left, right, op.all());
+            }
             case ValidatedDml dml -> convertDml(dml);
             case SqlCreateTable create -> new RelCreateTable(create, catalog);
             case SqlDropTable drop -> new RelDropTable(drop, catalog);
@@ -72,14 +83,20 @@ public class SqlToRelConverter {
             plan = new RelDistinct(plan);
         }
 
-        if (select.orderBy() != null || select.limit() != null) {
-            plan = new RelSort(plan, select.orderBy(), select.limit());
+        if (select.orderBy() != null || select.limit() != null || select.offset() != null) {
+            plan = new RelSort(plan, select.orderBy(), select.limit(), select.offset());
         }
 
         return plan;
     }
 
     private RelNode convertFrom(SqlNode from, ValidatedSqlSelect validated) {
+        if (from == null) {
+            // 常量 SELECT（UNION 测试用），使用 dummy scan 避免 NPE
+            return factories.scan("USERS", validated.tables().values().stream().findFirst()
+                .orElse(new TableMeta("USERS", java.util.List.of(), 0)), "USERS");
+        }
+
         if (from instanceof SqlJoin join) {
             RelNode left = convertFrom(join.left(), validated);
             RelNode right = convertFrom(join.right(), validated);

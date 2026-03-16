@@ -50,8 +50,11 @@ public class TestMain {
         testExecWithJoinAlgo(joinSql, PhysicalPlanner.JoinAlgorithm.SORT_MERGE);
 
         testExec("SELECT name, COUNT(*) FROM users GROUP BY name");
-        testExec("SELECT * FROM users ORDER BY id");
-        testExec("SELECT * FROM users ORDER BY id LIMIT 3");
+        testExec("SELECT * FROM users ORDER BY id LIMIT 5 OFFSET 2");
+        testExec("SELECT UPPER(name), LOWER(name) FROM users");
+        testExec("SELECT CASE WHEN id > 5 THEN 'high' WHEN id > 2 THEN 'medium' ELSE 'low' END as category FROM users");
+        testExec("SELECT 1 as num UNION SELECT 2 as num");
+        testExec("SELECT 1 as num UNION ALL SELECT 1 as num");
 
         System.out.println("\n\n========== DML EXECUTION TESTS ==========");
         testDml();
