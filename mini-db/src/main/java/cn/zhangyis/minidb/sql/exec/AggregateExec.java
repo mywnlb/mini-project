@@ -51,7 +51,13 @@ public class AggregateExec implements ExecNode {
 
             // 计算每个聚合函数
             for (SqlAggCall agg : aggCalls) {
-                String key = agg.funcName() + "(" + agg.arg() + ")";
+                String key;
+                if (agg.arg().kind() == SqlKind.STAR) {
+                    key = agg.funcName().toUpperCase() + "(*)";
+                } else {
+                    String argStr = agg.arg().toString().replaceAll("\\s+", "");
+                    key = agg.funcName().toUpperCase() + "(" + argStr + ")";
+                }
                 resultRow.put(key, computeAgg(agg, groupRows));
             }
 
