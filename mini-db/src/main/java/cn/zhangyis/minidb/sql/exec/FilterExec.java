@@ -34,10 +34,38 @@ public class FilterExec implements ExecNode {
 
     /**
      * 通用子查询执行器：将 SqlSelect 编译为 ExecNode，供 EXISTS/IN 子查询使用
+     * 支持相关子查询，通过 outerRow 传递外层行数据
      */
     @FunctionalInterface
     public interface SubqueryExecutor {
-        ExecNode execute(SqlSelect select);
+        ExecNode execute(SqlSelect select, Row outerRow);
+    }
+
+    /**
+     * 相关子查询行合并执行器：将外层行的列合并到子查询的每一行中，
+     * 使子查询的 WHERE 条件能够访问外层表的列（如 users.id）
+     */
+    static class CorrelatedRowExec implements ExecNode {
+        private final ExecNode inner;
+        private final Row outerRow;
+
+        public CorrelatedRowExec(ExecNode inner, Row outerRow) {
+            this.inner = inner;
+            this.outerRow = outerRow;
+        }
+
+        @Override
+        public void open() { inner.open(); }
+
+        @Override
+        public Row next() {
+            Row r = inner.next();
+            if (r == null) return null;
+            return r.merge(outerRow);
+        }
+
+        @Override
+        public void close() { inner.close(); }
     }
 
     private final SubqueryExecutor subqueryExecutor;
@@ -139,7 +167,7 @@ public class FilterExec implements ExecNode {
             if (executor == null) {
                 throw new IllegalStateException("EXISTS subquery encountered but no SubqueryExecutor configured");
             }
-            Boolean result = evaluateExists(exists.select(), executor);
+            Boolean result = evaluateExists(exists.select(), row, executor);
             return exists.negated() ? not3VL(result) : result;
         }
         // expr IN (SELECT ...)
@@ -147,7 +175,7 @@ public class FilterExec implements ExecNode {
             if (executor == null) {
                 throw new IllegalStateException("IN subquery encountered but no SubqueryExecutor configured");
             }
-            Boolean result = evaluateInSubquery(resolveValue(inSub.expr(), row, evaluator), inSub.select(), executor);
+            Boolean result = evaluateInSubquery(resolveValue(inSub.expr(), row, evaluator), inSub.select(), row, executor);
             return inSub.negated() ? not3VL(result) : result;
         }
         return Boolean.FALSE;
@@ -214,10 +242,10 @@ public class FilterExec implements ExecNode {
     }
 
     /**
-     * EXISTS 子查询求值：子查询有结果 → TRUE，无结果 → FALSE
+     * EXISTS 子查询求值：支持相关子查询（通过合并 outerRow 使条件可见外层列）
      */
-    private static Boolean evaluateExists(SqlSelect select, SubqueryExecutor executor) {
-        ExecNode exec = executor.execute(select);
+    private static Boolean evaluateExists(SqlSelect select, Row outerRow, SubqueryExecutor executor) {
+        ExecNode exec = executor.execute(select, outerRow);
         exec.open();
         try {
             return exec.next() != null;
@@ -233,9 +261,9 @@ public class FilterExec implements ExecNode {
      * - 子查询结果中有 null 且无匹配 → UNKNOWN
      * - 无 null 且无匹配 → FALSE
      */
-    private static Boolean evaluateInSubquery(Object val, SqlSelect select, SubqueryExecutor executor) {
+    private static Boolean evaluateInSubquery(Object val, SqlSelect select, Row outerRow, SubqueryExecutor executor) {
         if (val == null) return null; // UNKNOWN
-        ExecNode exec = executor.execute(select);
+        ExecNode exec = executor.execute(select, outerRow);
         exec.open();
         try {
             boolean hasNull = false;

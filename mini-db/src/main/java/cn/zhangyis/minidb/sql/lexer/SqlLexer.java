@@ -38,6 +38,10 @@ public class SqlLexer {
         keywords.put("UPDATE", TokenType.UPDATE);
         keywords.put("SET", TokenType.SET);
         keywords.put("DELETE", TokenType.DELETE);
+        keywords.put("BEGIN", TokenType.BEGIN);
+        keywords.put("COMMIT", TokenType.COMMIT);
+        keywords.put("ROLLBACK", TokenType.ROLLBACK);
+        keywords.put("TRANSACTION", TokenType.TRANSACTION);
         keywords.put("CREATE", TokenType.CREATE);
         keywords.put("DROP", TokenType.DROP);
         keywords.put("TABLE", TokenType.TABLE);
@@ -58,6 +62,7 @@ public class SqlLexer {
         keywords.put("BETWEEN", TokenType.BETWEEN);
         keywords.put("IN", TokenType.IN);
         keywords.put("IS", TokenType.IS);
+        keywords.put("NULL", TokenType.NULL);
         keywords.put("CAST", TokenType.CAST);
         keywords.put("CASE", TokenType.CASE);
         keywords.put("WHEN", TokenType.WHEN);

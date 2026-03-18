@@ -64,6 +64,11 @@ public final class PageSplit {
     public static SplitResult split(BufferFrame frame, BufferPool bufferPool,
                                     RecordComparator comparator, MiniTransaction mtr)
             throws MiniDbException {
+        if (comparator instanceof ClusteredPrimaryKeyComparator) {
+            throw new UnsupportedOperationException(
+                    "Page split for compact clustered rows is not yet supported safely");
+        }
+
         ByteBuffer buf = frame.buffer();
 
         // 1. 收集所有用户记录信息
@@ -120,6 +125,13 @@ public final class PageSplit {
     public static SplitResult splitAndInsert(BufferFrame frame, byte[] recordData, byte[] searchKey,
                                              BufferPool bufferPool, RecordComparator comparator,
                                              MiniTransaction mtr) throws MiniDbException {
+        return splitAndInsert(frame, recordData, 0, searchKey, bufferPool, comparator, mtr);
+    }
+
+    public static SplitResult splitAndInsert(BufferFrame frame, byte[] recordData, int recordHeaderOffset,
+                                             byte[] searchKey, BufferPool bufferPool,
+                                             RecordComparator comparator, MiniTransaction mtr)
+            throws MiniDbException {
         // 1. 先执行分裂
         SplitResult result = split(frame, bufferPool, comparator, mtr);
 
@@ -129,7 +141,7 @@ public final class PageSplit {
 
         if (cmp < 0) {
             // 插入原页面
-            int offset = PageInsert.insertRecord(frame, recordData, searchKey, comparator, mtr);
+            int offset = PageInsert.insertRecord(frame, recordData, recordHeaderOffset, searchKey, comparator, mtr);
             if (offset < 0) {
                 throw new IllegalStateException("Failed to insert into original page after split");
             }
@@ -138,7 +150,7 @@ public final class PageSplit {
             BufferFrame newFrame = bufferPool.getPage(result.getNewPageId(), BufferPool.FetchMode.READ_EXISTING);
             newFrame.writeLock();
             try {
-                int offset = PageInsert.insertRecord(newFrame, recordData, searchKey, comparator, mtr);
+                int offset = PageInsert.insertRecord(newFrame, recordData, recordHeaderOffset, searchKey, comparator, mtr);
                 if (offset < 0) {
                     throw new IllegalStateException("Failed to insert into new page after split");
                 }

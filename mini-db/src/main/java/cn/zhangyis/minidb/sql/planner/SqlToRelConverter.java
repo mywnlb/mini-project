@@ -8,10 +8,7 @@ import cn.zhangyis.minidb.sql.validation.ValidatedDml;
 import cn.zhangyis.minidb.sql.validation.ValidatedSqlSelect;
 import cn.zhangyis.minidb.sql.validation.SqlValidator;
 
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class SqlToRelConverter {
     private final RelFactories factories;
@@ -120,43 +117,39 @@ public class SqlToRelConverter {
     }
 
     private List<SqlAggCall> collectAllAggCalls(SqlSelect select) {
-        Set<String> seen = new LinkedHashSet<>();
-        List<SqlAggCall> aggCalls = new ArrayList<>();
-
+        Map<String, SqlAggCall> aggMap = new LinkedHashMap<>();
         for (SqlNode node : select.projection().nodes()) {
-            collectAggCallsFromTree(unwrapAlias(node), seen, aggCalls);
+            collectAggCallsFromTree(unwrapAlias(node), aggMap);
         }
         if (select.having() != null) {
-            collectAggCallsFromTree(select.having(), seen, aggCalls);
+            collectAggCallsFromTree(select.having(), aggMap);
         }
 
-        return aggCalls;
+        return new ArrayList<>(aggMap.values());
     }
 
-    private void collectAggCallsFromTree(SqlNode node, Set<String> seen, List<SqlAggCall> aggCalls) {
+    private void collectAggCallsFromTree(SqlNode node, Map<String, SqlAggCall> aggMap) {
         if (node instanceof SqlSubquery) return; // 子查询内部的 agg 不属于外层
         if (node instanceof SqlAggCall agg) {
             String key = aggSlotKey(agg);
-            if (seen.add(key)) {
-                aggCalls.add(agg);
-            }
+            aggMap.putIfAbsent(key, agg);
             return;
         }
         if (node instanceof SqlBinaryOp binOp) {
-            collectAggCallsFromTree(binOp.left(), seen, aggCalls);
-            collectAggCallsFromTree(binOp.right(), seen, aggCalls);
+            collectAggCallsFromTree(binOp.left(), aggMap);
+            collectAggCallsFromTree(binOp.right(), aggMap);
             return;
         }
         if (node instanceof SqlBetween between) {
-            collectAggCallsFromTree(between.expr(), seen, aggCalls);
-            collectAggCallsFromTree(between.low(), seen, aggCalls);
-            collectAggCallsFromTree(between.high(), seen, aggCalls);
+            collectAggCallsFromTree(between.expr(), aggMap);
+            collectAggCallsFromTree(between.low(), aggMap);
+            collectAggCallsFromTree(between.high(), aggMap);
             return;
         }
         if (node instanceof SqlInList inList) {
-            collectAggCallsFromTree(inList.expr(), seen, aggCalls);
+            collectAggCallsFromTree(inList.expr(), aggMap);
             for (SqlNode value : inList.values().nodes()) {
-                collectAggCallsFromTree(value, seen, aggCalls);
+                collectAggCallsFromTree(value, aggMap);
             }
         }
     }
@@ -222,7 +215,11 @@ public class SqlToRelConverter {
     }
 
     private String aggSlotKey(SqlAggCall agg) {
-        return agg.funcName() + "(" + agg.arg() + ")";
+        if (agg.arg().kind() == SqlKind.STAR) {
+            return agg.funcName().toUpperCase() + "(*)";
+        }
+        String argStr = agg.arg().toString().replaceAll("\\s+", "");
+        return agg.funcName().toUpperCase() + "(" + argStr + ")";
     }
 
     private SqlTableRef asTableRef(SqlNode node) {

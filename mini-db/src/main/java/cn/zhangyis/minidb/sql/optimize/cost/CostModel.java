@@ -87,8 +87,9 @@ public class CostModel {
     /**
      * 根据代价模型选择最优 JOIN 算法。
      *
-     * <p>默认构造器不会考虑索引路径；启用后仅在 join key 命中主键点查时
-     * 才会评估 INDEX_NESTED_LOOP。</p>
+     * <p>阶段4完成后：受控开启 INDEX_NESTED_LOOP。
+     * 只有当 enableIndexLookup=true 且 join key 匹配主键时，才会优先选择索引路径。
+     * 这避免了“伪索引”问题，符合 roadmap 阶段4要求。</p>
      */
     public JoinAlgorithm chooseJoinAlgorithm(RelNode left, RelNode right, SqlNode condition) {
         boolean isEquiJoin = isEquiJoinCondition(condition);
@@ -146,8 +147,8 @@ public class CostModel {
     // ==================== 各 JOIN 算法代价公式 ====================
 
     private double nestedLoopJoinCost(double leftRows, double rightRows) {
-        // O(M * N)
-        return leftRows * rightRows * 0.001;
+        // O(M * N)，常量调整为0.01以确保IndexNL在可用时被优先选择
+        return leftRows * rightRows * 0.01;
     }
 
     private double hashJoinCost(double leftRows, double rightRows) {

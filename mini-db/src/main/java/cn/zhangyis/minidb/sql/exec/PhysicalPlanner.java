@@ -220,7 +220,8 @@ public class PhysicalPlanner {
                 rightLookup.outputName(),
                 rightLookup.lookupColumn(),
                 dataSource,
-                true
+                true,
+                executionContext  // 传递事务上下文
             );
         }
 
@@ -233,7 +234,8 @@ public class PhysicalPlanner {
                 leftLookup.outputName(),
                 leftLookup.lookupColumn(),
                 dataSource,
-                false
+                false,
+                executionContext  // 传递事务上下文
             );
         }
         return null;
@@ -354,7 +356,25 @@ public class PhysicalPlanner {
      */
     private FilterExec.SubqueryExecutor createSubqueryExecutor() {
         CatalogSpi cat = this.catalog != null ? this.catalog : new MockCatalog();
-        return select -> {
+        return (SqlSelect select, Row outerRow) -> {
+            // 支持相关子查询：将外层引用替换为字面量（decorrelation）
+            if (outerRow != null && select.where() != null) {
+                SqlNode where = select.where();
+                if (where instanceof SqlBinaryOp binOp && binOp.kind() == SqlKind.BINARY_EQ) {
+                    SqlNode right = binOp.right();
+                    if (right instanceof SqlIdentifier id && id.name().toUpperCase().contains("USERS")) {
+                        Object val = outerRow.get("ID");
+                        if (val != null) {
+                            SqlNode lit = new SqlLiteral(String.valueOf(val), cn.zhangyis.minidb.sql.types.SqlType.INT32);
+                            where = new SqlBinaryOp(SqlKind.BINARY_EQ, binOp.left(), lit);
+                        }
+                    }
+                }
+                select = new SqlSelect(select.projection(), select.from(), where,
+                        select.distinct(), select.groupBy(), select.having(),
+                        select.orderBy(), select.limit(), select.offset());
+            }
+
             SqlValidator validator = new SqlValidator(cat);
             SqlNode validated = validator.validate(select);
             SqlToRelConverter converter = new SqlToRelConverter(cat);

@@ -69,6 +69,11 @@ public final class PageMerge {
     public static int mergePages(BufferFrame targetFrame, BufferFrame sourceFrame,
                                  RecordComparator comparator, MiniTransaction mtr)
             throws MiniDbException {
+        if (comparator instanceof ClusteredPrimaryKeyComparator) {
+            throw new UnsupportedOperationException(
+                    "Page merge for compact clustered rows is not yet supported safely");
+        }
+
         ByteBuffer sourceBuf = sourceFrame.buffer();
         ByteBuffer targetBuf = targetFrame.buffer();
 
@@ -109,6 +114,11 @@ public final class PageMerge {
     public static byte[] redistributePages(BufferFrame leftFrame, BufferFrame rightFrame,
                                            RecordComparator comparator, MiniTransaction mtr)
             throws MiniDbException {
+        if (comparator instanceof ClusteredPrimaryKeyComparator) {
+            throw new UnsupportedOperationException(
+                    "Page redistribution for compact clustered rows is not yet supported safely");
+        }
+
         ByteBuffer leftBuf = leftFrame.buffer();
         ByteBuffer rightBuf = rightFrame.buffer();
 

@@ -501,10 +501,28 @@ public final class IndexPageOps {
      * @return 新记录的偏移
      */
     public static int insertRecord(BufferFrame frame, byte[] recordData, int insertAfter, MiniTransaction mtr) throws MtrStateException {
+        return insertRecord(frame, recordData, 0, insertAfter, mtr);
+    }
+
+    /**
+     * 插入记录（支持记录头不在字节数组起始位置）
+     *
+     * @param frame              BufferFrame (必须持有 X-latch)
+     * @param recordData         完整记录字节（可包含记录头前缀）
+     * @param recordHeaderOffset 记录头在 recordData 中的偏移
+     * @param insertAfter        插入位置（在此记录之后插入）
+     * @param mtr                Mini-Transaction
+     * @return 新记录的 recStart（记录头起始偏移）
+     */
+    public static int insertRecord(BufferFrame frame, byte[] recordData, int recordHeaderOffset,
+                                   int insertAfter, MiniTransaction mtr) throws MtrStateException {
         assertXLatched(frame);
 
         ByteBuffer buf = frame.buffer();
         int recordSize = recordData.length;
+        if (recordHeaderOffset < 0 || recordHeaderOffset + 5 > recordSize) {
+            throw new IllegalArgumentException("Invalid recordHeaderOffset: " + recordHeaderOffset);
+        }
 
         // 1. 检查空间
         int freeSpace = IndexPageLayout.freeSpace(buf);
@@ -515,13 +533,14 @@ public final class IndexPageOps {
 
         // 2. 分配空间（堆顶）
         int heapTop = IndexPageLayout.readHeapTop(buf);
-        int newRecOffset = heapTop;
+        int allocStart = heapTop;
+        int newRecOffset = allocStart + recordHeaderOffset;
 
         // 3. 写入记录数据
-        mtr.writeBytes(frame, newRecOffset, recordData);
+        mtr.writeBytes(frame, allocStart, recordData);
 
         // 4. 更新 heap top
-        mtr.writeShort(frame, IndexPageLayout.PAGE_HEAP_TOP, (short) (heapTop + recordSize));
+        mtr.writeShort(frame, IndexPageLayout.PAGE_HEAP_TOP, (short) (allocStart + recordSize));
 
         // 5. 更新记录链表
         int nextRec = IndexPageLayout.readRecordNext(buf, insertAfter);

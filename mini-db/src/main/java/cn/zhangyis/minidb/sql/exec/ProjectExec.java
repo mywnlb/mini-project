@@ -68,6 +68,10 @@ public class ProjectExec implements ExecNode {
 
     private String aggKey(SqlAggCall agg) {
         // 聚合列由 AggregateExec 处理，这里只负责读取结果并可选重命名
-        return agg.funcName() + "(" + agg.arg() + ")";
+        if (agg.arg().kind() == SqlKind.STAR) {
+            return agg.funcName().toUpperCase() + "(*)";
+        }
+        String argStr = agg.arg().toString().replaceAll("\\s+", "");
+        return agg.funcName().toUpperCase() + "(" + argStr + ")";
     }
 }

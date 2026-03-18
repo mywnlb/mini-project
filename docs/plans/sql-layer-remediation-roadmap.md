@@ -18,8 +18,12 @@
    - `ExecutionContext.currentTxn/auto-commit` 只对事务控制语句生效，普通 DML executor 没消费事务上下文。
 3. 索引断裂：
    - rule/CBO 假设索引可用，但 executor 没有真实 `IndexScan` / lookup join。
-4. 元数据断裂：
-   - `StorageCatalog` 的 DDL 和 index lookup 未接通真实 storage，optimizer 建立在空或假元数据之上。
+4. 元数据断裂：【已完成】 StorageCatalog + SchemaRegistry 初始化（P1-5 真闭环）
+   - StorageCatalog 完整委托 CatalogManager，DDL/createTable 路径强制生成 SchemaRegistry(v=1)
+   - CatalogBootstrap.rebuildTableDescriptor 与 CatalogManager.buildSchema 一致重建 schema
+   - SchemaRegistry.get 支持 version=0 安全 fallback（兼容旧测试数据）
+   - PK 检测强化，pageNo=-1 问题解决，StorageSqlSessionIntegrationTest 通过
+   - optimizer 现在基于真实元数据和索引路径决策
 
 后续 optimizer 工作的前置条件：
 
@@ -311,11 +315,19 @@ P2-7 语法与表达式扩展
 - 将暂不支持的 `addColumn` 明确为受限能力
 - 补齐 DDL 后元数据可见性和 SQL 行为测试
 
-## 阶段 4：索引伪实现清理与真实索引路径恢复
+## 阶段 4：索引伪实现清理与真实索引路径恢复 【已完成】
 
-- 先禁用默认伪索引 rule/CBO 路径
-- 再实现真实 `IndexScanExec` / index lookup join
-- 恢复真实 `RelIndexedScan` 和 `INDEX_NESTED_LOOP`
+- 先禁用默认伪索引 rule/CBO 路径 → **完成**
+- 再实现真实 `IndexScanExec` / index lookup join → **完成**
+- 更新 `CostOptimizer`/`CostModel` 恢复受控的索引选择（enableIndexLookup）→ **完成**
+- 恢复真实 `RelIndexedScan` 和 `INDEX_NESTED_LOOP` → **完成**
+- 测试文件重构为 `IndexPathEnabledTest.java`，新增对应验证
+
+**完成标准已满足**：
+- 默认 planner 不再产出伪索引路径
+- 真实索引执行能力接入后，CBO 可受控启用索引路径
+- explain / chosen algo / executor 类型一致
+- 这是继续做 CBO 和 optimizer 深化工作的第二前置条件
 
 ## 阶段 5：能力扩展
 

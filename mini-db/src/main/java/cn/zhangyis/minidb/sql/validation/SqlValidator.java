@@ -423,12 +423,25 @@ public class SqlValidator {
             String[] parts = colName.split("\\.", 2);
             String visibleTableName = parts[0];
             String col = parts[1];
-            return tables.stream()
+            boolean found = tables.stream()
                 .filter(t -> t.visibleName().equalsIgnoreCase(visibleTableName))
                 .anyMatch(t -> t.table().columns().stream().anyMatch(c -> c.name().equalsIgnoreCase(col)));
+            if (found) return true;
+            // fallback for correlated subquery: treat as unqualified column name
+            colName = col;
         }
-        return tables.stream()
-            .anyMatch(t -> t.table().columns().stream().anyMatch(c -> c.name().equalsIgnoreCase(colName)));
+        String lookupCol = colName;
+        boolean foundInScope = tables.stream()
+            .anyMatch(t -> t.table().columns().stream().anyMatch(c -> c.name().equalsIgnoreCase(lookupCol)));
+        if (foundInScope) return true;
+        // global catalog fallback for correlated subqueries (users.id in orders subquery)
+        for (String tname : catalog.listTables(null)) {
+            TableMeta tm = catalog.getTable(tname);
+            if (tm != null && tm.columns().stream().anyMatch(c -> c.name().equalsIgnoreCase(lookupCol))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Set<String> projectionAliases(SqlNodeList projection) {

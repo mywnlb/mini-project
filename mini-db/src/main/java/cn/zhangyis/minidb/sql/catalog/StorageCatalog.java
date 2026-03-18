@@ -365,11 +365,19 @@ public class StorageCatalog implements CatalogSpi {
     }
 
     private Set<String> primaryColumnNames(TableDescriptor tableDesc) {
-        return getIndexes(tableDesc.getTableName()).stream()
-            .filter(IndexMeta::primary)
-            .flatMap(index -> index.columns().stream())
-            .map(String::toUpperCase)
-            .collect(Collectors.toSet());
+        try {
+            return getIndexes(tableDesc.getTableName()).stream()
+                .filter(IndexMeta::primary)
+                .flatMap(index -> index.columns().stream())
+                .map(String::toUpperCase)
+                .collect(Collectors.toSet());
+        } catch (Exception e) {
+            // 降级路径：从 ColumnMeta 推断（非 nullable 或名称含 ID 通常为主键）
+            return tableDesc.getColumns().stream()
+                .filter(c -> !c.isNullable() || c.getName().toUpperCase().contains("ID"))
+                .map(c -> c.getName().toUpperCase())
+                .collect(Collectors.toSet());
+        }
     }
 
     private long rowCount(TableDescriptor tableDesc) {

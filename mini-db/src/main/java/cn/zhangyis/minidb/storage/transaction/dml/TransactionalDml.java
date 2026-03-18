@@ -222,13 +222,13 @@ public class TransactionalDml {
         // 2. 编码记录
         long trxId = trx.getId().getValue();
         long rollPtrValue = rollPtr.encode();
-        int rowVersion = 0; // 初始版本
+        int rowVersion = currentSchemaVersion();
         long rowId = 0;     // 如果使用隐式 ROW_ID，需要从其他地方获取
 
-        byte[] recordData = encodeRecord(tuple, trxId, rollPtrValue, rowVersion, rowId);
+        EncodedRecord recordData = encodeRecord(tuple, trxId, rollPtrValue, rowVersion, rowId);
 
         // 3. 插入 B+Tree
-        boolean success = btree.insert(recordData, primaryKey, mtr);
+        boolean success = btree.insert(recordData.bytes(), recordData.recordHeaderOffset(), primaryKey, mtr);
 
         if (success) {
             // 4. 更新事务统计
@@ -299,16 +299,16 @@ public class TransactionalDml {
         // 4. 编码新记录
         long trxId = trx.getId().getValue();
         long rollPtrValue = newRollPtr.encode();
-        int rowVersion = readRowVersion(searchResult, mtr) + 1;
+        int rowVersion = currentSchemaVersion();
         long rowId = 0;
 
-        byte[] newRecordData = encodeRecord(newTuple, trxId, rollPtrValue, rowVersion, rowId);
+        EncodedRecord newRecordData = encodeRecord(newTuple, trxId, rollPtrValue, rowVersion, rowId);
 
         // 5. 更新记录
         // 简化实现：删除旧记录，插入新记录
         // 生产环境应该支持原地更新
         btree.delete(primaryKey, getOldRecordSize(searchResult, mtr), mtr);
-        boolean success = btree.insert(newRecordData, primaryKey, mtr);
+        boolean success = btree.insert(newRecordData.bytes(), newRecordData.recordHeaderOffset(), primaryKey, mtr);
 
         if (success) {
             trx.incrementUpdateCount();
@@ -617,10 +617,17 @@ public class TransactionalDml {
     // ==================== 辅助方法 ====================
 
     /**
+     * ROW_VER 跟随 schema snapshot，而不是 DML 次数。
+     */
+    private int currentSchemaVersion() {
+        return schema.getVersion();
+    }
+
+    /**
      * 编码记录
      */
-    private byte[] encodeRecord(DataTuple tuple, long trxId, long rollPtr,
-                                int rowVersion, long rowId) {
+    private EncodedRecord encodeRecord(DataTuple tuple, long trxId, long rollPtr,
+                                       int rowVersion, long rowId) {
         int size = recordFormat.calculateSize(tuple, schema, layout);
         int extraBytes = recordFormat.calculateExtraBytes(tuple, schema);
 
@@ -640,7 +647,7 @@ public class TransactionalDml {
         recordFormat.encodeTo(buffer, recStart, tuple, schema, layout,
                 trxId, rollPtr, rowVersion, rowId);
 
-        return buffer.array();
+        return new EncodedRecord(buffer.array(), recStart);
     }
 
     /**
@@ -732,9 +739,14 @@ public class TransactionalDml {
      */
     private int getOldRecordSize(BTreeSearchResult searchResult,
                                  MiniTransaction mtr) throws MiniDbException {
-        // 简化实现：使用固定大小
-        // 生产环境应该从记录元数据中获取
-        return RecordHeader.SIZE + layout.fixedSysBytes() + 100; // 估算
+        Page page = mtr.getPage(searchResult.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        ByteBuffer buf = page.getBuffer();
+        int recStart = searchResult.getRecordOffset();
+        var offsets = recordFormat.parseOffsets(buf, recStart, schema, layout);
+        return RecordHeader.SIZE
+                + layout.fixedSysBytes()
+                + offsets.getUserDataLength()
+                + offsets.getExtraBytesBeforeHeader();
     }
 
     /**
@@ -970,6 +982,9 @@ public class TransactionalDml {
             // 创建 RecordVersion
             return new RecordVersion(trxId, tableId, rollPtr, deleteMarked);
         }
+    }
+
+    private record EncodedRecord(byte[] bytes, int recordHeaderOffset) {
     }
 
     /**

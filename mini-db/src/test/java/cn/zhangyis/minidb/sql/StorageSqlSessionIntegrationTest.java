@@ -1,8 +1,18 @@
 package cn.zhangyis.minidb.sql;
 
+import cn.zhangyis.minidb.storage.btree.CompositeKeyValue;
+import cn.zhangyis.minidb.storage.btree.ClusteredPrimaryKeyComparator;
+import cn.zhangyis.minidb.storage.btree.IndexManager;
+import cn.zhangyis.minidb.storage.btree.BTree;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.catalog.CatalogManager;
+import cn.zhangyis.minidb.storage.catalog.TableDescriptor;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
+import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
+import cn.zhangyis.minidb.storage.page.Page;
+import cn.zhangyis.minidb.storage.record.logical.DataTuple;
+import cn.zhangyis.minidb.storage.record.physical.SystemLayout;
+import cn.zhangyis.minidb.storage.record.reader.RowReader;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
 import cn.zhangyis.minidb.sql.ast.SqlNode;
 import cn.zhangyis.minidb.sql.catalog.IndexMeta;
@@ -104,6 +114,35 @@ class StorageSqlSessionIntegrationTest {
         List<Row> rows = execute("SELECT * FROM USERS");
         assertEquals(1, rows.size());
         assertEquals("ALICE", rows.get(0).get("NAME"));
+    }
+
+    @Test
+    void insertStoresCurrentSchemaVersion() throws Exception {
+        execute("CREATE TABLE USERS (ID INT PRIMARY KEY, NAME VARCHAR)");
+        execute("INSERT INTO USERS (ID, NAME) VALUES (1, 'ALICE')");
+
+        assertEquals(1, readStoredRowVersion("USERS", 1));
+    }
+
+    @Test
+    void updateKeepsSchemaVersionAlignedWithCurrentSchema() throws Exception {
+        execute("CREATE TABLE USERS (ID INT PRIMARY KEY, NAME VARCHAR)");
+        execute("INSERT INTO USERS (ID, NAME) VALUES (1, 'ALICE')");
+        execute("UPDATE USERS SET NAME = 'ALLY' WHERE ID = 1");
+
+        assertEquals(1, readStoredRowVersion("USERS", 1));
+    }
+
+    @Test
+    void rowReaderCanDecodeRowAfterUpdate() throws Exception {
+        execute("CREATE TABLE USERS (ID INT PRIMARY KEY, NAME VARCHAR)");
+        execute("INSERT INTO USERS (ID, NAME) VALUES (1, 'ALICE')");
+        execute("UPDATE USERS SET NAME = 'ALLY' WHERE ID = 1");
+
+        DataTuple tuple = readStoredTuple("USERS", 1);
+        assertEquals(2, tuple.getFieldCount());
+        assertEquals(1, tuple.getField(0).asInt());
+        assertEquals("ALLY", tuple.getField(1).asString());
     }
 
     @Test
@@ -236,5 +275,57 @@ class StorageSqlSessionIntegrationTest {
             exec.close();
         }
         return rows;
+    }
+
+    private int readStoredRowVersion(String tableName, int primaryKey) throws Exception {
+        TableDescriptor table = catalogManager.getTable("APP", tableName);
+        RowReader reader = new RowReader(table.getSchemaRegistry(), SystemLayout.WITH_PK);
+
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            BTree tree = openPrimaryTree(table, mtr);
+            byte[] encodedKey = encodePrimaryKey(table, primaryKey, mtr);
+            var result = tree.search(encodedKey, mtr);
+            assertTrue(result.isExactMatch(), "primary key should exist in storage");
+
+            Page page = mtr.getPage(result.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+            int rowVersion = reader.peekRowVersion(page.getBuffer(), result.getRecordOffset());
+            mtr.commit();
+            return rowVersion;
+        }
+    }
+
+    private DataTuple readStoredTuple(String tableName, int primaryKey) throws Exception {
+        TableDescriptor table = catalogManager.getTable("APP", tableName);
+        RowReader reader = new RowReader(table.getSchemaRegistry(), SystemLayout.WITH_PK);
+
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            BTree tree = openPrimaryTree(table, mtr);
+            byte[] encodedKey = encodePrimaryKey(table, primaryKey, mtr);
+            var result = tree.search(encodedKey, mtr);
+            assertTrue(result.isExactMatch(), "primary key should exist in storage");
+
+            Page page = mtr.getPage(result.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+            DataTuple tuple = reader.read(page.getBuffer(), result.getRecordOffset());
+            mtr.commit();
+            return tuple;
+        }
+    }
+
+    private BTree openPrimaryTree(TableDescriptor table, MiniTransaction mtr) throws Exception {
+        IndexManager indexManager = new IndexManager(bufferPool, table.getSpaceId(), 3);
+        indexManager.initialize(mtr);
+        var primary = indexManager.getDescriptor(table.getPrimaryIndexId());
+        return new BTree(
+            primary.toBTreeMetadata(),
+            bufferPool,
+            new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), SystemLayout.WITH_PK.userColumnsOffset())
+        );
+    }
+
+    private byte[] encodePrimaryKey(TableDescriptor table, int primaryKey, MiniTransaction mtr) throws Exception {
+        IndexManager indexManager = new IndexManager(bufferPool, table.getSpaceId(), 3);
+        indexManager.initialize(mtr);
+        var primary = indexManager.getDescriptor(table.getPrimaryIndexId());
+        return new CompositeKeyValue(primary.toCompositeKeyDef(), primaryKey).encode();
     }
 }

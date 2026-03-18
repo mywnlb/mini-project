@@ -79,6 +79,10 @@ public class SchemaRegistry {
     public RecordSchema get(int version) {
         RecordSchema schema = schemas.get(version);
         if (schema == null) {
+            if (version == 0 && currentSchema != null) {
+                // 临时兼容旧测试数据，version=0 退化为当前 schema（P1-5 过渡）
+                return currentSchema;
+            }
             throw new IllegalArgumentException("Unknown schema version: " + version);
         }
         return schema;

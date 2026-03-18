@@ -238,13 +238,28 @@ public class BTree {
      */
     public boolean insert(byte[] recordData, byte[] searchKey, MiniTransaction mtr)
             throws MiniDbException {
+        return insert(recordData, 0, searchKey, mtr);
+    }
+
+    /**
+     * 插入记录（支持记录头不在字节数组起始位置）
+     *
+     * @param recordData         完整记录字节
+     * @param recordHeaderOffset 记录头在字节数组中的偏移
+     * @param searchKey          记录的键
+     * @param mtr                Mini-Transaction
+     * @return 插入是否成功
+     * @throws MiniDbException 如果发生错误
+     */
+    public boolean insert(byte[] recordData, int recordHeaderOffset, byte[] searchKey, MiniTransaction mtr)
+            throws MiniDbException {
         // 1. 搜索到叶子节点
         BTreeSearchResult searchResult = search(searchKey, mtr);
         BTreePath path = searchResult.getPath();
 
         // 2. 在叶子节点插入
         PageId leafPageId = searchResult.getPageId();
-        SplitResult splitResult = insertIntoLeaf(leafPageId, recordData, searchKey, mtr);
+        SplitResult splitResult = insertIntoLeaf(leafPageId, recordData, recordHeaderOffset, searchKey, mtr);
 
         // 3. 如果发生分裂，向上传播
         if (splitResult != null) {
@@ -307,7 +322,7 @@ public class BTree {
      *
      * @return 如果发生分裂返回 SplitResult，否则返回 null
      */
-    private SplitResult insertIntoLeaf(PageId pageId, byte[] recordData, byte[] searchKey,
+    private SplitResult insertIntoLeaf(PageId pageId, byte[] recordData, int recordHeaderOffset, byte[] searchKey,
                                        MiniTransaction mtr) throws MiniDbException {
         BufferFrame frame = bufferPool.getPage(pageId, BufferPool.FetchMode.READ_EXISTING);
         frame.writeLock();
@@ -317,12 +332,12 @@ public class BTree {
 
             // 尝试直接插入
             if (PageInsert.hasSpaceFor(buf, recordData.length)) {
-                PageInsert.insertRecord(frame, recordData, searchKey, comparator, mtr);
+                PageInsert.insertRecord(frame, recordData, recordHeaderOffset, searchKey, comparator, mtr);
                 return null;
             }
 
             // 空间不足，需要分裂
-            return PageSplit.splitAndInsert(frame, recordData, searchKey, bufferPool, comparator, mtr);
+            return PageSplit.splitAndInsert(frame, recordData, recordHeaderOffset, searchKey, bufferPool, comparator, mtr);
         } finally {
             frame.writeUnlock();
         }

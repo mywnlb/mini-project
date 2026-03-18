@@ -95,6 +95,12 @@ class ArithmeticExprTest {
     }
 
     @Test
+    void whereWithDivisionByZeroConstantProducesNoRows() {
+        List<Row> rows = execute("SELECT * FROM users WHERE 1 / 0");
+        assertTrue(rows.isEmpty());
+    }
+
+    @Test
     void whereWithMixedArithmetic() {
         // (id * 2) + 1 > 8 → id * 2 > 7 → id >= 4
         List<Row> rows = execute("SELECT * FROM users WHERE id * 2 + 1 > 8");

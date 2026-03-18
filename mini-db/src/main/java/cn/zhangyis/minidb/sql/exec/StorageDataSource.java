@@ -3,6 +3,7 @@ package cn.zhangyis.minidb.sql.exec;
 import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.btree.BTree;
 import cn.zhangyis.minidb.storage.btree.BTreeCursor;
+import cn.zhangyis.minidb.storage.btree.ClusteredPrimaryKeyComparator;
 import cn.zhangyis.minidb.storage.btree.CompositeKeyDef;
 import cn.zhangyis.minidb.storage.btree.CompositeKeyValue;
 import cn.zhangyis.minidb.storage.btree.CursorPosition;
@@ -489,7 +490,8 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                     layout,
                     new RowReader(table.getSchemaRegistry(), layout),
                     primary.toCompositeKeyDef(),
-                    primary
+                    primary,
+                    new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset())
                 );
             }
         } catch (MiniDbException e) {
@@ -505,10 +507,12 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         private final RowReader rowReader;
         private final CompositeKeyDef primaryKeyDef;
         private final IndexDescriptor primaryIndex;
+        private final ClusteredPrimaryKeyComparator primaryComparator;
 
         private TableAccess(BufferPool bufferPool, TableDescriptor table, RecordSchema schema, SystemLayout layout,
                             RowReader rowReader, CompositeKeyDef primaryKeyDef,
-                            IndexDescriptor primaryIndex) {
+                            IndexDescriptor primaryIndex,
+                            ClusteredPrimaryKeyComparator primaryComparator) {
             this.bufferPool = bufferPool;
             this.table = table;
             this.schema = schema;
@@ -516,6 +520,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             this.rowReader = rowReader;
             this.primaryKeyDef = primaryKeyDef;
             this.primaryIndex = primaryIndex;
+            this.primaryComparator = primaryComparator;
         }
 
         String tableName() {
@@ -580,9 +585,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         }
 
         BTree openPrimaryTree(MiniTransaction mtr) throws MiniDbException {
-            IndexManager indexManager = new IndexManager(bufferPool, table.getSpaceId(), TABLE_INDEX_META_PAGE_NO);
-            indexManager.initialize(mtr);
-            return indexManager.openIndex(table.getPrimaryIndexId(), mtr);
+            return new BTree(primaryIndex.toBTreeMetadata(), bufferPool, primaryComparator);
         }
 
         TransactionalDml dml() {

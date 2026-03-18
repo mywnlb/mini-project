@@ -70,6 +70,12 @@ public final class PageInsert {
     public static int insertRecord(BufferFrame frame, byte[] recordData, byte[] searchKey,
                                    RecordComparator comparator, MiniTransaction mtr)
             throws MiniDbException {
+        return insertRecord(frame, recordData, 0, searchKey, comparator, mtr);
+    }
+
+    public static int insertRecord(BufferFrame frame, byte[] recordData, int recordHeaderOffset,
+                                   byte[] searchKey, RecordComparator comparator, MiniTransaction mtr)
+            throws MiniDbException {
         ByteBuffer buf = frame.buffer();
 
         // 1. 检查空间
@@ -84,7 +90,7 @@ public final class PageInsert {
         int insertAfter = searchResult.getRecordOffset();
 
         // 3. 使用 IndexPageOps 插入记录（更新链表和计数）
-        int newRecOffset = IndexPageOps.insertRecord(frame, recordData, insertAfter, mtr);
+        int newRecOffset = IndexPageOps.insertRecord(frame, recordData, recordHeaderOffset, insertAfter, mtr);
 
         // 4. 更新 Page Directory
         updatePageDirectory(frame, newRecOffset, searchResult.getSlotNo(), mtr);
@@ -108,6 +114,12 @@ public final class PageInsert {
     public static int insertRecordAt(BufferFrame frame, byte[] recordData, int insertAfter,
                                      int slotNo, MiniTransaction mtr)
             throws MiniDbException {
+        return insertRecordAt(frame, recordData, 0, insertAfter, slotNo, mtr);
+    }
+
+    public static int insertRecordAt(BufferFrame frame, byte[] recordData, int recordHeaderOffset,
+                                     int insertAfter, int slotNo, MiniTransaction mtr)
+            throws MiniDbException {
         ByteBuffer buf = frame.buffer();
 
         // 1. 检查空间
@@ -118,7 +130,7 @@ public final class PageInsert {
         }
 
         // 2. 插入记录
-        int newRecOffset = IndexPageOps.insertRecord(frame, recordData, insertAfter, mtr);
+        int newRecOffset = IndexPageOps.insertRecord(frame, recordData, recordHeaderOffset, insertAfter, mtr);
 
         // 3. 更新 Page Directory
         updatePageDirectory(frame, newRecOffset, slotNo, mtr);

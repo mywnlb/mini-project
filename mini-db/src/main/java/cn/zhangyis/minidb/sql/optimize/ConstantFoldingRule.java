@@ -85,7 +85,36 @@ public class ConstantFoldingRule extends RelOptRule {
             String leftVal = left.value();
             String rightVal = right.value();
 
-            // 处理布尔常量
+            // 处理算术运算常量折叠
+            if (op == SqlKind.ADD || op == SqlKind.SUB || op == SqlKind.MUL || op == SqlKind.DIV) {
+                double l = Double.parseDouble(leftVal);
+                double r = Double.parseDouble(rightVal);
+                double result;
+                switch (op) {
+                    case ADD -> result = l + r;
+                    case SUB -> result = l - r;
+                    case MUL -> result = l * r;
+                    case DIV -> {
+                        if (r == 0) return SqlNodeFactory.DEFAULT.nullLiteral();
+                        result = l / r;
+                    }
+                    default -> result = 0;
+                }
+                String valStr;
+                SqlType type;
+                if (Math.floor(result) == result) {
+                    long longVal = (long) result;
+                    valStr = String.valueOf(longVal);
+                    type = (longVal >= Integer.MIN_VALUE && longVal <= Integer.MAX_VALUE)
+                            ? SqlType.INT32 : SqlType.BIGINT;
+                } else {
+                    valStr = String.valueOf(result);
+                    type = SqlType.DECIMAL;
+                }
+                return new SqlLiteral(valStr, type);
+            }
+
+            // 处理比较运算
             if ("1".equals(leftVal) && "1".equals(rightVal)) {
                 boolean result = switch (op) {
                     case BINARY_EQ -> true;
@@ -95,8 +124,8 @@ public class ConstantFoldingRule extends RelOptRule {
                 return new SqlLiteral(result ? "1" : "0", SqlType.INT32);
             }
 
-            int l = Integer.parseInt(leftVal);
-            int r = Integer.parseInt(rightVal);
+            double l = Double.parseDouble(leftVal);
+            double r = Double.parseDouble(rightVal);
 
             boolean result = switch (op) {
                 case BINARY_EQ -> l == r;

@@ -536,8 +536,8 @@ public class BTreeCursor implements AutoCloseable {
             ByteBuffer buf = frame.buffer();
             int nextPageNo = IndexPageLayout.readNextPage(buf);
 
-            if (nextPageNo == 0) {
-                // 没有下一个页面
+            if (nextPageNo <= 0) {
+                // 没有下一个页面 (0 或 -1 均表示结束)
                 position = CursorPosition.invalid();
                 return;
             }
@@ -576,7 +576,7 @@ public class BTreeCursor implements AutoCloseable {
             ByteBuffer buf = frame.buffer();
             int prevPageNo = IndexPageLayout.readPrevPage(buf);
 
-            if (prevPageNo == 0) {
+            if (prevPageNo <= 0) {
                 position = CursorPosition.invalid();
                 return;
             }
