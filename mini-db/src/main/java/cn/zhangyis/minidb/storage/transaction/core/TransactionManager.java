@@ -733,6 +733,15 @@ public class TransactionManager {
         return lockManager;
     }
 
+    /**
+     * 获取 Undo Log Manager
+     *
+     * @return UndoLogManager 实例，可能为 null
+     */
+    public UndoLogManager getUndoLogManager() {
+        return undoLogManager;
+    }
+
     // ==================== 关闭方法 ====================
 
     /**

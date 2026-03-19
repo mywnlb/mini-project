@@ -35,8 +35,9 @@ allprojects {
         // https://mvnrepository.com/artifact/org.apache.commons/commons-collections4
 // https://mvnrepository.com/artifact/org.apache.commons/commons-collections4
         implementation 'org.apache.commons:commons-collections4:4.5.0'
-        testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.2'
-        testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.2'
+        testImplementation platform("org.junit:junit-bom:5.10.2")
+        testImplementation "org.junit.jupiter:junit-jupiter"
+        testRuntimeOnly  "org.junit.platform:junit-platform-launcher"
         implementation 'org.slf4j:slf4j-api:1.7.32'  // 添加 SLF4J API
 
     }

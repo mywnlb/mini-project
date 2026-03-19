@@ -23,9 +23,17 @@ import cn.zhangyis.minidb.storage.record.physical.SystemLayout;
 import cn.zhangyis.minidb.storage.record.reader.RowReader;
 import cn.zhangyis.minidb.storage.record.schema.FieldKind;
 import cn.zhangyis.minidb.storage.record.schema.RecordSchema;
+import cn.zhangyis.minidb.storage.record.format.CompactRecordFormat;
 import cn.zhangyis.minidb.storage.transaction.core.Transaction;
 import cn.zhangyis.minidb.storage.transaction.dml.TransactionalDml;
+import cn.zhangyis.minidb.storage.transaction.mvcc.ReadView;
+import cn.zhangyis.minidb.storage.transaction.mvcc.RecordVersion;
+import cn.zhangyis.minidb.storage.transaction.mvcc.VersionChainReader;
+import cn.zhangyis.minidb.storage.transaction.mvcc.VisibilityChecker;
+import cn.zhangyis.minidb.storage.transaction.pointer.RollbackPointer;
+import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -33,14 +41,18 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 /**
- * storage-backed SQL 数据源。
+ * storage-backed SQL 数据源（MVCC + Overlay 混合模式）。
  *
- * <p>显式事务期间，DML 先写入 SQL 会话 overlay，COMMIT 前再统一 flush 到 storage。
- * 这样 SQL 事务语义对用户可见，同时避免依赖尚未闭环的底层 MVCC scan/rollback 占位实现。</p>
+ * <p>读路径使用 MVCC ReadView 进行已提交数据的可见性过滤，支持 RC/RR 隔离级别。
+ * DML 写入仍缓冲在 overlay 中，COMMIT 前统一 flush 到 storage（因 undo rollback 尚未实现）。
+ * overlay 同时保证 read-your-writes 语义。</p>
+ *
+ * <p>当 UndoLogManager 为 null 时（测试环境），自动降级为无 MVCC 模式。</p>
  */
 public class StorageDataSource implements DataSourceSpi, TransactionLifecycleParticipant {
 
@@ -50,6 +62,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
     private final String databaseName;
     private final BufferPool bufferPool;
     private final ExecutionContext executionContext;
+    private final UndoLogManager undoLogManager;
     private final Map<String, TableAccess> tableCache = new LinkedHashMap<>();
     private final Map<Long, TransactionOverlay> overlays = new LinkedHashMap<>();
 
@@ -59,6 +72,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         this.databaseName = Objects.requireNonNull(databaseName);
         this.executionContext = Objects.requireNonNull(executionContext);
         this.bufferPool = Objects.requireNonNull(bufferPool);
+        this.undoLogManager = executionContext.txnManager().getUndoLogManager();
         this.executionContext.registerParticipant(this);
     }
 
@@ -201,7 +215,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                 }
             }
 
-            Row committed = loadCommittedRow(access, key);
+            Row committed = loadCommittedRow(access, key, txn);
             if (committed != null) {
                 result.add(renameQualifier(committed, tableName, outputName));
             }
@@ -305,7 +319,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             }
         }
 
-        Row committed = loadCommittedRow(access, candidateKey);
+        Row committed = loadCommittedRow(access, candidateKey, txn);
         if (committed == null) {
             return;
         }
@@ -319,7 +333,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
 
     private List<Row> materializeVisibleRows(TableAccess access, Transaction txn) {
         TableOverlay overlay = overlayOrNull(txn, access.tableName());
-        List<IndexedRow> committedRows = loadCommittedRows(access);
+        List<IndexedRow> committedRows = loadCommittedRows(access, txn);
         List<Row> visible = new ArrayList<>(committedRows.size());
 
         for (IndexedRow committed : committedRows) {
@@ -338,20 +352,57 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         return visible;
     }
 
-    private List<IndexedRow> loadCommittedRows(TableAccess access) {
+    private List<IndexedRow> loadCommittedRows(TableAccess access, Transaction txn) {
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             BTree btree = access.openPrimaryTree(mtr);
             BTreeCursor cursor = btree.openCursor(mtr);
             cursor.seekFirst();
 
+            // I1: ReadView 为 null 时降级为无 MVCC 模式
+            ReadView readView = txn.getOrCreateReadView();
+            VersionChainReader chainReader = access.versionChainReader();
+
             List<IndexedRow> rows = new ArrayList<>();
             while (cursor.isValid()) {
                 CursorPosition position = cursor.getPosition();
                 Page page = mtr.getPage(position.getPageId(), BufferPool.FetchMode.READ_EXISTING);
-                RecordHeader header = RecordHeader.readFrom(page.getBuffer(), position.getRecordOffset());
-                if (!header.isDeleted()) {
-                    DataTuple tuple = access.rowReader().read(page.getBuffer(), position.getRecordOffset());
-                    rows.add(new IndexedRow(new RowKey(cursor.getKey()), tupleToRow(access.tableName(), tuple, access.columns())));
+                ByteBuffer buf = page.getBuffer();
+                int recordOffset = position.getRecordOffset();
+                RecordHeader header = RecordHeader.readFrom(buf, recordOffset);
+
+                if (readView == null) {
+                    // 降级：无 ReadView 时保持旧行为（仅 isDeleted 过滤）
+                    if (!header.isDeleted()) {
+                        DataTuple tuple = access.rowReader().read(buf, recordOffset);
+                        rows.add(new IndexedRow(new RowKey(cursor.getKey()),
+                            tupleToRow(access.tableName(), tuple, access.columns())));
+                    }
+                } else {
+                    // MVCC 可见性检查
+                    int dataStart = recordOffset + RecordHeader.SIZE;
+                    long trxId = CompactRecordFormat.readTrxId(buf, dataStart + SystemLayout.OFF_TRX_ID);
+
+                    if (VisibilityChecker.isVisible(trxId, readView)) {
+                        // 当前版本可见，检查删除标记
+                        if (!header.isDeleted()) {
+                            DataTuple tuple = access.rowReader().read(buf, recordOffset);
+                            rows.add(new IndexedRow(new RowKey(cursor.getKey()),
+                                tupleToRow(access.tableName(), tuple, access.columns())));
+                        }
+                    } else if (chainReader != null) {
+                        // 当前版本不可见，遍历版本链查找可见版本
+                        long rollPtrValue = CompactRecordFormat.readRollPtr(
+                            buf, dataStart + SystemLayout.OFF_ROLL_PTR);
+                        RollbackPointer rollPtr = RollbackPointer.decode(rollPtrValue);
+                        Optional<RecordVersion> visibleVersion =
+                            chainReader.findVisibleVersion(rollPtr, readView);
+                        if (visibleVersion.isPresent() && !visibleVersion.get().isDeleteMarked()) {
+                            DataTuple tuple = visibleVersion.get().toDataTuple();
+                            rows.add(new IndexedRow(new RowKey(cursor.getKey()),
+                                tupleToRow(access.tableName(), tuple, access.columns())));
+                        }
+                    }
+                    // else: 不可见 + 无版本链 → 跳过
                 }
                 cursor.next();
             }
@@ -363,7 +414,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         }
     }
 
-    private Row loadCommittedRow(TableAccess access, RowKey key) {
+    private Row loadCommittedRow(TableAccess access, RowKey key, Transaction txn) {
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             BTree btree = access.openPrimaryTree(mtr);
             var result = btree.search(key.bytes(), mtr);
@@ -373,15 +424,53 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             }
 
             Page page = mtr.getPage(result.getPageId(), BufferPool.FetchMode.READ_EXISTING);
-            RecordHeader header = RecordHeader.readFrom(page.getBuffer(), result.getRecordOffset());
-            if (header.isDeleted()) {
+            ByteBuffer buf = page.getBuffer();
+            int recordOffset = result.getRecordOffset();
+            RecordHeader header = RecordHeader.readFrom(buf, recordOffset);
+
+            ReadView readView = txn.getOrCreateReadView();
+            if (readView == null) {
+                // 降级：无 ReadView 时保持旧行为
+                if (header.isDeleted()) {
+                    mtr.commit();
+                    return null;
+                }
+                DataTuple tuple = access.rowReader().read(buf, recordOffset);
                 mtr.commit();
-                return null;
+                return tupleToRow(access.tableName(), tuple, access.columns());
             }
 
-            DataTuple tuple = access.rowReader().read(page.getBuffer(), result.getRecordOffset());
+            // MVCC 可见性检查
+            int dataStart = recordOffset + RecordHeader.SIZE;
+            long trxId = CompactRecordFormat.readTrxId(buf, dataStart + SystemLayout.OFF_TRX_ID);
+
+            if (VisibilityChecker.isVisible(trxId, readView)) {
+                if (header.isDeleted()) {
+                    mtr.commit();
+                    return null;
+                }
+                DataTuple tuple = access.rowReader().read(buf, recordOffset);
+                mtr.commit();
+                return tupleToRow(access.tableName(), tuple, access.columns());
+            }
+
+            // 当前版本不可见，遍历版本链
+            VersionChainReader chainReader = access.versionChainReader();
+            if (chainReader != null) {
+                long rollPtrValue = CompactRecordFormat.readRollPtr(
+                    buf, dataStart + SystemLayout.OFF_ROLL_PTR);
+                RollbackPointer rollPtr = RollbackPointer.decode(rollPtrValue);
+                Optional<RecordVersion> visibleVersion =
+                    chainReader.findVisibleVersion(rollPtr, readView);
+                if (visibleVersion.isPresent() && !visibleVersion.get().isDeleteMarked()) {
+                    DataTuple tuple = visibleVersion.get().toDataTuple();
+                    mtr.commit();
+                    return tupleToRow(access.tableName(), tuple, access.columns());
+                }
+            }
+
             mtr.commit();
-            return tupleToRow(access.tableName(), tuple, access.columns());
+            return null;
         } catch (MiniDbException e) {
             throw new RuntimeException("Storage lookup failed for table: " + access.tableName(), e);
         }
@@ -496,7 +585,8 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                     new RowReader(table.getSchemaRegistry(), layout),
                     primary.toCompositeKeyDef(),
                     primary,
-                    new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset())
+                    new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset()),
+                    undoLogManager
                 );
             }
         } catch (MiniDbException e) {
@@ -513,11 +603,13 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         private final CompositeKeyDef primaryKeyDef;
         private final IndexDescriptor primaryIndex;
         private final ClusteredPrimaryKeyComparator primaryComparator;
+        private final UndoLogManager undoLogManager;
 
         private TableAccess(BufferPool bufferPool, TableDescriptor table, RecordSchema schema, SystemLayout layout,
                             RowReader rowReader, CompositeKeyDef primaryKeyDef,
                             IndexDescriptor primaryIndex,
-                            ClusteredPrimaryKeyComparator primaryComparator) {
+                            ClusteredPrimaryKeyComparator primaryComparator,
+                            UndoLogManager undoLogManager) {
             this.bufferPool = bufferPool;
             this.table = table;
             this.schema = schema;
@@ -526,6 +618,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             this.primaryKeyDef = primaryKeyDef;
             this.primaryIndex = primaryIndex;
             this.primaryComparator = primaryComparator;
+            this.undoLogManager = undoLogManager;
         }
 
         String tableName() {
@@ -593,13 +686,20 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             return new BTree(primaryIndex.toBTreeMetadata(), bufferPool, primaryComparator);
         }
 
+        VersionChainReader versionChainReader() {
+            if (undoLogManager == null) {
+                return null;
+            }
+            return new VersionChainReader(undoLogManager.createUndoRecordReader());
+        }
+
         TransactionalDml dml() {
             try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
                 BTree tree = openPrimaryTree(mtr);
                 mtr.commit();
                 // 始终使用 registry 当前最新 schema，保证 update 写入的 rowVersion 与 currentSchema 对齐
                 RecordSchema currentSchema = table.getSchemaRegistry().getCurrentSchema();
-                return new TransactionalDml(tree, null, bufferPool, currentSchema, layout, (int) table.getTableId());
+                return new TransactionalDml(tree, undoLogManager, bufferPool, currentSchema, layout, (int) table.getTableId());
             } catch (MiniDbException e) {
                 throw new RuntimeException("Failed to open primary index for DML on table " + tableName(), e);
             }

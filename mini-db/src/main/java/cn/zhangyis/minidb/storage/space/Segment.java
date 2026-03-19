@@ -135,6 +135,9 @@ public class Segment {
      * @throws MiniDbException 如果操作失败
      */
     public Page allocatePage(MiniTransaction mtr) throws MiniDbException {
+        // 确保 INODE 页被当前 MTR 管理（Segment 可能由其他 MTR 创建）
+        mtr.getPage(descriptor.getInodePageId());
+
         // 策略1：尝试分配碎片页（前32个页面）
         int fragSlot = findFreeFragSlot();  // 逻辑层搜索
         if (fragSlot != -1) {
@@ -198,6 +201,9 @@ public class Segment {
      * @throws MiniDbException 如果操作失败
      */
     public void freePage(MiniTransaction mtr, int pageNo) throws MiniDbException {
+        // 确保 INODE 页被当前 MTR 管理（Segment 可能由其他 MTR 创建）
+        mtr.getPage(descriptor.getInodePageId());
+
         // 1. 检查是否为碎片页
         for (int i = 0; i < FRAG_ARRAY_SIZE; i++) {
             if (descriptor.getFragPageNo(i) == pageNo) {

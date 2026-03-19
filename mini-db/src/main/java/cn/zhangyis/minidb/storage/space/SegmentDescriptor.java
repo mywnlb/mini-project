@@ -5,6 +5,7 @@ import cn.zhangyis.minidb.common.exception.MtrStateException;
 import cn.zhangyis.minidb.common.exception.PageNotManagedByMtrException;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
+import cn.zhangyis.minidb.storage.page.PageId;
 
 import static cn.zhangyis.minidb.storage.constants.StorageConstants.*;
 
@@ -89,6 +90,15 @@ public class SegmentDescriptor {
 
         this.page = page;
         this.offset = offset;
+    }
+
+    /**
+     * 获取 INODE Entry 所在页面的 PageId
+     *
+     * @return INODE Page 的 PageId
+     */
+    public PageId getInodePageId() {
+        return page.getPageId();
     }
 
     // ==================== 基本字段访问 ====================

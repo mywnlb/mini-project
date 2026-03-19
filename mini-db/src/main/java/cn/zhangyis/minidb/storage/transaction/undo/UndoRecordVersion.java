@@ -103,7 +103,9 @@ public final class UndoRecordVersion {
      * @return 如果有效返回 true
      */
     public static boolean isValidSchemaVersion(byte schemaVersion) {
-        return schemaVersion >= INITIAL_SCHEMA_VERSION && schemaVersion <= MAX_SCHEMA_VERSION;
+        int unsigned = Byte.toUnsignedInt(schemaVersion);
+        return unsigned >= Byte.toUnsignedInt(INITIAL_SCHEMA_VERSION)
+                && unsigned <= Byte.toUnsignedInt(MAX_SCHEMA_VERSION);
     }
 
     /**
