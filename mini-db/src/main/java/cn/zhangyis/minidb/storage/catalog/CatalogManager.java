@@ -14,6 +14,9 @@ import cn.zhangyis.minidb.storage.catalog.persist.TableMetaPage;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.record.logical.DataField;
+import cn.zhangyis.minidb.storage.record.schema.ColumnDescriptor;
+import cn.zhangyis.minidb.storage.record.schema.FieldType;
 import cn.zhangyis.minidb.storage.record.schema.RecordSchema;
 import cn.zhangyis.minidb.storage.record.schema.SchemaRegistry;
 import cn.zhangyis.minidb.storage.space.TableSpace;
@@ -347,6 +350,100 @@ public class CatalogManager {
         }
     }
 
+    // ==================== ALTER TABLE ADD COLUMN (Instant DDL) ====================
+
+    /**
+     * Instant DDL: 添加新列到已有表。
+     *
+     * <p>执行流程（INV-1: 先持久化再更新内存）：</p>
+     * <ol>
+     *   <li>获取 per-DB 锁，串行化 DDL</li>
+     *   <li>从 IdGenerator 分配 columnId（INV-6）</li>
+     *   <li>调用 SchemaRegistry.addColumnInstant() 创建新版本 schema</li>
+     *   <li>重建 TableDescriptor（INV-4: 不可修改原实例）</li>
+     *   <li>MTR 持久化 TableMetaPage + IdGenerator</li>
+     *   <li>更新 CatalogCache</li>
+     * </ol>
+     *
+     * @param dbName       数据库名
+     * @param tableName    表名
+     * @param columnName   新列名
+     * @param fieldType    存储层字段类型
+     * @param defaultValue 默认值（null 表示 NULL 默认值）
+     * @throws CatalogException 如果表不存在或列已存在
+     */
+    public void alterTableAddColumn(String dbName, String tableName,
+                                    String columnName, FieldType fieldType,
+                                    DataField defaultValue) throws CatalogException {
+        ensureInitialized();
+        validateIdentifier("database", dbName);
+        validateIdentifier("table", tableName);
+        validateIdentifier("column", columnName);
+
+        ReentrantLock lock = getOrCreateDbLock(dbName);
+        lock.lock();
+        try {
+            // 1. 获取旧 TableDescriptor
+            TableDescriptor oldTable = cache.getTable(dbName, tableName);
+            if (oldTable == null) {
+                throw CatalogException.tableNotFound(tableName);
+            }
+
+            // 检查列名是否已存在
+            for (ColumnMeta col : oldTable.getColumns()) {
+                if (col.getName().equalsIgnoreCase(columnName)) {
+                    throw new CatalogException("Column '" + columnName + "' already exists in table '" + tableName + "'");
+                }
+            }
+
+            // 2. 分配 columnId（INV-6: 由 IdGenerator 分配，全局唯一）
+            long columnId = idGenerator.allocateColumnId();
+
+            // 3. 构造新的 storage ColumnMeta（不修改任何内存状态）
+            int newOrdinal = oldTable.getColumns().size();
+            ColumnMeta newColumnMeta = new ColumnMeta(columnId, columnName, fieldType, newOrdinal, defaultValue);
+
+            // 4. 重建 TableDescriptor（INV-4: columns 是 unmodifiableList，必须重建）
+            //    此时 SchemaRegistry 尚未更新，但 TableDescriptor 仅用于持久化列元数据
+            SchemaRegistry registry = oldTable.getSchemaRegistry();
+            List<ColumnMeta> updatedColumns = new ArrayList<>(oldTable.getColumns());
+            updatedColumns.add(newColumnMeta);
+            long now = System.currentTimeMillis();
+
+            TableDescriptor newTable = new TableDescriptor(
+                    oldTable.getTableId(),
+                    oldTable.getTableName(),
+                    oldTable.getDatabaseId(),
+                    oldTable.getSpaceId(),
+                    registry,  // 共享同一个 SchemaRegistry 实例（此时尚未修改）
+                    updatedColumns,
+                    oldTable.getPrimaryIndexId(),
+                    oldTable.getSecondaryIndexIds(),
+                    oldTable.getCreateTime(),
+                    now,
+                    oldTable.getState()
+            );
+
+            // 5. MTR 持久化（INV-1: 先持久化再更新内存）
+            //    如果持久化失败，SchemaRegistry 和 CatalogCache 保持原状，无需回滚
+            persistTableUpdate(newTable);
+
+            // 6. 持久化成功后，更新 SchemaRegistry 内存状态
+            //    INV-ATOMIC: addColumnInstant 的三个变更（schemas put + instantColumns add
+            //    + currentSchema volatile write）仅在持久化成功后执行
+            ColumnDescriptor colDesc = ColumnDescriptor.of(columnId, columnName, fieldType, newOrdinal);
+            RecordSchema newSchema = registry.addColumnInstant(colDesc, defaultValue);
+
+            // 7. 更新 CatalogCache（持久化成功后）
+            cache.putTable(dbName, newTable);
+
+            log.info("Instant DDL: added column '{}' (id={}) to table '{}.{}', schema version={}",
+                    columnName, columnId, dbName, tableName, newSchema.getVersion());
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public TableDescriptor getTable(String dbName, String tableName) throws CatalogException {
         ensureInitialized();
         TableDescriptor table = cache.getTable(dbName, tableName);
@@ -553,6 +650,67 @@ public class CatalogManager {
 
         if (!created) {
             throw new CatalogException("Catalog first TableMetaPage is missing");
+        }
+    }
+
+    /**
+     * 持久化表元数据更新（Instant DDL ADD COLUMN）。
+     *
+     * <p>使用 TableMetaPage.updateEntry() 覆盖写入更新后的表元数据，
+     * 同时持久化 IdGenerator（columnId 已分配）。</p>
+     *
+     * <p>INV-1: 此方法在 CatalogCache 更新之前调用。</p>
+     *
+     * @param table 更新后的 TableDescriptor
+     * @throws CatalogException 如果持久化失败
+     */
+    private void persistTableUpdate(TableDescriptor table) throws CatalogException {
+        try {
+            PageId metaPageId = PageId.of(SYSTEM_SPACE_ID, CatalogMetaPage.CATALOG_META_PAGE_NO);
+            TableMetaPage.TableEntry entry = toTableEntry(table);
+
+            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+                BufferFrame metaFrame = mtr.getPageFrame(metaPageId, BufferPool.FetchMode.READ_EXISTING);
+                metaFrame.writeLock();
+                try {
+                    int firstTableMetaPageNo = CatalogMetaPage.readFirstTableMetaPage(metaFrame);
+                    if (firstTableMetaPageNo == 0) {
+                        throw new CatalogException("Catalog first TableMetaPage is missing");
+                    }
+
+                    boolean updated = false;
+                    int currentPageNo = firstTableMetaPageNo;
+                    while (currentPageNo != 0 && !updated) {
+                        BufferFrame frame = mtr.getPageFrame(
+                                PageId.of(SYSTEM_SPACE_ID, currentPageNo),
+                                BufferPool.FetchMode.READ_EXISTING);
+                        frame.writeLock();
+                        try {
+                            if (TableMetaPage.updateEntry(frame, entry)) {
+                                // 持久化 IdGenerator（columnId 已分配，INV-6）
+                                CatalogMetaPage.writeIdGenerator(metaFrame, idGenerator);
+                                mtr.markDirty(frame.getPage());
+                                mtr.markDirty(metaFrame.getPage());
+                                updated = true;
+                            } else {
+                                currentPageNo = TableMetaPage.readNextPage(frame);
+                            }
+                        } finally {
+                            frame.writeUnlock();
+                        }
+                    }
+
+                    if (!updated) {
+                        throw new CatalogException(
+                                "Table entry not found in TableMetaPage for tableId=" + table.getTableId());
+                    }
+                } finally {
+                    metaFrame.writeUnlock();
+                }
+                mtr.commit();
+            }
+        } catch (MiniDbException e) {
+            throw CatalogException.persistenceFailed("alterTableAddColumn", e);
         }
     }
 

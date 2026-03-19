@@ -121,7 +121,9 @@ class StorageSqlSessionIntegrationTest {
         execute("CREATE TABLE USERS (ID INT PRIMARY KEY, NAME VARCHAR)");
         execute("INSERT INTO USERS (ID, NAME) VALUES (1, 'ALICE')");
 
-        assertEquals(1, readStoredRowVersion("USERS", 1));
+        TableDescriptor table = catalogManager.getTable("APP", "USERS");
+        int expectedVersion = table.getSchemaRegistry().getCurrentSchema().getVersion();
+        assertEquals(expectedVersion, readStoredRowVersion("USERS", 1), "stored rowVersion must match current schema version");
     }
 
     @Test
@@ -130,7 +132,9 @@ class StorageSqlSessionIntegrationTest {
         execute("INSERT INTO USERS (ID, NAME) VALUES (1, 'ALICE')");
         execute("UPDATE USERS SET NAME = 'ALLY' WHERE ID = 1");
 
-        assertEquals(1, readStoredRowVersion("USERS", 1));
+        TableDescriptor table = catalogManager.getTable("APP", "USERS");
+        int expectedVersion = table.getSchemaRegistry().getCurrentSchema().getVersion();
+        assertEquals(expectedVersion, readStoredRowVersion("USERS", 1));
     }
 
     @Test
@@ -159,8 +163,8 @@ class StorageSqlSessionIntegrationTest {
         assertTrue(indexes.stream().anyMatch(IndexMeta::primary));
         assertFalse(indexes.stream().anyMatch(index -> index.indexName().equalsIgnoreCase("IDX_USERS_NAME")));
 
-        assertThrows(UnsupportedOperationException.class,
-            () -> execute("ALTER TABLE USERS ADD COLUMN AGE INT"));
+        // Instant DDL ADD COLUMN 已实现，验证成功执行而非抛异常
+        execute("ALTER TABLE USERS ADD COLUMN AGE INT");
     }
 
     @Test

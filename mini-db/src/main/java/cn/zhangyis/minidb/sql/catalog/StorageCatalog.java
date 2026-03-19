@@ -6,6 +6,7 @@ import cn.zhangyis.minidb.storage.btree.IndexType;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.catalog.*;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
+import cn.zhangyis.minidb.storage.record.logical.DataField;
 import cn.zhangyis.minidb.storage.record.schema.FieldKind;
 import cn.zhangyis.minidb.storage.record.schema.FieldType;
 import cn.zhangyis.minidb.sql.types.SqlType;
@@ -145,9 +146,49 @@ public class StorageCatalog implements CatalogSpi {
      */
     @Override
     public void addColumn(String tableName, ColumnMeta column) {
-        throw new UnsupportedOperationException(
-            "ALTER TABLE ADD COLUMN is not yet supported by storage engine. " +
-            "Requires Instant DDL integration (physical schema evolution).");
+        requireBufferPool("addColumn");
+
+        // 转换 SQL 类型为存储层 FieldType（ADD COLUMN 不是主键，nullable 由 column.nullable() 决定）
+        FieldType fieldType = sqlTypeToFieldType(column.type(), false);
+        // 如果 SQL 层指定 NOT NULL，覆盖 nullable 标记
+        if (!column.nullable()) {
+            fieldType = FieldType.of(fieldType.getKind(), fieldType.getLength(), false);
+        }
+
+        // 转换默认值为 DataField
+        DataField defaultField = convertDefaultValue(column.defaultValue(), fieldType);
+
+        try {
+            catalogManager.alterTableAddColumn(databaseName, tableName,
+                    column.name(), fieldType, defaultField);
+        } catch (CatalogException e) {
+            throw new RuntimeException("ALTER TABLE ADD COLUMN failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将 SQL 层默认值字面量转换为存储层 DataField。
+     *
+     * @param defaultValue SQL 层默认值（null、Number、String）
+     * @param fieldType    目标存储层字段类型
+     * @return DataField，null 输入返回 nullField
+     */
+    private DataField convertDefaultValue(Object defaultValue, FieldType fieldType) {
+        if (defaultValue == null) {
+            return fieldType.isNullable() ? DataField.nullField(fieldType) : null;
+        }
+        FieldKind kind = fieldType.getKind();
+        return switch (kind) {
+            case INT -> DataField.intField(((Number) defaultValue).intValue());
+            case BIGINT -> DataField.bigintField(((Number) defaultValue).longValue());
+            case TINYINT -> DataField.tinyintField(((Number) defaultValue).byteValue());
+            case SMALLINT -> DataField.smallintField(((Number) defaultValue).shortValue());
+            case VARCHAR -> DataField.varcharField(String.valueOf(defaultValue));
+            case CHAR -> DataField.charField(String.valueOf(defaultValue), fieldType.getLength());
+            case TEXT -> DataField.textField(String.valueOf(defaultValue));
+            default -> throw new UnsupportedOperationException(
+                    "Default value conversion not supported for type: " + kind);
+        };
     }
 
     /**

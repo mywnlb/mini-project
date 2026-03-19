@@ -381,7 +381,22 @@ public class SqlParser {
         String colName = tokens.current().value();
         tokens.expect(TokenType.IDENTIFIER);
         SqlType colType = parseColumnType();
-        return new SqlAlterTable(table, colName, colType);
+
+        // 可选 NOT NULL
+        boolean nullable = true;
+        if (tokens.current().type() == TokenType.NOT) {
+            tokens.next();
+            tokens.expect(TokenType.NULL);
+            nullable = false;
+        }
+
+        // 可选 DEFAULT <literal>
+        SqlNode defaultValue = null;
+        if (tokens.match(TokenType.DEFAULT)) {
+            defaultValue = parsePrimary();
+        }
+
+        return new SqlAlterTable(table, colName, colType, nullable, defaultValue);
     }
 
     // ==================== 事务控制 ====================

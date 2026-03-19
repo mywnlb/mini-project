@@ -54,6 +54,7 @@ public class SqlLexer {
         keywords.put("ADD", TokenType.ADD);
         keywords.put("COLUMN", TokenType.COLUMN);
         keywords.put("INDEX", TokenType.INDEX);
+        keywords.put("DEFAULT", TokenType.DEFAULT);
         keywords.put("DISTINCT", TokenType.DISTINCT);
         keywords.put("ASC", TokenType.ASC);
         keywords.put("DESC", TokenType.DESC);

@@ -166,6 +166,11 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
     }
 
     @Override
+    public void invalidateTable(String tableName) {
+        tableCache.remove(tableName.toUpperCase());
+    }
+
+    @Override
     public Iterator<Row> lookup(String tableName, String outputName, String columnName, Object value) {
         Transaction txn = executionContext.resolveTransactionForDml();
         try {
@@ -592,7 +597,9 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
                 BTree tree = openPrimaryTree(mtr);
                 mtr.commit();
-                return new TransactionalDml(tree, null, bufferPool, schema, layout, (int) table.getTableId());
+                // 始终使用 registry 当前最新 schema，保证 update 写入的 rowVersion 与 currentSchema 对齐
+                RecordSchema currentSchema = table.getSchemaRegistry().getCurrentSchema();
+                return new TransactionalDml(tree, null, bufferPool, currentSchema, layout, (int) table.getTableId());
             } catch (MiniDbException e) {
                 throw new RuntimeException("Failed to open primary index for DML on table " + tableName(), e);
             }

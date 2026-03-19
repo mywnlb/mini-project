@@ -237,6 +237,11 @@ public class SqlValidator {
             throw new ValidationException(
                 "Column '" + alter.columnName() + "' already exists in table '" + tableName + "'");
         }
+        // INV-7: Instant DDL requires nullable column or explicit DEFAULT value
+        if (!alter.nullable() && alter.defaultValue() == null) {
+            throw new ValidationException(
+                "Instant DDL requires nullable column or explicit DEFAULT value");
+        }
         return alter;
     }
 

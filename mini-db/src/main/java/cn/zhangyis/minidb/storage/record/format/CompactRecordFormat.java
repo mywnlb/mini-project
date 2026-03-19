@@ -46,8 +46,11 @@ public class CompactRecordFormat implements RecordFormat {
     public int peekRowVersion(ByteBuffer buffer, int recStart) {
         // dataStart = recStart + 5
         // ROW_VER at dataStart + 13
+        // 强制 big-endian，与 TRX_ID/ROLL_PTR 一致，避免 buffer.order() 不一致导致 1 读成 256
         int rowVerOffset = recStart + RecordHeader.SIZE + SystemLayout.OFF_ROW_VER;
-        return buffer.getShort(rowVerOffset) & 0xFFFF;
+        int b0 = buffer.get(rowVerOffset) & 0xFF;
+        int b1 = buffer.get(rowVerOffset + 1) & 0xFF;
+        return (b0 << 8) | b1;
     }
 
     @Override
@@ -159,8 +162,10 @@ public class CompactRecordFormat implements RecordFormat {
         // ROLL_PTR (7 bytes)
         writeRollPtr(buffer, dataStart + SystemLayout.OFF_ROLL_PTR, rollPtr);
 
-        // ROW_VERSION (2 bytes)
-        buffer.putShort(dataStart + SystemLayout.OFF_ROW_VER, (short) rowVersion);
+        // ROW_VERSION (2 bytes, 强制 big-endian)
+        int rowVerOffset = dataStart + SystemLayout.OFF_ROW_VER;
+        buffer.put(rowVerOffset, (byte) ((rowVersion >> 8) & 0xFF));
+        buffer.put(rowVerOffset + 1, (byte) (rowVersion & 0xFF));
 
         // ROW_ID (如果有)
         if (layout.hasRowId()) {
@@ -388,7 +393,11 @@ public class CompactRecordFormat implements RecordFormat {
 
         long trxId = readTrxId(buffer, dataStart + SystemLayout.OFF_TRX_ID);
         long rollPtr = readRollPtr(buffer, dataStart + SystemLayout.OFF_ROLL_PTR);
-        int rowVersion = buffer.getShort(dataStart + SystemLayout.OFF_ROW_VER) & 0xFFFF;
+        // ROW_VERSION (2 bytes, 强制 big-endian，与 peekRowVersion 一致)
+        int rowVerOffset = dataStart + SystemLayout.OFF_ROW_VER;
+        int b0 = buffer.get(rowVerOffset) & 0xFF;
+        int b1 = buffer.get(rowVerOffset + 1) & 0xFF;
+        int rowVersion = (b0 << 8) | b1;
         long rowId = layout.hasRowId()
             ? readRowId(buffer, dataStart + layout.offRowId())
             : 0L;

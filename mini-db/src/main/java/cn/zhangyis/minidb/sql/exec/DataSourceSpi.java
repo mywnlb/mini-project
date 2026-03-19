@@ -51,4 +51,9 @@ public interface DataSourceSpi {
         throw new UnsupportedOperationException(
             "Indexed lookup not supported for table=" + tableName + ", column=" + columnName);
     }
+
+    /**
+     * DDL 后失效表缓存，使后续 DML 使用最新 schema。
+     */
+    default void invalidateTable(String tableName) {}
 }

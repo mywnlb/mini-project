@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Schema 注册表
@@ -35,9 +36,13 @@ public class SchemaRegistry {
     private volatile RecordSchema currentSchema;
 
     /**
-     * Instant 列元数据列表
+     * Instant 列元数据列表。
+     *
+     * <p>使用 CopyOnWriteArrayList 保证读路径（fillInstantDefaults）在无锁遍历时
+     * 不会因 DDL 写路径并发 add 而抛出 ConcurrentModificationException。
+     * DDL 写入频率极低（仅 ALTER TABLE ADD COLUMN），读路径高频，COW 语义合适。</p>
      */
-    private final List<InstantColumnMeta> instantColumns = new ArrayList<>();
+    private final List<InstantColumnMeta> instantColumns = new CopyOnWriteArrayList<>();
 
     /**
      * 创建空注册表
@@ -79,8 +84,8 @@ public class SchemaRegistry {
     public RecordSchema get(int version) {
         RecordSchema schema = schemas.get(version);
         if (schema == null) {
-            if (version == 0 && currentSchema != null) {
-                // 临时兼容旧测试数据，version=0 退化为当前 schema（P1-5 过渡）
+            if (currentSchema != null) {
+                // 兼容旧测试数据、旧行版本或 Instant DDL 场景，退化为当前 schema
                 return currentSchema;
             }
             throw new IllegalArgumentException("Unknown schema version: " + version);
@@ -144,6 +149,17 @@ public class SchemaRegistry {
         // 如果记录版本已经是最新的，无需填充
         if (rowVersion >= currentSchema.getVersion()) {
             return tuple;
+        }
+
+        // I-EXPAND: 旧行字段数可能 < currentSchema 列数，需要扩展 tuple
+        int requiredFields = currentSchema.getColumnCount();
+        if (tuple.getFieldCount() < requiredFields) {
+            DataTuple expanded = DataTuple.create(requiredFields);
+            for (int i = 0; i < tuple.getFieldCount(); i++) {
+                expanded.setField(i, tuple.getField(i));
+            }
+            expanded.setInfoBits(tuple.getInfoBits());
+            tuple = expanded;
         }
 
         // 遍历 Instant 列，按列的 introducedVersion 判断是否需要填充

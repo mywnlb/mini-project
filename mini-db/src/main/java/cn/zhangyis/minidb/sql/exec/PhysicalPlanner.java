@@ -159,7 +159,7 @@ public class PhysicalPlanner {
         }
         if (relNode instanceof RelAlterTable) {
             RelAlterTable alter = (RelAlterTable) relNode;
-            return new AlterTableExec(alter);
+            return new AlterTableExec(alter, dataSource);
         }
         if (relNode instanceof RelCreateIndex) {
             RelCreateIndex createIdx = (RelCreateIndex) relNode;
