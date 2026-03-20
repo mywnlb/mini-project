@@ -43,7 +43,12 @@ public class ProjectExec implements ExecNode {
     private void projectNode(Map<String, Object> projected, SqlNode node, Row row) {
         String label = projectionLabel(node);
         SqlNode expression = node instanceof SqlAlias alias ? alias.expression() : node;
-        projected.put(label, resolveProjectionValue(expression, row));
+        // 窗口函数的值由 WindowExec 以 label 为 key 存入 row，直接用 label 取
+        if (expression instanceof SqlWindowFunction) {
+            projected.put(label, row.get(label));
+        } else {
+            projected.put(label, resolveProjectionValue(expression, row));
+        }
     }
 
     private Object resolveProjectionValue(SqlNode node, Row row) {

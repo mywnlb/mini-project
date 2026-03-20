@@ -98,9 +98,15 @@ public class SqlValidator {
                 }
             }
         } else {
+            // 从内层 FROM 构建表作用域，用于类型推断
+            Map<String, TableMeta> innerTables = new LinkedHashMap<>();
+            collectFromTables(inner.from(), innerTables);
+            List<TableScope> innerScopes = tableScopes(innerTables);
             for (SqlNode node : inner.projection().nodes()) {
                 String colName = deriveColumnName(node);
-                columns.add(new ColumnMeta(colName, SqlType.VARCHAR, false));
+                SqlType type = inferType(node, innerScopes);
+                if (type == null) type = SqlType.VARCHAR; // fallback
+                columns.add(new ColumnMeta(colName, type, false));
             }
         }
 
@@ -448,6 +454,7 @@ public class SqlValidator {
             validateExpression(between.expr(), tables);
             validateExpression(between.low(), tables);
             validateExpression(between.high(), tables);
+            checkBetweenTypes(between, tables);
             return;
         }
         if (expression instanceof SqlInList inList) {
@@ -455,6 +462,23 @@ public class SqlValidator {
             for (SqlNode value : inList.values().nodes()) {
                 validateExpression(value, tables);
             }
+            checkInListTypes(inList, tables);
+            return;
+        }
+        if (expression instanceof SqlCase caseExpr) {
+            for (SqlCase.WhenThen wt : caseExpr.whenThens()) {
+                validateExpression(wt.condition(), tables);
+                validateExpression(wt.result(), tables);
+            }
+            if (caseExpr.elseExpr() != null) validateExpression(caseExpr.elseExpr(), tables);
+            checkCaseBranchTypes(caseExpr, tables);
+            return;
+        }
+        if (expression instanceof SqlFunctionCall fc) {
+            for (SqlNode arg : fc.arguments().nodes()) {
+                validateExpression(arg, tables);
+            }
+            checkFunctionArgTypes(fc, tables);
             return;
         }
         if (expression instanceof SqlCast cast) {
@@ -801,6 +825,100 @@ public class SqlValidator {
         return type == SqlType.INT32 || type == SqlType.BIGINT || type == SqlType.DECIMAL;
     }
 
+    private boolean areTypesCompatible(SqlType a, SqlType b) {
+        if (a == null || b == null) return true;
+        if (isNumericType(a) && isNumericType(b)) return true;
+        return a == b;
+    }
+
+    private void checkCaseBranchTypes(SqlCase caseExpr, List<TableScope> tables) {
+        List<SqlType> branchTypes = new ArrayList<>();
+        for (SqlCase.WhenThen wt : caseExpr.whenThens()) {
+            SqlType t = inferType(wt.result(), tables);
+            if (t != null) branchTypes.add(t);
+        }
+        if (caseExpr.elseExpr() != null) {
+            SqlType t = inferType(caseExpr.elseExpr(), tables);
+            if (t != null) branchTypes.add(t);
+        }
+        if (branchTypes.size() < 2) return;
+        SqlType first = branchTypes.get(0);
+        for (int i = 1; i < branchTypes.size(); i++) {
+            if (!areTypesCompatible(first, branchTypes.get(i))) {
+                throw new ValidationException(
+                    "CASE branch type mismatch: " + first + " vs " + branchTypes.get(i));
+            }
+        }
+    }
+
+    private void checkBetweenTypes(SqlBetween between, List<TableScope> tables) {
+        SqlType exprType = inferType(between.expr(), tables);
+        SqlType lowType = inferType(between.low(), tables);
+        SqlType highType = inferType(between.high(), tables);
+        if (exprType != null && lowType != null && !areTypesCompatible(exprType, lowType)) {
+            throw new ValidationException(
+                "BETWEEN type mismatch: " + exprType + " vs " + lowType);
+        }
+        if (exprType != null && highType != null && !areTypesCompatible(exprType, highType)) {
+            throw new ValidationException(
+                "BETWEEN type mismatch: " + exprType + " vs " + highType);
+        }
+    }
+
+    private void checkInListTypes(SqlInList inList, List<TableScope> tables) {
+        SqlType exprType = inferType(inList.expr(), tables);
+        if (exprType == null) return;
+        for (SqlNode value : inList.values().nodes()) {
+            SqlType valType = inferType(value, tables);
+            if (valType != null && !areTypesCompatible(exprType, valType)) {
+                throw new ValidationException(
+                    "IN list type mismatch: " + exprType + " vs " + valType);
+            }
+        }
+    }
+
+    private void checkFunctionArgTypes(SqlFunctionCall fc, List<TableScope> tables) {
+        String func = fc.functionName().toUpperCase();
+        switch (func) {
+            case "UPPER", "LOWER" -> {
+                if (fc.arguments().size() != 1) return;
+                SqlType argType = inferType(fc.arguments().get(0), tables);
+                if (argType != null && argType != SqlType.VARCHAR) {
+                    throw new ValidationException(
+                        func + " requires VARCHAR argument, got " + argType);
+                }
+            }
+            case "COALESCE" -> {
+                List<SqlType> argTypes = new ArrayList<>();
+                for (SqlNode arg : fc.arguments().nodes()) {
+                    SqlType t = inferType(arg, tables);
+                    if (t != null) argTypes.add(t);
+                }
+                if (argTypes.size() < 2) return;
+                SqlType first = argTypes.get(0);
+                for (int i = 1; i < argTypes.size(); i++) {
+                    if (!areTypesCompatible(first, argTypes.get(i))) {
+                        throw new ValidationException(
+                            "COALESCE argument type mismatch: " + first + " vs " + argTypes.get(i));
+                    }
+                }
+            }
+        }
+    }
+
+    private int extractProjectionCount(SqlNode node) {
+        if (node instanceof SqlSelect select) {
+            if (select.projection().size() == 1 && select.projection().get(0).kind() == SqlKind.STAR) {
+                return -1;
+            }
+            return select.projection().size();
+        }
+        if (node instanceof SqlSetOperation setOp) {
+            return extractProjectionCount(setOp.left());
+        }
+        return -1;
+    }
+
     private boolean isLiteral(SqlNode node) {
         SqlNode expression = unwrapAlias(node);
         return expression instanceof SqlLiteral || expression.kind() == SqlKind.NULL_LITERAL;
@@ -872,6 +990,12 @@ public class SqlValidator {
     private SqlSetOperation validateSetOperation(SqlSetOperation setOp) {
         validate(setOp.left());
         validate(setOp.right());
+        int leftCount = extractProjectionCount(setOp.left());
+        int rightCount = extractProjectionCount(setOp.right());
+        if (leftCount > 0 && rightCount > 0 && leftCount != rightCount) {
+            throw new ValidationException(
+                "Set operation requires equal column count, left has " + leftCount + ", right has " + rightCount);
+        }
         return setOp;
     }
 

@@ -44,8 +44,7 @@ class SemiAntiJoinTest {
     void inSubquery_planContainsSemiJoin() {
         RelNode plan = buildPlan(
             "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)");
-        // 预期: Project → SemiJoin(left=Scan("users"), right=Scan("orders"))
-        assertInstanceOf(RelProject.class, plan);
+        // ProjectionPruningRule 会消除 SELECT * 的恒等投影
         RelSemiJoin semi = findNode(plan, RelSemiJoin.class);
         assertNotNull(semi, "计划中应包含 RelSemiJoin");
     }
@@ -54,7 +53,7 @@ class SemiAntiJoinTest {
     void notInSubquery_planContainsAntiJoin() {
         RelNode plan = buildPlan(
             "SELECT * FROM users WHERE id NOT IN (SELECT user_id FROM orders)");
-        assertInstanceOf(RelProject.class, plan);
+        // ProjectionPruningRule 会消除 SELECT * 的恒等投影
         RelAntiJoin anti = findNode(plan, RelAntiJoin.class);
         assertNotNull(anti, "计划中应包含 RelAntiJoin");
     }

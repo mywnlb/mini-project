@@ -35,9 +35,12 @@ public class SortExec implements ExecNode {
         Comparator<Row> comparator = buildComparator();
 
         List<Row> result;
-        if (limit != null && limit > 0 && comparator != null && (offset == null || offset == 0)) {
-            // TopN 优化：用最大堆维护 top-K 最小元素
-            result = topN(comparator);
+        if (comparator == null && limit != null && limit > 0) {
+            // 无 ORDER BY + 有 LIMIT：只读 offset+limit 行
+            result = readLimited();
+        } else if (limit != null && limit > 0 && comparator != null) {
+            // TopN 优化：用最大堆维护 top-K 最小元素（支持 OFFSET）
+            result = topNWithOffset(comparator);
         } else {
             // MemSort：全量物化 + 排序（支持 OFFSET + LIMIT）
             result = memSort(comparator);
@@ -47,25 +50,50 @@ public class SortExec implements ExecNode {
     }
 
     /**
-     * TopN：维护大小为 K 的最大堆
-     * 遍历所有行，堆满后只替换堆顶（最大元素），最终堆中就是最小的 K 个
-     * 时间 O(N*logK)，空间 O(K)
+     * 无 ORDER BY 短路：只读 offset+limit 行，不做排序
      */
-    private List<Row> topN(Comparator<Row> comparator) {
-        // 最大堆：堆顶是当前 top-K 中最大的
-        PriorityQueue<Row> heap = new PriorityQueue<>(limit + 1, comparator.reversed());
+    private List<Row> readLimited() {
+        int skip = offset != null ? offset : 0;
+        int toRead = skip + limit;
+        List<Row> rows = new ArrayList<>(toRead);
+        Row row;
+        while (rows.size() < toRead && (row = input.next()) != null) {
+            rows.add(row);
+        }
+        if (skip > 0 && skip < rows.size()) {
+            return new ArrayList<>(rows.subList(skip, rows.size()));
+        } else if (skip >= rows.size()) {
+            return new ArrayList<>();
+        }
+        return rows;
+    }
+
+    /**
+     * TopN + OFFSET：维护大小为 K+offset 的最大堆
+     * 遍历所有行，堆满后只替换堆顶（最大元素），最终堆中就是最小的 K+offset 个
+     * 排序后跳过前 offset 行
+     */
+    private List<Row> topNWithOffset(Comparator<Row> comparator) {
+        int heapSize = limit + (offset != null ? offset : 0);
+        PriorityQueue<Row> heap = new PriorityQueue<>(heapSize + 1, comparator.reversed());
 
         Row row;
         while ((row = input.next()) != null) {
             heap.offer(row);
-            if (heap.size() > limit) {
-                heap.poll(); // 弹出最大的，保留最小的 K 个
+            if (heap.size() > heapSize) {
+                heap.poll();
             }
         }
 
-        // 堆中元素按正序排列输出
         List<Row> result = new ArrayList<>(heap);
         result.sort(comparator);
+
+        int skip = offset != null ? offset : 0;
+        if (skip > 0 && skip < result.size()) {
+            return new ArrayList<>(result.subList(skip, result.size()));
+        } else if (skip >= result.size()) {
+            return new ArrayList<>();
+        }
         return result;
     }
 

@@ -5,7 +5,10 @@ import cn.zhangyis.minidb.sql.ast.*;
 import java.util.*;
 
 /**
- * 窗口函数执行器：支持 ROW_NUMBER / RANK / DENSE_RANK
+ * 窗口函数执行器：支持排名函数和聚合窗口函数
+ *
+ * <p>排名函数: ROW_NUMBER / RANK / DENSE_RANK
+ * <p>聚合窗口: SUM / COUNT / AVG / MIN / MAX
  *
  * <p>执行策略：
  * 1. 物化所有输入行
@@ -20,7 +23,13 @@ public class WindowExec implements ExecNode {
     private Iterator<Row> iterator;
 
     public record WindowSpec(String funcName, String outputLabel,
-                             SqlNodeList partitionBy, SqlNodeList orderBy) {}
+                             SqlNodeList partitionBy, SqlNodeList orderBy, SqlNode arg) {
+        /** 兼容旧构造：排名函数无 arg */
+        public WindowSpec(String funcName, String outputLabel,
+                          SqlNodeList partitionBy, SqlNodeList orderBy) {
+            this(funcName, outputLabel, partitionBy, orderBy, null);
+        }
+    }
 
     public WindowExec(ExecNode input, List<WindowSpec> windowSpecs) {
         this.input = input;
@@ -55,6 +64,9 @@ public class WindowExec implements ExecNode {
         // 对每个分区排序并计算
         Comparator<Integer> comp = buildComparator(rows, spec.orderBy);
 
+        // 记录排序后的行顺序
+        List<Integer> sortedOrder = new ArrayList<>();
+
         for (List<Integer> partition : partitions.values()) {
             if (comp != null) {
                 partition.sort(comp);
@@ -65,8 +77,23 @@ public class WindowExec implements ExecNode {
                 case "ROW_NUMBER" -> computeRowNumber(rows, partition, spec.outputLabel);
                 case "RANK" -> computeRank(rows, partition, spec);
                 case "DENSE_RANK" -> computeDenseRank(rows, partition, spec);
+                case "SUM" -> computeRunningSum(rows, partition, spec);
+                case "COUNT" -> computeRunningCount(rows, partition, spec);
+                case "AVG" -> computeRunningAvg(rows, partition, spec);
+                case "MIN" -> computeRunningMin(rows, partition, spec);
+                case "MAX" -> computeRunningMax(rows, partition, spec);
             }
+
+            sortedOrder.addAll(partition);
         }
+
+        // 按分区+排序顺序重排行
+        List<Row> reordered = new ArrayList<>(rows.size());
+        for (int idx : sortedOrder) {
+            reordered.add(rows.get(idx));
+        }
+        rows.clear();
+        rows.addAll(reordered);
     }
 
     private void computeRowNumber(List<Row> rows, List<Integer> partition, String label) {
@@ -106,6 +133,135 @@ public class WindowExec implements ExecNode {
             rows.get(idx).put(spec.outputLabel, denseRank);
         }
     }
+
+    // ==================== 聚合窗口函数 ====================
+
+    private void computeRunningSum(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        boolean hasOrderBy = spec.orderBy != null && spec.orderBy.size() > 0;
+        if (!hasOrderBy) {
+            // 无 ORDER BY：整个分区的聚合值
+            double total = 0;
+            for (int idx : partition) {
+                Object val = resolveArgValue(rows.get(idx), spec.arg);
+                if (val instanceof Number n) total += n.doubleValue();
+            }
+            Object result = toNumericResult(total);
+            for (int idx : partition) rows.get(idx).put(spec.outputLabel, result);
+        } else {
+            // 有 ORDER BY：running sum
+            double running = 0;
+            for (int idx : partition) {
+                Object val = resolveArgValue(rows.get(idx), spec.arg);
+                if (val instanceof Number n) running += n.doubleValue();
+                rows.get(idx).put(spec.outputLabel, toNumericResult(running));
+            }
+        }
+    }
+
+    private void computeRunningCount(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        boolean hasOrderBy = spec.orderBy != null && spec.orderBy.size() > 0;
+        boolean isCountStar = spec.arg != null && spec.arg.kind() == SqlKind.STAR;
+        if (!hasOrderBy) {
+            long total = 0;
+            for (int idx : partition) {
+                if (isCountStar) {
+                    total++;
+                } else {
+                    Object val = resolveArgValue(rows.get(idx), spec.arg);
+                    if (val != null) total++;
+                }
+            }
+            for (int idx : partition) rows.get(idx).put(spec.outputLabel, total);
+        } else {
+            long running = 0;
+            for (int idx : partition) {
+                if (isCountStar) {
+                    running++;
+                } else {
+                    Object val = resolveArgValue(rows.get(idx), spec.arg);
+                    if (val != null) running++;
+                }
+                rows.get(idx).put(spec.outputLabel, running);
+            }
+        }
+    }
+
+    private void computeRunningAvg(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        boolean hasOrderBy = spec.orderBy != null && spec.orderBy.size() > 0;
+        if (!hasOrderBy) {
+            double total = 0;
+            int count = 0;
+            for (int idx : partition) {
+                Object val = resolveArgValue(rows.get(idx), spec.arg);
+                if (val instanceof Number n) { total += n.doubleValue(); count++; }
+            }
+            double avg = count > 0 ? total / count : 0;
+            for (int idx : partition) rows.get(idx).put(spec.outputLabel, avg);
+        } else {
+            double running = 0;
+            int count = 0;
+            for (int idx : partition) {
+                Object val = resolveArgValue(rows.get(idx), spec.arg);
+                if (val instanceof Number n) { running += n.doubleValue(); count++; }
+                double avg = count > 0 ? running / count : 0;
+                rows.get(idx).put(spec.outputLabel, avg);
+            }
+        }
+    }
+
+    private void computeRunningMin(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        boolean hasOrderBy = spec.orderBy != null && spec.orderBy.size() > 0;
+        if (!hasOrderBy) {
+            Object min = null;
+            for (int idx : partition) {
+                Object val = resolveArgValue(rows.get(idx), spec.arg);
+                if (val != null && (min == null || FilterExec.compareValues(val, min) < 0)) min = val;
+            }
+            for (int idx : partition) rows.get(idx).put(spec.outputLabel, min);
+        } else {
+            Object min = null;
+            for (int idx : partition) {
+                Object val = resolveArgValue(rows.get(idx), spec.arg);
+                if (val != null && (min == null || FilterExec.compareValues(val, min) < 0)) min = val;
+                rows.get(idx).put(spec.outputLabel, min);
+            }
+        }
+    }
+
+    private void computeRunningMax(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        boolean hasOrderBy = spec.orderBy != null && spec.orderBy.size() > 0;
+        if (!hasOrderBy) {
+            Object max = null;
+            for (int idx : partition) {
+                Object val = resolveArgValue(rows.get(idx), spec.arg);
+                if (val != null && (max == null || FilterExec.compareValues(val, max) > 0)) max = val;
+            }
+            for (int idx : partition) rows.get(idx).put(spec.outputLabel, max);
+        } else {
+            Object max = null;
+            for (int idx : partition) {
+                Object val = resolveArgValue(rows.get(idx), spec.arg);
+                if (val != null && (max == null || FilterExec.compareValues(val, max) > 0)) max = val;
+                rows.get(idx).put(spec.outputLabel, max);
+            }
+        }
+    }
+
+    private Object resolveArgValue(Row row, SqlNode arg) {
+        if (arg == null || arg.kind() == SqlKind.STAR) return null;
+        return resolveValue(row, arg);
+    }
+
+    private Object toNumericResult(double value) {
+        if (value == Math.floor(value) && !Double.isInfinite(value)) {
+            long lv = (long) value;
+            if (lv >= Integer.MIN_VALUE && lv <= Integer.MAX_VALUE) return (int) lv;
+            return lv;
+        }
+        return value;
+    }
+
+    // ==================== 通用辅助方法 ====================
 
     private boolean orderByEquals(Row a, Row b, SqlNodeList orderBy) {
         if (orderBy == null || orderBy.size() == 0) return true;

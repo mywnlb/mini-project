@@ -17,7 +17,12 @@
       "Bash(cd:*)",
       "Bash(find /d/code/java/mini-project -type f -name *.java)",
       "Bash(grep -r \"class Sql\" /c/coding/java/self/miniproject/miniproject/mini-db/src/main/java/cn/zhangyis/minidb/sql/ast/*.java)",
-      "Bash(grep -r \"class Rel\" /c/coding/java/self/miniproject/miniproject/mini-db/src/main/java/cn/zhangyis/minidb/sql/rel/*.java)"
+      "Bash(grep -r \"class Rel\" /c/coding/java/self/miniproject/miniproject/mini-db/src/main/java/cn/zhangyis/minidb/sql/rel/*.java)",
+      "Bash(xargs basename:*)",
+      "Bash(find D:/code/java/mini-project/mini-db/src/test -type f -name *Validation* -o -name *Window* -o -name *Sort*)",
+      "Bash(find D:/code/java/mini-project/mini-db/src/test -type f -name *.java)",
+      "Bash(find D:/code/java/mini-project/mini-db/src/main/java/cn/zhangyis/minidb/sql -type f -name *.java)",
+      "Bash(grep -E \"\\\\.java$\")"
     ]
   },
   "enabledPlugins": {

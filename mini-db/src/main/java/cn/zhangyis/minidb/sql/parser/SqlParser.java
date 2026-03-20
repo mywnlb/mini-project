@@ -557,6 +557,31 @@ public class SqlParser {
         return new SqlWindowFunction(funcName, partitionBy, orderBy);
     }
 
+    private SqlNode parseAggWindowFunction(SqlAggCall aggCall) {
+        tokens.expect(TokenType.OVER);
+        tokens.expect(TokenType.LPAREN);
+
+        SqlNodeList partitionBy = null;
+        if (tokens.current().type() == TokenType.PARTITION) {
+            tokens.next();
+            tokens.expect(TokenType.BY);
+            partitionBy = factory.nodeList();
+            do {
+                partitionBy.add(parseExpression());
+            } while (tokens.match(TokenType.COMMA));
+        }
+
+        SqlNodeList orderBy = null;
+        if (tokens.current().type() == TokenType.ORDER) {
+            tokens.next();
+            tokens.expect(TokenType.BY);
+            orderBy = parseOrderByList();
+        }
+
+        tokens.expect(TokenType.RPAREN);
+        return new SqlWindowFunction(aggCall.funcName(), aggCall.arg(), partitionBy, orderBy);
+    }
+
     private boolean isAggFunction(TokenType type) {
         return type == TokenType.COUNT || type == TokenType.SUM
             || type == TokenType.AVG || type == TokenType.MAX
@@ -770,7 +795,13 @@ public class SqlParser {
             return parseWindowFunction();
         }
         if (isAggFunction(token.type())) {
-            return parseAggCall();
+            SqlNode aggCall = parseAggCall();
+            // 聚合函数后跟 OVER → 聚合窗口函数
+            if (tokens.current().type() == TokenType.OVER) {
+                SqlAggCall agg = (SqlAggCall) aggCall;
+                return parseAggWindowFunction(agg);
+            }
+            return aggCall;
         }
 
         // 支持标量函数 UPPER/LOWER/COALESCE(...)
