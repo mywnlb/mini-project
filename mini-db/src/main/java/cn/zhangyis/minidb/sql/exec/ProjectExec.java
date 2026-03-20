@@ -50,7 +50,17 @@ public class ProjectExec implements ExecNode {
         if (node instanceof SqlAggCall agg) {
             return row.get(aggKey(agg));
         }
+        if (node instanceof SqlWindowFunction wf) {
+            return row.get(wf.toString());
+        }
         return FilterExec.resolveValue(node, row);
+    }
+
+    /**
+     * 生成 CAST 表达式的 label
+     */
+    private String castLabel(SqlCast cast) {
+        return "CAST(" + cast.expr() + " AS " + cast.targetType() + ")";
     }
 
     private String projectionLabel(SqlNode node) {
@@ -62,6 +72,12 @@ public class ProjectExec implements ExecNode {
         }
         if (node instanceof SqlAggCall agg) {
             return aggKey(agg);
+        }
+        if (node instanceof SqlCast cast) {
+            return castLabel(cast);
+        }
+        if (node instanceof SqlWindowFunction wf) {
+            return wf.toString();
         }
         return String.valueOf(node);
     }

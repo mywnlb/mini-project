@@ -1,32 +1,46 @@
 package cn.zhangyis.minidb.sql.exec;
 
-import cn.zhangyis.minidb.sql.ast.SqlBinaryOp;
-import cn.zhangyis.minidb.sql.ast.SqlIdentifier;
-import cn.zhangyis.minidb.sql.ast.SqlKind;
-import cn.zhangyis.minidb.sql.ast.SqlNode;
+import cn.zhangyis.minidb.sql.ast.*;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
 
 /**
  * Nested Loop Join：双层循环
  * 对每一行外表，扫描整个内表
  * 时间复杂度: O(M * N)
+ *
+ * 支持 INNER / LEFT / RIGHT / FULL JOIN
  */
 public class NestedLoopJoinExec implements ExecNode {
     private final ExecNode left;
     private final ExecNode right;
     private final SqlNode condition;
+    private final JoinType joinType;
 
     private Row currentLeft;
     private List<Row> rightRows;
     private Iterator<Row> rightIterator;
 
+    // OUTER JOIN 追踪
+    private boolean currentLeftMatched;
+    private Set<Integer> matchedRightIndices;
+    private int rightScanIdx;
+    private Row nullRightRow;
+    private Row nullLeftRow;
+
+    // RIGHT/FULL 最终阶段：发射右表未匹配行
+    private boolean rightEmitPhase;
+    private int rightEmitIdx;
+
     public NestedLoopJoinExec(ExecNode left, ExecNode right, SqlNode condition) {
+        this(left, right, condition, JoinType.INNER);
+    }
+
+    public NestedLoopJoinExec(ExecNode left, ExecNode right, SqlNode condition, JoinType joinType) {
         this.left = left;
         this.right = right;
         this.condition = condition;
+        this.joinType = joinType;
     }
 
     @Override
@@ -42,22 +56,78 @@ public class NestedLoopJoinExec implements ExecNode {
         }
 
         currentLeft = left.next();
+        rightScanIdx = 0;
         rightIterator = rightRows.iterator();
+        currentLeftMatched = false;
+        rightEmitPhase = false;
+        rightEmitIdx = 0;
+
+        if (joinType == JoinType.RIGHT || joinType == JoinType.FULL) {
+            matchedRightIndices = new HashSet<>();
+        }
     }
 
     @Override
     public Row next() {
+        // RIGHT/FULL 最终阶段：发射右表未匹配行
+        if (rightEmitPhase) {
+            return emitUnmatchedRight();
+        }
+
         while (currentLeft != null) {
-            while (rightIterator.hasNext()) {
-                Row rightRow = rightIterator.next();
+            while (rightScanIdx < rightRows.size()) {
+                Row rightRow = rightRows.get(rightScanIdx);
+                int idx = rightScanIdx;
+                rightScanIdx++;
+
                 if (matches(currentLeft, rightRow)) {
-                    Row merged = currentLeft.merge(rightRow);
-                    return merged;
+                    currentLeftMatched = true;
+                    if (matchedRightIndices != null) {
+                        matchedRightIndices.add(idx);
+                    }
+                    return currentLeft.merge(rightRow);
                 }
             }
-            // 下一行外表，重置内表迭代器
+
+            // 内层循环结束
+            Row pendingNull = null;
+            if ((joinType == JoinType.LEFT || joinType == JoinType.FULL) && !currentLeftMatched) {
+                if (nullRightRow == null && !rightRows.isEmpty()) {
+                    nullRightRow = Row.nullRow(rightRows.get(0));
+                }
+                if (nullRightRow != null) {
+                    pendingNull = currentLeft.merge(nullRightRow);
+                }
+            }
+
+            // 下一行外表，重置内表
             currentLeft = left.next();
-            rightIterator = rightRows.iterator();
+            rightScanIdx = 0;
+            currentLeftMatched = false;
+
+            if (pendingNull != null) {
+                return pendingNull;
+            }
+        }
+
+        // 左表遍历完毕，RIGHT/FULL 需要发射右表未匹配行
+        if (joinType == JoinType.RIGHT || joinType == JoinType.FULL) {
+            rightEmitPhase = true;
+            return emitUnmatchedRight();
+        }
+        return null;
+    }
+
+    private Row emitUnmatchedRight() {
+        while (rightEmitIdx < rightRows.size()) {
+            int idx = rightEmitIdx++;
+            if (!matchedRightIndices.contains(idx)) {
+                Row rightRow = rightRows.get(idx);
+                if (nullLeftRow == null) {
+                    nullLeftRow = Row.nullRow(currentLeft != null ? currentLeft : rightRow);
+                }
+                return nullLeftRow.merge(rightRow);
+            }
         }
         return null;
     }
@@ -67,9 +137,11 @@ public class NestedLoopJoinExec implements ExecNode {
         left.close();
         right.close();
         rightRows = null;
+        matchedRightIndices = null;
     }
 
     private boolean matches(Row leftRow, Row rightRow) {
+        if (condition == null) return true; // CROSS JOIN
         return evaluateCondition(condition, leftRow, rightRow);
     }
 

@@ -3,6 +3,7 @@ package cn.zhangyis.minidb.sql.exec;
 import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.functions.FunctionRegistry;
 import cn.zhangyis.minidb.sql.functions.ScalarFunction;
+import cn.zhangyis.minidb.sql.types.SqlType;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -356,6 +357,12 @@ public class FilterExec implements ExecNode {
             }
         }
 
+        // CAST(expr AS type) 支持
+        if (node instanceof SqlCast cast) {
+            Object val = resolveValue(cast.expr(), row, evaluator);
+            return castValue(val, cast.targetType());
+        }
+
         // CASE WHEN 支持
         if (node instanceof SqlCase caseExpr) {
             for (SqlCase.WhenThen wt : caseExpr.whenThens()) {
@@ -371,6 +378,29 @@ public class FilterExec implements ExecNode {
         }
 
         return null;
+    }
+
+    /**
+     * CAST 类型转换
+     */
+    static Object castValue(Object val, SqlType targetType) {
+        if (val == null) return null;
+        return switch (targetType) {
+            case INT32 -> {
+                if (val instanceof Number n) yield n.intValue();
+                yield Integer.parseInt(String.valueOf(val).trim());
+            }
+            case BIGINT -> {
+                if (val instanceof Number n) yield n.longValue();
+                yield Long.parseLong(String.valueOf(val).trim());
+            }
+            case DECIMAL -> {
+                if (val instanceof Number n) yield n.doubleValue();
+                yield Double.parseDouble(String.valueOf(val).trim());
+            }
+            case VARCHAR -> String.valueOf(val);
+            case DATETIME -> String.valueOf(val); // 简单实现，保持字符串
+        };
     }
 
     /**

@@ -20,6 +20,10 @@ public enum SqlKind {
     SET_OPERATION,
     // 子查询
     SCALAR_SUBQUERY, EXISTS, IN_SUBQUERY, DERIVED_TABLE,
+    // 类型转换
+    CAST,
+    // 窗口函数
+    WINDOW_FUNCTION,
     // 事务控制
     BEGIN_TXN, COMMIT_TXN, ROLLBACK_TXN
 }

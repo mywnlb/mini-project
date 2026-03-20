@@ -32,6 +32,7 @@ import cn.zhangyis.minidb.storage.transaction.mvcc.VersionChainReader;
 import cn.zhangyis.minidb.storage.transaction.mvcc.VisibilityChecker;
 import cn.zhangyis.minidb.storage.transaction.pointer.RollbackPointer;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
+import cn.zhangyis.minidb.storage.transaction.undo.UpdateUndoRecord;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -134,7 +135,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                 RowKey key = access.requirePrimaryKey(normalized);
                 if (!originalKey.equals(key)) {
                     throw new UnsupportedOperationException(
-                        "Updating primary key is not yet supported by storage-backed SQL path");
+                            "Updating primary key is not yet supported by storage-backed SQL path");
                 }
                 ensurePrimaryKeyAvailable(access, txn, key, row);
                 overlay.update(access, row, normalized);
@@ -195,7 +196,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             TableAccess access = openTable(tableName);
             if (!access.supportsLookup(columnName)) {
                 throw new UnsupportedOperationException(
-                    "Lookup only supports single-column primary key on table " + tableName);
+                        "Lookup only supports single-column primary key on table " + tableName);
             }
 
             RowKey key = access.encodeLookupKey(columnName, value);
@@ -258,7 +259,8 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                         deleteCommitted(access, txn, change.originalKey());
                         insertCommitted(access, txn, change.row());
                     } else {
-                        updateCommitted(access, txn, change.currentKey(), change.row());
+                        // 使用 before 行构造 oldColumns（RR 隔离需要正确的旧快照）
+                        updateCommitted(access, txn, change.currentKey(), change.row(), change.before());
                     }
                 }
                 case DELETE -> deleteCommitted(access, txn, change.originalKey());
@@ -280,10 +282,29 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         }
     }
 
-    private void updateCommitted(TableAccess access, Transaction txn, RowKey key, Row row) {
+    private void updateCommitted(TableAccess access, Transaction txn, RowKey key, Row newRow, Row oldRow) {
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             TransactionalDml dml = access.dml();
-            boolean updated = dml.update(mtr, txn, key.bytes(), rowToTuple(row, access), List.of());
+
+            // 构造oldColumns用于Undo记录（RR隔离下版本链可见性）
+            // 必须使用 oldRow（更新前的快照），不能使用 newRow
+            List<UpdateUndoRecord.OldColumnValue> oldColumns = new ArrayList<>();
+            List<ColumnMeta> columns = access.columns();
+            Row sourceForOld = (oldRow != null) ? oldRow : newRow;  // 兼容旧调用
+            for (int i = 0; i < columns.size(); i++) {
+                ColumnMeta column = columns.get(i);
+                String colName = column.getName();
+                Object oldValue = sourceForOld.get(access.tableName() + "." + colName);
+                if (oldValue == null) {
+                    oldValue = sourceForOld.get(colName);
+                }
+                if (oldValue != null) {
+                    byte[] valueBytes = String.valueOf(oldValue).getBytes();
+                    oldColumns.add(new UpdateUndoRecord.OldColumnValue(i, valueBytes));
+                }
+            }
+
+            boolean updated = dml.update(mtr, txn, key.bytes(), rowToTuple(newRow, access), oldColumns);
             if (!updated) {
                 throw new IllegalStateException("Primary key not found on table " + access.tableName());
             }
@@ -375,7 +396,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                     if (!header.isDeleted()) {
                         DataTuple tuple = access.rowReader().read(buf, recordOffset);
                         rows.add(new IndexedRow(new RowKey(cursor.getKey()),
-                            tupleToRow(access.tableName(), tuple, access.columns())));
+                                tupleToRow(access.tableName(), tuple, access.columns())));
                     }
                 } else {
                     // MVCC 可见性检查
@@ -387,19 +408,19 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                         if (!header.isDeleted()) {
                             DataTuple tuple = access.rowReader().read(buf, recordOffset);
                             rows.add(new IndexedRow(new RowKey(cursor.getKey()),
-                                tupleToRow(access.tableName(), tuple, access.columns())));
+                                    tupleToRow(access.tableName(), tuple, access.columns())));
                         }
                     } else if (chainReader != null) {
                         // 当前版本不可见，遍历版本链查找可见版本
                         long rollPtrValue = CompactRecordFormat.readRollPtr(
-                            buf, dataStart + SystemLayout.OFF_ROLL_PTR);
+                                buf, dataStart + SystemLayout.OFF_ROLL_PTR);
                         RollbackPointer rollPtr = RollbackPointer.decode(rollPtrValue);
                         Optional<RecordVersion> visibleVersion =
-                            chainReader.findVisibleVersion(rollPtr, readView);
+                                chainReader.findVisibleVersion(rollPtr, readView);
                         if (visibleVersion.isPresent() && !visibleVersion.get().isDeleteMarked()) {
                             DataTuple tuple = visibleVersion.get().toDataTuple();
                             rows.add(new IndexedRow(new RowKey(cursor.getKey()),
-                                tupleToRow(access.tableName(), tuple, access.columns())));
+                                    versionTupleToRow(access.tableName(), tuple, access.columns())));
                         }
                     }
                     // else: 不可见 + 无版本链 → 跳过
@@ -458,14 +479,14 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             VersionChainReader chainReader = access.versionChainReader();
             if (chainReader != null) {
                 long rollPtrValue = CompactRecordFormat.readRollPtr(
-                    buf, dataStart + SystemLayout.OFF_ROLL_PTR);
+                        buf, dataStart + SystemLayout.OFF_ROLL_PTR);
                 RollbackPointer rollPtr = RollbackPointer.decode(rollPtrValue);
                 Optional<RecordVersion> visibleVersion =
-                    chainReader.findVisibleVersion(rollPtr, readView);
+                        chainReader.findVisibleVersion(rollPtr, readView);
                 if (visibleVersion.isPresent() && !visibleVersion.get().isDeleteMarked()) {
                     DataTuple tuple = visibleVersion.get().toDataTuple();
                     mtr.commit();
-                    return tupleToRow(access.tableName(), tuple, access.columns());
+                    return versionTupleToRow(access.tableName(), tuple, access.columns());
                 }
             }
 
@@ -531,6 +552,39 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         return new Row(values);
     }
 
+    /**
+     * 将版本链回溯得到的 DataTuple 转换为 Row。
+     *
+     * <p>版本链中 RecordVersion.toDataTuple() 将所有列值包装为 varbinaryField(byte[])，
+     * 丢失了原始类型信息。此方法根据 ColumnMeta 的类型将 byte[] 反序列化为正确的 Java 类型，
+     * 保证 MVCC-V1: 版本链回溯返回的 Row 与正常读取路径类型一致。</p>
+     */
+    private Row versionTupleToRow(String tableName, DataTuple tuple, List<ColumnMeta> columns) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int i = 0; i < columns.size() && i < tuple.getFieldCount(); i++) {
+            ColumnMeta column = columns.get(i);
+            DataField field = tuple.getField(i);
+            if (field == null) {
+                values.put(tableName + "." + column.getName(), null);
+            } else if (field.getKind() == FieldKind.VARBINARY && column.getKind() != FieldKind.VARBINARY) {
+                // 版本链 tuple: byte[] → 按 column 类型反序列化
+                String strValue = new String(field.getData());
+                Object typed = switch (column.getKind()) {
+                    case INT -> Integer.parseInt(strValue);
+                    case BIGINT -> Long.parseLong(strValue);
+                    case TINYINT -> Byte.parseByte(strValue);
+                    case SMALLINT -> Short.parseShort(strValue);
+                    case VARCHAR, CHAR, TEXT -> strValue;
+                    default -> field.getValue();
+                };
+                values.put(tableName + "." + column.getName(), typed);
+            } else {
+                values.put(tableName + "." + column.getName(), field.getValue());
+            }
+        }
+        return new Row(values);
+    }
+
     private Row renameQualifier(Row row, String sourceTable, String outputName) {
         if (sourceTable.equalsIgnoreCase(outputName)) {
             return row;
@@ -578,15 +632,15 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                 }
                 mtr.commit();
                 return new TableAccess(
-                    bufferPool,
-                    table,
-                    schema,
-                    layout,
-                    new RowReader(table.getSchemaRegistry(), layout),
-                    primary.toCompositeKeyDef(),
-                    primary,
-                    new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset()),
-                    undoLogManager
+                        bufferPool,
+                        table,
+                        schema,
+                        layout,
+                        new RowReader(table.getSchemaRegistry(), layout),
+                        primary.toCompositeKeyDef(),
+                        primary,
+                        new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset()),
+                        undoLogManager
                 );
             }
         } catch (MiniDbException e) {
@@ -635,7 +689,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
 
         boolean supportsLookup(String columnName) {
             return primaryIndex.getColumns().size() == 1
-                && primaryIndex.getColumns().get(0).getName().equalsIgnoreCase(columnName);
+                    && primaryIndex.getColumns().get(0).getName().equalsIgnoreCase(columnName);
         }
 
         RowKey requirePrimaryKey(Row row) {
@@ -734,7 +788,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
 
         void insert(TableAccess access, Row row) {
             RowKey key = access.keyOf(row);
-            PendingChange change = new PendingChange(ChangeKind.INSERT, key, key, row, false);
+            PendingChange change = new PendingChange(ChangeKind.INSERT, key, key, row, null, false);
             pending.put(key, change);
             visible.put(key, change);
         }
@@ -745,7 +799,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             PendingChange current = visible.remove(oldKey);
 
             if (current == null) {
-                PendingChange next = new PendingChange(ChangeKind.UPDATE, oldKey, newKey, after, true);
+                PendingChange next = new PendingChange(ChangeKind.UPDATE, oldKey, newKey, after, before, true);
                 pending.put(oldKey, next);
                 visible.put(newKey, next);
                 return;
@@ -753,13 +807,13 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
 
             if (current.kind() == ChangeKind.INSERT) {
                 pending.remove(current.identityKey());
-                PendingChange next = new PendingChange(ChangeKind.INSERT, newKey, newKey, after, false);
+                PendingChange next = new PendingChange(ChangeKind.INSERT, newKey, newKey, after, null, false);
                 pending.put(newKey, next);
                 visible.put(newKey, next);
                 return;
             }
 
-            PendingChange next = new PendingChange(ChangeKind.UPDATE, current.originalKey(), newKey, after, true);
+            PendingChange next = new PendingChange(ChangeKind.UPDATE, current.originalKey(), newKey, after, before, true);
             pending.put(current.identityKey(), next);
             visible.put(newKey, next);
         }
@@ -769,7 +823,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             PendingChange current = visible.remove(key);
 
             if (current == null) {
-                pending.put(key, new PendingChange(ChangeKind.DELETE, key, key, null, true));
+                pending.put(key, new PendingChange(ChangeKind.DELETE, key, key, null, row, true));
                 return;
             }
 
@@ -779,7 +833,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             }
 
             pending.put(current.identityKey(),
-                new PendingChange(ChangeKind.DELETE, current.originalKey(), current.originalKey(), null, true));
+                    new PendingChange(ChangeKind.DELETE, current.originalKey(), current.originalKey(), null, row, true));
         }
 
         PendingChange visibleByCurrentKey(RowKey key) {
@@ -804,40 +858,113 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         INSERT, UPDATE, DELETE
     }
 
-    private record PendingChange(ChangeKind kind, RowKey originalKey, RowKey currentKey,
-                                 Row row, boolean fromCommittedRow) {
-        RowKey identityKey() {
-            return fromCommittedRow ? originalKey : currentKey;
-        }
-
-        boolean matchesSourceRow(RowKey sourceKey) {
-            return sourceKey != null
-                && (sourceKey.equals(originalKey) || sourceKey.equals(currentKey));
-        }
-    }
-
-    private record IndexedRow(RowKey key, Row row) {
-    }
-
-    private static final class RowKey {
+    /**
+     * 主键包装类（用于 overlay Map key）
+     * 必须提供基于内容的 equals/hashCode
+     */
+    private static class RowKey {
         private final byte[] bytes;
 
-        private RowKey(byte[] bytes) {
-            this.bytes = bytes.clone();
+        RowKey(byte[] bytes) {
+            this.bytes = bytes != null ? bytes.clone() : new byte[0];
         }
 
         byte[] bytes() {
-            return bytes.clone();
+            return bytes;
         }
 
         @Override
-        public boolean equals(Object obj) {
-            return obj instanceof RowKey other && Arrays.equals(bytes, other.bytes);
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            RowKey rowKey = (RowKey) o;
+            return Arrays.equals(bytes, rowKey.bytes);
         }
 
         @Override
         public int hashCode() {
             return Arrays.hashCode(bytes);
+        }
+
+        @Override
+        public String toString() {
+            return "RowKey" + Arrays.toString(bytes);
+        }
+    }
+
+    /**
+     * 带索引的行（用于 loadCommittedRows 返回）
+     */
+    private static class IndexedRow {
+        private final RowKey key;
+        private final Row row;
+
+        IndexedRow(RowKey key, Row row) {
+            this.key = key;
+            this.row = row;
+        }
+
+        RowKey key() {
+            return key;
+        }
+
+        Row row() {
+            return row;
+        }
+    }
+
+    /**
+     * overlay 中待处理的变更
+     */
+    private static class PendingChange {
+        private final ChangeKind kind;
+        private final RowKey originalKey;
+        private final RowKey currentKey;
+        private final Row row;
+        private final Row before;
+        private final boolean fromCommittedRow;
+
+        PendingChange(ChangeKind kind, RowKey originalKey, RowKey currentKey,
+                      Row row, Row before, boolean fromCommittedRow) {
+            this.kind = kind;
+            this.originalKey = originalKey;
+            this.currentKey = currentKey != null ? currentKey : originalKey;
+            this.row = row;
+            this.before = before;
+            this.fromCommittedRow = fromCommittedRow;
+        }
+
+        ChangeKind kind() {
+            return kind;
+        }
+
+        RowKey originalKey() {
+            return originalKey;
+        }
+
+        RowKey currentKey() {
+            return currentKey;
+        }
+
+        Row row() {
+            return row;
+        }
+
+        Row before() {
+            return before;
+        }
+
+        boolean fromCommittedRow() {
+            return fromCommittedRow;
+        }
+
+        RowKey identityKey() {
+            return originalKey;  // 用于 pending map 的 key
+        }
+
+        boolean matchesSourceRow(RowKey sourceKey) {
+            if (sourceKey == null) return false;
+            return originalKey.equals(sourceKey) || currentKey.equals(sourceKey);
         }
     }
 }

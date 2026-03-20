@@ -60,6 +60,17 @@ public class Row {
         return new Row(merged);
     }
 
+    /**
+     * 生成一个所有列值为 null 的行（用于 OUTER JOIN NULL 填充）
+     */
+    public static Row nullRow(Row template) {
+        Map<String, Object> nullMap = new LinkedHashMap<>();
+        for (String key : template.columns().keySet()) {
+            nullMap.put(key, null);
+        }
+        return new Row(nullMap);
+    }
+
     @Override
     public String toString() {
         return columns.toString();

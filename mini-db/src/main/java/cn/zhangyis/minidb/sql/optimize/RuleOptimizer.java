@@ -1,31 +1,35 @@
 package cn.zhangyis.minidb.sql.optimize;
 
+import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
 import cn.zhangyis.minidb.sql.rel.*;
+import java.util.ArrayList;
 import java.util.List;
 
 public class RuleOptimizer {
     private final List<RelOptRule> rules;
 
     public RuleOptimizer() {
-        this(false);
+        this(false, null);
     }
 
     public RuleOptimizer(boolean enableIndexedLookup) {
-        this.rules = enableIndexedLookup
-            ? List.of(
-                ConstantFoldingRule.INSTANCE,
-                FilterProjectTransposeRule.INSTANCE,
-                FilterJoinPushdownRule.INSTANCE,
-                new PushFilterIntoScanRule(),
-                JoinCommuteRule.INSTANCE
-            )
-            : List.of(
-                ConstantFoldingRule.INSTANCE,
-                FilterProjectTransposeRule.INSTANCE,
-                FilterJoinPushdownRule.INSTANCE,
-                PushFilterIntoScanRule.INSTANCE,
-                JoinCommuteRule.INSTANCE
-            );
+        this(enableIndexedLookup, null);
+    }
+
+    public RuleOptimizer(boolean enableIndexedLookup, CatalogSpi catalog) {
+        List<RelOptRule> ruleList = new ArrayList<>();
+        // SubqueryUnnestingRule 必须排在 FilterJoinPushdownRule 之前
+        if (catalog != null) {
+            ruleList.add(new SubqueryUnnestingRule(catalog));
+        }
+        ruleList.add(ConstantFoldingRule.INSTANCE);
+        ruleList.add(FilterProjectTransposeRule.INSTANCE);
+        ruleList.add(FilterJoinPushdownRule.INSTANCE);
+        ruleList.add(enableIndexedLookup ? new PushFilterIntoScanRule() : PushFilterIntoScanRule.INSTANCE);
+        ruleList.add(JoinCommuteRule.INSTANCE);
+        ruleList.add(ProjectionPruningRule.INSTANCE);
+        ruleList.add(LimitPushdownRule.INSTANCE);
+        this.rules = List.copyOf(ruleList);
     }
 
     public RelNode optimize(RelNode root) {
@@ -79,6 +83,18 @@ public class RuleOptimizer {
         if (node instanceof RelSort sort) {
             RelNode opt = optimize(sort.input());
             return opt != sort.input() ? sort.copy(List.of(opt)) : node;
+        }
+        if (node instanceof RelSemiJoin semi) {
+            RelNode optL = optimize(semi.left());
+            RelNode optR = optimize(semi.right());
+            return (optL != semi.left() || optR != semi.right())
+                ? semi.copy(List.of(optL, optR)) : node;
+        }
+        if (node instanceof RelAntiJoin anti) {
+            RelNode optL = optimize(anti.left());
+            RelNode optR = optimize(anti.right());
+            return (optL != anti.left() || optR != anti.right())
+                ? anti.copy(List.of(optL, optR)) : node;
         }
         return node;
     }

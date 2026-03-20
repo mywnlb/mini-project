@@ -45,7 +45,7 @@ Correctness depends on:
 
 If these are violated, the system will suffer SILENT CORRUPTION.
 
-强制 不要每写一个phase就编写一个文件，我让你写你再编写，我自己编译，自己测试
+强制 不要每写一个phase就编写一个说明文件，我让你写你再编写，我自己编译，自己测试
 强制 永远用中文回答
 
 Claude MUST follow the rules below.

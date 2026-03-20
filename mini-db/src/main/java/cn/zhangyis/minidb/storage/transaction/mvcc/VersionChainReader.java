@@ -130,6 +130,15 @@ public class VersionChainReader {
         RollbackPointer currentPtr = startPtr;
         int depth = 0;
 
+        // 当前实现中，Undo 记录的 trxId 是**执行修改的事务**的 ID，
+        // 而非旧版本的 trxId。因此 UPDATE undo 的 trxId 是修改者，
+        // 其 oldValues 代表修改前的状态（属于更早的事务）。
+        //
+        // 算法：追踪最近一个不可见 UPDATE undo 的旧值作为候选版本。
+        // 当链中出现可见 trxId 时，该候选版本即为可见版本
+        // （其数据由该可见事务创建）。
+        RecordVersion candidateVersion = null;
+
         while (!currentPtr.isNull() && depth < maxDepth) {
             depth++;
 
@@ -137,22 +146,36 @@ public class VersionChainReader {
             UndoRecord undoRecord = undoReader.read(currentPtr);
             if (undoRecord == null) {
                 // Undo 记录可能已被 purge
-                return Optional.empty();
+                return Optional.ofNullable(candidateVersion);
             }
 
             // 检查可见性
             TransactionId recordTrxId = undoRecord.getTrxId();
             if (VisibilityChecker.isVisible(recordTrxId, readView)) {
-                // 找到可见版本
+                // 找到可见事务。
+                // 如果有候选版本（来自更近的不可见 undo 的旧值），
+                // 该候选版本的数据正是此可见事务所创建的状态。
+                if (candidateVersion != null) {
+                    return Optional.of(candidateVersion);
+                }
+                // 无候选版本 — 直接返回此 undo 的版本
                 return Optional.of(createVersion(undoRecord));
             }
 
-            // 检查是否是 INSERT Undo (版本链终点)
+            // 当前 undo 的 trxId 不可见
             if (undoRecord instanceof InsertUndoRecord) {
-                // 到达版本链起点，记录在此之前不存在
-                // 如果 INSERT 不可见，说明记录对当前事务完全不存在
+                // 到达版本链起点，记录在此之前不存在。
+                // 如果 INSERT 不可见，说明记录对当前事务完全不存在。
                 return Optional.empty();
             }
+
+            if (undoRecord instanceof UpdateUndoRecord updateUndo) {
+                // 保存旧值作为候选版本。
+                // 这些旧值代表此不可见 UPDATE 之前的记录状态。
+                candidateVersion = RecordVersion.fromUpdateUndo(updateUndo);
+            }
+            // 对于 DELETE undo，暂不更新候选版本（columnValues 为空），
+            // 继续遍历以找到更早的带数据版本。
 
             // 继续遍历
             currentPtr = undoRecord.getPrevUndoPtr();
@@ -163,7 +186,7 @@ public class VersionChainReader {
                     "Version chain exceeds maximum depth: " + maxDepth);
         }
 
-        return Optional.empty();
+        return Optional.ofNullable(candidateVersion);
     }
 
     /**

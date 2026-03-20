@@ -3,6 +3,9 @@ package cn.zhangyis.minidb.sql.parser;
 import cn.zhangyis.minidb.sql.lexer.*;
 import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.types.SqlType;
+import java.util.List;
+
+import static cn.zhangyis.minidb.sql.lexer.TokenType.*;
 
 public class SqlParser {
     private final TokenStream tokens;
@@ -18,11 +21,18 @@ public class SqlParser {
         SqlNode result = switch (type) {
             case SELECT -> {
                 SqlNode s = parseSelect();
-                if (tokens.current().type() == TokenType.UNION) {
+                TokenType setOpToken = tokens.current().type();
+                if (setOpToken == TokenType.UNION || setOpToken == TokenType.EXCEPT || setOpToken == TokenType.INTERSECT) {
                     tokens.next();
                     boolean all = tokens.match(TokenType.ALL);
                     SqlNode right = parseSelect();
-                    yield factory.setOperation(s, right, all);
+                    SqlSetOperation.SetOpType opType = switch (setOpToken) {
+                        case UNION -> SqlSetOperation.SetOpType.UNION;
+                        case EXCEPT -> SqlSetOperation.SetOpType.EXCEPT;
+                        case INTERSECT -> SqlSetOperation.SetOpType.INTERSECT;
+                        default -> throw new SqlParseException("Unexpected: " + setOpToken);
+                    };
+                    yield factory.setOperation(s, right, all, opType);
                 }
                 yield s;
             }
@@ -98,14 +108,57 @@ public class SqlParser {
 
     private SqlNode parseFrom() {
         SqlNode left = parseFromItem();
-        while (tokens.current().type() == TokenType.JOIN) {
-            tokens.next();
+        while (isJoinStart(tokens.current().type())) {
+            JoinType joinType = parseJoinType();
             SqlNode right = parseFromItem();
-            tokens.expect(TokenType.ON);
-            SqlNode condition = parseExpression();
-            left = factory.join(left, right, condition);
+            SqlNode condition = null;
+            if (joinType != JoinType.CROSS) {
+                tokens.expect(TokenType.ON);
+                condition = parseExpression();
+            }
+            left = factory.join(joinType, left, right, condition);
         }
         return left;
+    }
+
+    private boolean isJoinStart(TokenType type) {
+        return type == TokenType.JOIN || type == LEFT || type == RIGHT
+            || type == FULL || type == CROSS || type == INNER;
+    }
+
+    private JoinType parseJoinType() {
+        TokenType type = tokens.current().type();
+        if (type == LEFT) {
+            tokens.next();
+            tokens.match(OUTER);
+            tokens.expect(TokenType.JOIN);
+            return JoinType.LEFT;
+        }
+        if (type == RIGHT) {
+            tokens.next();
+            tokens.match(OUTER);
+            tokens.expect(TokenType.JOIN);
+            return JoinType.RIGHT;
+        }
+        if (type == FULL) {
+            tokens.next();
+            tokens.match(OUTER);
+            tokens.expect(TokenType.JOIN);
+            return JoinType.FULL;
+        }
+        if (type == CROSS) {
+            tokens.next();
+            tokens.expect(TokenType.JOIN);
+            return JoinType.CROSS;
+        }
+        if (type == INNER) {
+            tokens.next();
+            tokens.expect(TokenType.JOIN);
+            return JoinType.INNER;
+        }
+        // 纯 JOIN
+        tokens.expect(TokenType.JOIN);
+        return JoinType.INNER;
     }
 
     /**
@@ -172,7 +225,7 @@ public class SqlParser {
 
     // ==================== INSERT ====================
 
-    private SqlInsert parseInsert() {
+    private SqlNode parseInsert() {
         tokens.expect(TokenType.INSERT);
         tokens.expect(TokenType.INTO);
         SqlIdentifier table = parseIdentifier();
@@ -186,6 +239,13 @@ public class SqlParser {
             tokens.expect(TokenType.RPAREN);
         }
 
+        // INSERT INTO ... SELECT ...
+        if (tokens.current().type() == TokenType.SELECT) {
+            SqlSelect select = parseSelect();
+            return new SqlInsertSelect(table, columns, select);
+        }
+
+        // INSERT INTO ... VALUES ...
         tokens.expect(TokenType.VALUES);
 
         // 多行 VALUES: (v1, v2), (v3, v4)
@@ -314,6 +374,19 @@ public class SqlParser {
             case "DECIMAL", "DOUBLE", "FLOAT" -> SqlType.DECIMAL;
             case "DATETIME", "TIMESTAMP" -> SqlType.DATETIME;
             default -> throw new SqlParseException("Unknown column type: " + typeName);
+        };
+    }
+
+    private SqlType parseCastType() {
+        String typeName = tokens.current().value();
+        tokens.expect(TokenType.IDENTIFIER);
+        return switch (typeName.toUpperCase()) {
+            case "INT", "INTEGER" -> SqlType.INT32;
+            case "BIGINT", "LONG" -> SqlType.BIGINT;
+            case "VARCHAR", "TEXT", "STRING" -> SqlType.VARCHAR;
+            case "DECIMAL", "DOUBLE", "FLOAT" -> SqlType.DECIMAL;
+            case "DATETIME", "TIMESTAMP" -> SqlType.DATETIME;
+            default -> throw new SqlParseException("Unknown CAST type: " + typeName);
         };
     }
 
@@ -449,6 +522,39 @@ public class SqlParser {
         }
         tokens.expect(TokenType.END);
         return factory.caseWhen(whenThens, elseExpr);
+    }
+
+    private boolean isWindowFunction(TokenType type) {
+        return type == TokenType.ROW_NUMBER || type == TokenType.RANK || type == TokenType.DENSE_RANK;
+    }
+
+    private SqlNode parseWindowFunction() {
+        String funcName = tokens.current().value();
+        tokens.next();
+        tokens.expect(TokenType.LPAREN);
+        tokens.expect(TokenType.RPAREN);
+        tokens.expect(TokenType.OVER);
+        tokens.expect(TokenType.LPAREN);
+
+        SqlNodeList partitionBy = null;
+        if (tokens.current().type() == TokenType.PARTITION) {
+            tokens.next();
+            tokens.expect(TokenType.BY);
+            partitionBy = factory.nodeList();
+            do {
+                partitionBy.add(parseExpression());
+            } while (tokens.match(TokenType.COMMA));
+        }
+
+        SqlNodeList orderBy = null;
+        if (tokens.current().type() == TokenType.ORDER) {
+            tokens.next();
+            tokens.expect(TokenType.BY);
+            orderBy = parseOrderByList();
+        }
+
+        tokens.expect(TokenType.RPAREN);
+        return new SqlWindowFunction(funcName, partitionBy, orderBy);
     }
 
     private boolean isAggFunction(TokenType type) {
@@ -612,6 +718,16 @@ public class SqlParser {
             tokens.next();
             return parseCaseExpression();
         }
+        // CAST(expr AS type)
+        if (token.type() == TokenType.CAST) {
+            tokens.next();
+            tokens.expect(TokenType.LPAREN);
+            SqlNode expr = parseExpression();
+            tokens.expect(TokenType.AS);
+            SqlType targetType = parseCastType();
+            tokens.expect(TokenType.RPAREN);
+            return new SqlCast(expr, targetType);
+        }
         // NOT EXISTS (SELECT ...)
         if (token.type() == TokenType.NOT && tokens.peek().type() == TokenType.EXISTS) {
             tokens.next(); // consume NOT
@@ -648,6 +764,10 @@ public class SqlParser {
             SqlNode expr = parseExpression();
             tokens.expect(TokenType.RPAREN);
             return expr;
+        }
+        // 窗口函数: ROW_NUMBER() / RANK() / DENSE_RANK() OVER (...)
+        if (isWindowFunction(token.type())) {
+            return parseWindowFunction();
         }
         if (isAggFunction(token.type())) {
             return parseAggCall();

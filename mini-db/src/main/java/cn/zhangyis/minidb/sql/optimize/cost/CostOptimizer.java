@@ -71,12 +71,22 @@ public class CostOptimizer {
                    "  " + decidePhysicalPlan(agg.input());
         }
         if (plan instanceof RelJoin join) {
-            JoinAlgorithm algo = costModel.chooseJoinAlgorithm(join.left(), join.right(), join.condition());
+            JoinAlgorithm algo = costModel.chooseJoinAlgorithm(join.left(), join.right(), join.condition(), join.joinType());
             CostModel.JoinCostDetail detail = costModel.joinCostDetail(join.left(), join.right(), join.condition());
-            return algo.name() + "(chosen by CBO)\n" +
+            return algo.name() + "(type=" + join.joinType() + ", chosen by CBO)\n" +
                    "  costs: " + detail + "\n" +
                    "  left: " + decidePhysicalPlan(join.left()) + "\n" +
                    "  right: " + decidePhysicalPlan(join.right());
+        }
+        if (plan instanceof RelSemiJoin semi) {
+            return "SEMI_HASH_JOIN(condition=" + semi.condition() + ")\n" +
+                   "  left: " + decidePhysicalPlan(semi.left()) + "\n" +
+                   "  right: " + decidePhysicalPlan(semi.right());
+        }
+        if (plan instanceof RelAntiJoin anti) {
+            return "ANTI_HASH_JOIN(condition=" + anti.condition() + ")\n" +
+                   "  left: " + decidePhysicalPlan(anti.left()) + "\n" +
+                   "  right: " + decidePhysicalPlan(anti.right());
         }
         if (plan instanceof RelIndexedScan scan) {
             return "INDEX_SCAN[" + scan.tableName() + "](condition=" + scan.indexCondition() + ")";
@@ -94,6 +104,6 @@ public class CostOptimizer {
      * 为 RelJoin 选择最优 JOIN 算法（供 PhysicalPlanner 调用）
      */
     public JoinAlgorithm chooseJoinAlgorithm(RelJoin join) {
-        return costModel.chooseJoinAlgorithm(join.left(), join.right(), join.condition());
+        return costModel.chooseJoinAlgorithm(join.left(), join.right(), join.condition(), join.joinType());
     }
 }

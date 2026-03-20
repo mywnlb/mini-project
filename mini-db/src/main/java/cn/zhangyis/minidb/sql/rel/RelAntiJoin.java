@@ -1,35 +1,31 @@
 package cn.zhangyis.minidb.sql.rel;
 
-import cn.zhangyis.minidb.sql.ast.JoinType;
 import cn.zhangyis.minidb.sql.ast.SqlNode;
 import java.util.List;
 
-public class RelJoin extends RelNode {
+/**
+ * Anti-Join 逻辑节点：只输出在右侧无匹配的左侧行。
+ * 语义：对于左侧每一行，如果右侧没有任何行匹配条件，则输出该左行。
+ */
+public class RelAntiJoin extends RelNode {
     private final RelNode left;
     private final RelNode right;
     private final SqlNode condition;
-    private final JoinType joinType;
 
-    public RelJoin(RelNode left, RelNode right, SqlNode condition, JoinType joinType) {
+    public RelAntiJoin(RelNode left, RelNode right, SqlNode condition) {
         this.left = left;
         this.right = right;
         this.condition = condition;
-        this.joinType = joinType;
-    }
-
-    /** 向后兼容：默认 INNER */
-    public RelJoin(RelNode left, RelNode right, SqlNode condition) {
-        this(left, right, condition, JoinType.INNER);
     }
 
     @Override
     public RelNode copy(List<RelNode> inputs) {
-        return new RelJoin(inputs.get(0), inputs.get(1), condition, joinType);
+        return new RelAntiJoin(inputs.get(0), inputs.get(1), condition);
     }
 
     @Override
     public String explain() {
-        return "RelJoin(type=" + joinType + ", condition=" + condition + ")\n" +
+        return "RelAntiJoin(condition=" + condition + ")\n" +
                "  left: " + left.explain() + "\n" +
                "  right: " + right.explain();
     }
@@ -37,5 +33,4 @@ public class RelJoin extends RelNode {
     public RelNode left() { return left; }
     public RelNode right() { return right; }
     public SqlNode condition() { return condition; }
-    public JoinType joinType() { return joinType; }
 }

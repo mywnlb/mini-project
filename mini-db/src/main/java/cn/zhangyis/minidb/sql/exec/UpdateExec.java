@@ -18,21 +18,28 @@ public class UpdateExec implements ExecNode {
     private final RelUpdate relUpdate;
     private final DataSourceSpi dataSource;
     private final CatalogSpi catalog;
+    private final FilterExec.SubqueryEvaluator subqueryEvaluator;
     private int affectedRows;
     private boolean returned;
 
     public UpdateExec(RelUpdate relUpdate) {
-        this(relUpdate, MockDataSourceAdapter.INSTANCE, null);
+        this(relUpdate, MockDataSourceAdapter.INSTANCE, null, null);
     }
 
     public UpdateExec(RelUpdate relUpdate, DataSourceSpi dataSource) {
-        this(relUpdate, dataSource, null);
+        this(relUpdate, dataSource, null, null);
     }
 
     public UpdateExec(RelUpdate relUpdate, DataSourceSpi dataSource, CatalogSpi catalog) {
+        this(relUpdate, dataSource, catalog, null);
+    }
+
+    public UpdateExec(RelUpdate relUpdate, DataSourceSpi dataSource, CatalogSpi catalog,
+                      FilterExec.SubqueryEvaluator subqueryEvaluator) {
         this.relUpdate = relUpdate;
         this.dataSource = dataSource;
         this.catalog = catalog;
+        this.subqueryEvaluator = subqueryEvaluator;
     }
 
     @Override
@@ -49,7 +56,7 @@ public class UpdateExec implements ExecNode {
             row -> {
                 for (SqlNode node : relUpdate.assignments().nodes()) {
                     SqlAssignment assign = (SqlAssignment) node;
-                    Object value = FilterExec.resolveValue(assign.value(), row);
+                    Object value = FilterExec.resolveValue(assign.value(), row, subqueryEvaluator);
 
                     // 类型校验和转换
                     if (meta != null) {

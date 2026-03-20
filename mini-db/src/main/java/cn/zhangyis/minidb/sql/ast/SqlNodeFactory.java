@@ -30,6 +30,10 @@ public class SqlNodeFactory {
         return new SqlJoin(left, right, condition);
     }
 
+    public SqlJoin join(JoinType joinType, SqlNode left, SqlNode right, SqlNode condition) {
+        return new SqlJoin(joinType, left, right, condition);
+    }
+
     public SqlTableRef tableRef(String tableName, String alias) {
         return new SqlTableRef(tableName, alias);
     }
@@ -88,6 +92,10 @@ public class SqlNodeFactory {
 
     public SqlSetOperation setOperation(SqlNode left, SqlNode right, boolean all) {
         return new SqlSetOperation(left, right, all);
+    }
+
+    public SqlSetOperation setOperation(SqlNode left, SqlNode right, boolean all, SqlSetOperation.SetOpType opType) {
+        return new SqlSetOperation(left, right, all, opType);
     }
 
     public SqlNode nullLiteral() {

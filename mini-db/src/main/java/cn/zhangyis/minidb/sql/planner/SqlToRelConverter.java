@@ -43,7 +43,7 @@ public class SqlToRelConverter {
             case SqlSetOperation op -> {
                 RelNode left = convert(op.left());
                 RelNode right = convert(op.right());
-                yield new RelUnion(left, right, op.all());
+                yield new RelUnion(left, right, op.all(), op.opType());
             }
             case ValidatedDml dml -> convertDml(dml);
             case SqlCreateTable create -> new RelCreateTable(create, catalog);
@@ -97,7 +97,7 @@ public class SqlToRelConverter {
         if (from instanceof SqlJoin join) {
             RelNode left = convertFrom(join.left(), validated);
             RelNode right = convertFrom(join.right(), validated);
-            return factories.join(left, right, join.condition());
+            return factories.join(left, right, join.condition(), join.joinType());
         }
 
         if (from instanceof SqlDerivedTable derived) {
@@ -238,11 +238,20 @@ public class SqlToRelConverter {
 
     private RelNode convertDml(ValidatedDml dml) {
         return switch (dml.original()) {
+            case SqlInsertSelect insertSelect -> convertInsertSelect(insertSelect, dml.tableMeta());
             case SqlInsert insert -> convertInsert(insert, dml.tableMeta());
             case SqlUpdate update -> convertUpdate(update, dml.tableMeta());
             case SqlDelete delete -> convertDelete(delete, dml.tableMeta());
             default -> throw new IllegalArgumentException("Unsupported DML: " + dml.kind());
         };
+    }
+
+    private RelNode convertInsertSelect(SqlInsertSelect insertSelect, TableMeta table) {
+        // SELECT 已在 Validator 中验证，此处需重新走 validate+convert 产生 RelNode
+        SqlValidator validator = new SqlValidator(catalog);
+        SqlNode validatedSelect = validator.validate(insertSelect.select());
+        RelNode selectPlan = convert(validatedSelect);
+        return new RelInsertSelect(insertSelect.table().name(), table, insertSelect.columns(), selectPlan);
     }
 
     private RelNode convertInsert(SqlInsert insert, TableMeta table) {
@@ -273,6 +282,9 @@ interface RelFactories {
     RelFilter filter(RelNode input, SqlNode condition);
     RelProject project(RelNode input, SqlNodeList projection);
     RelJoin join(RelNode left, RelNode right, SqlNode condition);
+    default RelJoin join(RelNode left, RelNode right, SqlNode condition, cn.zhangyis.minidb.sql.ast.JoinType joinType) {
+        return new RelJoin(left, right, condition, joinType);
+    }
 }
 
 class DefaultRelFactories implements RelFactories {
@@ -296,5 +308,10 @@ class DefaultRelFactories implements RelFactories {
     @Override
     public RelJoin join(RelNode left, RelNode right, SqlNode condition) {
         return new RelJoin(left, right, condition);
+    }
+
+    @Override
+    public RelJoin join(RelNode left, RelNode right, SqlNode condition, cn.zhangyis.minidb.sql.ast.JoinType joinType) {
+        return new RelJoin(left, right, condition, joinType);
     }
 }

@@ -15,7 +15,12 @@
       "Bash(javac -d /tmp/target src/main/java/cn/zhangyis/minidb/sql/**/*.java 2>&1 || echo 'Still errors'; echo 'File count:'; find src/main/java -path '*/sql/*' -name '*.java' | wc -l)",
       "Bash(cd D:/code/java/mini-project && ./gradlew :mini-db:compileJava 2>&1)",
       "Bash(cd:*)",
-      "Bash(find /d/code/java/mini-project -type f -name *.java)"
+      "Bash(find /d/code/java/mini-project -type f -name *.java)",
+      "Bash(grep -r \"class Sql\" /c/coding/java/self/miniproject/miniproject/mini-db/src/main/java/cn/zhangyis/minidb/sql/ast/*.java)",
+      "Bash(grep -r \"class Rel\" /c/coding/java/self/miniproject/miniproject/mini-db/src/main/java/cn/zhangyis/minidb/sql/rel/*.java)"
     ]
+  },
+  "enabledPlugins": {
+    "claude-hud@claude-hud": false
   }
 }

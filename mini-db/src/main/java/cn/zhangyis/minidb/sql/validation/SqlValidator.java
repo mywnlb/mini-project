@@ -23,6 +23,7 @@ public class SqlValidator {
     public SqlNode validate(SqlNode node) {
         return switch (node) {
             case SqlSelect select -> validateSelect(select);
+            case SqlInsertSelect insertSelect -> validateInsertSelect(insertSelect);
             case SqlInsert insert -> validateInsert(insert);
             case SqlUpdate update -> validateUpdate(update);
             case SqlDelete delete -> validateDelete(delete);
@@ -50,6 +51,9 @@ public class SqlValidator {
         if (from instanceof SqlJoin join) {
             validateFrom(join.left(), tables);
             validateFrom(join.right(), tables);
+            if (join.joinType() != cn.zhangyis.minidb.sql.ast.JoinType.CROSS && join.condition() == null) {
+                throw new ValidationException("Non-CROSS JOIN must have ON condition");
+            }
             if (join.condition() != null) {
                 validateCondition(join.condition(), tableScopes(tables));
             }
@@ -141,8 +145,24 @@ public class SqlValidator {
     private void validateCommon(SqlSelect select, List<TableScope> tables) {
         Set<String> projectionAliases = projectionAliases(select.projection());
         validateProjection(select.projection(), tables);
-        if (select.where() != null) validateCondition(select.where(), tables);
-        if (select.groupBy() != null) validateGroupBy(select, tables);
+
+        // 禁止 WHERE 中使用聚合函数
+        if (select.where() != null) {
+            rejectAggInWhere(select.where());
+            validateCondition(select.where(), tables);
+        }
+
+        boolean hasGroupBy = select.groupBy() != null;
+        boolean hasAgg = containsAggCallInList(select.projection())
+                      || (select.having() != null && containsAggCall(select.having()));
+
+        if (hasGroupBy) {
+            validateGroupBy(select, tables);
+        } else if (hasAgg) {
+            // 隐式聚合 — SELECT 有 agg 但无 GROUP BY
+            validateImplicitAggregation(select, tables);
+        }
+
         if (select.having() != null) validateCondition(select.having(), tables);
         if (select.orderBy() != null) validateOrderBy(select.orderBy(), tables, projectionAliases);
     }
@@ -173,6 +193,39 @@ public class SqlValidator {
         }
 
         return new ValidatedDml(insert, table);
+    }
+
+    private ValidatedDml validateInsertSelect(SqlInsertSelect insertSelect) {
+        TableMeta table = resolveTable(insertSelect.table().name());
+
+        // 验证列名存在性
+        if (insertSelect.columns().size() > 0) {
+            List<TableScope> tables = List.of(new TableScope(table.name(), table));
+            for (SqlNode col : insertSelect.columns().nodes()) {
+                if (col instanceof SqlIdentifier id && !columnExists(id.name(), tables)) {
+                    throw new ValidationException(
+                        "Column '" + id.name() + "' not found in table '" + table.name() + "'");
+                }
+            }
+        }
+
+        // 验证 SELECT 子查询
+        validateSelect(insertSelect.select());
+
+        // 验证列数匹配
+        int expectedCols = insertSelect.columns().size() > 0
+                ? insertSelect.columns().size()
+                : table.columns().size();
+        int selectCols = insertSelect.select().projection().size();
+        // SELECT * 时无法在 validation 阶段确定列数，跳过检查
+        boolean hasStar = insertSelect.select().projection().nodes().stream()
+                .anyMatch(n -> n instanceof SqlStar);
+        if (!hasStar && selectCols != expectedCols) {
+            throw new ValidationException("SELECT has " + selectCols
+                + " columns, expected " + expectedCols);
+        }
+
+        return new ValidatedDml(insertSelect, table);
     }
 
     private ValidatedDml validateUpdate(SqlUpdate update) {
@@ -286,6 +339,10 @@ public class SqlValidator {
 
     private void validateAggCall(SqlAggCall agg, List<TableScope> tables) {
         if (agg.arg().kind() == SqlKind.STAR) return;
+        // 拒绝嵌套聚合: COUNT(SUM(x))
+        if (containsNestedAgg(agg.arg())) {
+            throw new ValidationException("Aggregate functions cannot be nested");
+        }
         validateExpression(agg.arg(), tables);
     }
 
@@ -296,17 +353,44 @@ public class SqlValidator {
             groupSignatures.add(expressionSignature(node));
         }
 
+        // 检查 SELECT 列表
         for (SqlNode node : select.projection().nodes()) {
             SqlNode expression = unwrapAlias(node);
             if (expression.kind() == SqlKind.STAR) {
                 throw new ValidationException("SELECT * not allowed with GROUP BY");
             }
-            if (isLiteral(expression) || containsAggCall(expression)) {
-                continue;
+            if (isLiteral(expression)) continue;
+            // 完整签名匹配 GROUP BY（如 SELECT a+b ... GROUP BY a+b）
+            if (groupSignatures.contains(expressionSignature(expression))) continue;
+            // 提取非聚合列引用，逐个检查是否在 GROUP BY 中
+            validateColumnsInGroupBy(expression, groupSignatures);
+        }
+
+        // 检查 HAVING 中非聚合列
+        if (select.having() != null) {
+            validateColumnsInGroupBy(select.having(), groupSignatures);
+        }
+
+        // 检查 ORDER BY 中非聚合列
+        if (select.orderBy() != null) {
+            Set<String> projectionAliases = projectionAliases(select.projection());
+            for (SqlNode node : select.orderBy().nodes()) {
+                SqlNode expr = orderByExpression(node);
+                if (expr instanceof SqlIdentifier id
+                    && projectionAliases.contains(id.name().toUpperCase())) continue;
+                if (isLiteral(expr)) continue;
+                if (groupSignatures.contains(expressionSignature(expr))) continue;
+                validateColumnsInGroupBy(expr, groupSignatures);
             }
-            if (!groupSignatures.contains(expressionSignature(expression))) {
+        }
+    }
+
+    private void validateColumnsInGroupBy(SqlNode expr, Set<String> groupSignatures) {
+        List<SqlIdentifier> nonAggCols = collectNonAggColumns(expr);
+        for (SqlIdentifier col : nonAggCols) {
+            if (!groupSignatures.contains(expressionSignature(col))) {
                 throw new ValidationException(
-                    "Expression '" + expression + "' must appear in GROUP BY or be aggregated");
+                    "Column '" + col.name() + "' must appear in GROUP BY or be aggregated");
             }
         }
     }
@@ -349,6 +433,15 @@ public class SqlValidator {
         if (expression instanceof SqlBinaryOp binOp) {
             validateExpression(binOp.left(), tables);
             validateExpression(binOp.right(), tables);
+            // 类型检查
+            SqlKind k = binOp.kind();
+            if (k == SqlKind.ADD || k == SqlKind.SUB || k == SqlKind.MUL || k == SqlKind.DIV) {
+                checkArithmeticTypes(binOp.left(), binOp.right(), tables);
+            }
+            if (k == SqlKind.BINARY_EQ || k == SqlKind.BINARY_NE || k == SqlKind.BINARY_LT
+                || k == SqlKind.BINARY_GT || k == SqlKind.BINARY_LE || k == SqlKind.BINARY_GE) {
+                checkComparisonTypes(binOp.left(), binOp.right(), tables);
+            }
             return;
         }
         if (expression instanceof SqlBetween between) {
@@ -361,6 +454,23 @@ public class SqlValidator {
             validateExpression(inList.expr(), tables);
             for (SqlNode value : inList.values().nodes()) {
                 validateExpression(value, tables);
+            }
+            return;
+        }
+        if (expression instanceof SqlCast cast) {
+            validateExpression(cast.expr(), tables);
+            return;
+        }
+        if (expression instanceof SqlWindowFunction wf) {
+            if (wf.partitionBy() != null) {
+                for (SqlNode pNode : wf.partitionBy().nodes()) {
+                    validateExpression(pNode, tables);
+                }
+            }
+            if (wf.orderBy() != null) {
+                for (SqlNode oNode : wf.orderBy().nodes()) {
+                    validateExpression(oNode, tables);
+                }
             }
             return;
         }
@@ -416,6 +526,279 @@ public class SqlValidator {
             }
         }
         return false;
+    }
+
+    // ==================== 聚合语义校验辅助方法 ====================
+
+    /** 遍历 SqlNodeList 中每个元素检查是否包含聚合 */
+    private boolean containsAggCallInList(SqlNodeList list) {
+        for (SqlNode node : list.nodes()) {
+            if (containsAggCall(node)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 收集表达式中所有不在 SqlAggCall 内部的列引用。
+     * 遇到 SqlAggCall 停止下降（其参数属于聚合内部）。
+     * 遇到 SqlSubquery 也停止（子查询列属于内层作用域）。
+     */
+    private List<SqlIdentifier> collectNonAggColumns(SqlNode node) {
+        List<SqlIdentifier> result = new ArrayList<>();
+        collectNonAggColumnsImpl(unwrapAlias(node), result);
+        return result;
+    }
+
+    private void collectNonAggColumnsImpl(SqlNode node, List<SqlIdentifier> result) {
+        if (node == null || node instanceof SqlLiteral || node.kind() == SqlKind.NULL_LITERAL
+            || node.kind() == SqlKind.STAR) return;
+        if (node instanceof SqlAggCall) return;
+        if (node instanceof SqlSubquery) return;
+        if (node instanceof SqlIdentifier id) { result.add(id); return; }
+        if (node instanceof SqlBinaryOp b) {
+            collectNonAggColumnsImpl(b.left(), result);
+            collectNonAggColumnsImpl(b.right(), result);
+            return;
+        }
+        if (node instanceof SqlBetween b) {
+            collectNonAggColumnsImpl(b.expr(), result);
+            collectNonAggColumnsImpl(b.low(), result);
+            collectNonAggColumnsImpl(b.high(), result);
+            return;
+        }
+        if (node instanceof SqlInList in) {
+            collectNonAggColumnsImpl(in.expr(), result);
+            for (SqlNode v : in.values().nodes()) collectNonAggColumnsImpl(v, result);
+            return;
+        }
+        if (node instanceof SqlCast cast) {
+            collectNonAggColumnsImpl(cast.expr(), result);
+            return;
+        }
+        if (node instanceof SqlFunctionCall fc) {
+            for (SqlNode arg : fc.arguments().nodes()) collectNonAggColumnsImpl(arg, result);
+            return;
+        }
+        if (node instanceof SqlCase c) {
+            for (SqlCase.WhenThen wt : c.whenThens()) {
+                collectNonAggColumnsImpl(wt.condition(), result);
+                collectNonAggColumnsImpl(wt.result(), result);
+            }
+            if (c.elseExpr() != null) collectNonAggColumnsImpl(c.elseExpr(), result);
+            return;
+        }
+        if (node instanceof SqlOrderByItem item) {
+            collectNonAggColumnsImpl(item.column(), result);
+            return;
+        }
+    }
+
+    /** 检查表达式中是否嵌套了聚合函数（用于 validateAggCall 检测嵌套聚合） */
+    private boolean containsNestedAgg(SqlNode node) {
+        if (node == null || node instanceof SqlLiteral || node.kind() == SqlKind.NULL_LITERAL
+            || node.kind() == SqlKind.STAR) return false;
+        if (node instanceof SqlAggCall) return true;
+        if (node instanceof SqlSubquery) return false;
+        if (node instanceof SqlIdentifier) return false;
+        if (node instanceof SqlBinaryOp b) {
+            return containsNestedAgg(b.left()) || containsNestedAgg(b.right());
+        }
+        if (node instanceof SqlBetween b) {
+            return containsNestedAgg(b.expr()) || containsNestedAgg(b.low()) || containsNestedAgg(b.high());
+        }
+        if (node instanceof SqlInList in) {
+            if (containsNestedAgg(in.expr())) return true;
+            for (SqlNode v : in.values().nodes()) {
+                if (containsNestedAgg(v)) return true;
+            }
+            return false;
+        }
+        if (node instanceof SqlFunctionCall fc) {
+            for (SqlNode arg : fc.arguments().nodes()) {
+                if (containsNestedAgg(arg)) return true;
+            }
+            return false;
+        }
+        if (node instanceof SqlCase c) {
+            for (SqlCase.WhenThen wt : c.whenThens()) {
+                if (containsNestedAgg(wt.condition()) || containsNestedAgg(wt.result())) return true;
+            }
+            return c.elseExpr() != null && containsNestedAgg(c.elseExpr());
+        }
+        return false;
+    }
+
+    /** 隐式聚合校验：有聚合函数但无 GROUP BY 时，非聚合列不合法 */
+    private void validateImplicitAggregation(SqlSelect select, List<TableScope> tables) {
+        for (SqlNode node : select.projection().nodes()) {
+            SqlNode expression = unwrapAlias(node);
+            if (expression.kind() == SqlKind.STAR) {
+                throw new ValidationException("SELECT * not allowed with aggregate functions");
+            }
+            if (isLiteral(expression)) continue;
+            List<SqlIdentifier> nonAggCols = collectNonAggColumns(expression);
+            if (!nonAggCols.isEmpty()) {
+                throw new ValidationException(
+                    "Column '" + nonAggCols.get(0).name()
+                    + "' must appear in GROUP BY or be aggregated");
+            }
+        }
+    }
+
+    /** 禁止 WHERE 子句中使用聚合函数 */
+    private void rejectAggInWhere(SqlNode node) {
+        if (node == null || node instanceof SqlLiteral || node.kind() == SqlKind.NULL_LITERAL
+            || node.kind() == SqlKind.STAR || node instanceof SqlIdentifier) return;
+        if (node instanceof SqlSubquery) return;
+        if (node instanceof SqlExists) return;
+        if (node instanceof SqlInSubquery inSub) {
+            rejectAggInWhere(inSub.expr());
+            return;
+        }
+        if (node instanceof SqlAggCall) {
+            throw new ValidationException("Aggregate functions not allowed in WHERE");
+        }
+        if (node instanceof SqlBinaryOp b) {
+            rejectAggInWhere(b.left());
+            rejectAggInWhere(b.right());
+            return;
+        }
+        if (node instanceof SqlBetween b) {
+            rejectAggInWhere(b.expr());
+            rejectAggInWhere(b.low());
+            rejectAggInWhere(b.high());
+            return;
+        }
+        if (node instanceof SqlInList in) {
+            rejectAggInWhere(in.expr());
+            for (SqlNode v : in.values().nodes()) rejectAggInWhere(v);
+            return;
+        }
+        if (node instanceof SqlFunctionCall fc) {
+            for (SqlNode arg : fc.arguments().nodes()) rejectAggInWhere(arg);
+            return;
+        }
+        if (node instanceof SqlCast cast) {
+            rejectAggInWhere(cast.expr());
+            return;
+        }
+        if (node instanceof SqlCase c) {
+            for (SqlCase.WhenThen wt : c.whenThens()) {
+                rejectAggInWhere(wt.condition());
+                rejectAggInWhere(wt.result());
+            }
+            if (c.elseExpr() != null) rejectAggInWhere(c.elseExpr());
+            return;
+        }
+    }
+
+    // ==================== 表达式类型推断与检查 ====================
+
+    /**
+     * 推断表达式的返回类型。
+     * 返回 null 表示无法推断（如 *)。
+     */
+    private SqlType inferType(SqlNode node, List<TableScope> tables) {
+        if (node == null || node.kind() == SqlKind.NULL_LITERAL || node.kind() == SqlKind.STAR) return null;
+        node = unwrapAlias(node);
+        if (node instanceof SqlLiteral lit) return lit.type();
+        if (node instanceof SqlIdentifier id) return resolveColumnType(id.name(), tables);
+        if (node instanceof SqlCast cast) return cast.targetType();
+        if (node instanceof SqlAggCall agg) {
+            String func = agg.funcName().toUpperCase();
+            return switch (func) {
+                case "COUNT" -> SqlType.BIGINT;
+                case "SUM" -> {
+                    SqlType argType = inferType(agg.arg(), tables);
+                    yield (argType == SqlType.INT32 || argType == SqlType.BIGINT) ? SqlType.BIGINT : SqlType.DECIMAL;
+                }
+                case "AVG" -> SqlType.DECIMAL;
+                case "MAX", "MIN" -> inferType(agg.arg(), tables);
+                default -> null;
+            };
+        }
+        if (node instanceof SqlBinaryOp binOp) {
+            SqlKind k = binOp.kind();
+            if (k == SqlKind.ADD || k == SqlKind.SUB || k == SqlKind.MUL || k == SqlKind.DIV) {
+                SqlType lt = inferType(binOp.left(), tables);
+                SqlType rt = inferType(binOp.right(), tables);
+                return promoteNumeric(lt, rt);
+            }
+            // 比较/逻辑运算符返回 boolean（我们没有 BOOLEAN 类型，用 INT32 代替）
+            return SqlType.INT32;
+        }
+        if (node instanceof SqlFunctionCall fc) {
+            String func = fc.functionName().toUpperCase();
+            return switch (func) {
+                case "UPPER", "LOWER", "COALESCE" -> SqlType.VARCHAR;
+                default -> null;
+            };
+        }
+        return null;
+    }
+
+    private SqlType resolveColumnType(String colName, List<TableScope> tables) {
+        if (colName.contains(".")) {
+            String[] parts = colName.split("\\.", 2);
+            String tableName = parts[0];
+            String col = parts[1];
+            for (TableScope scope : tables) {
+                if (scope.visibleName().equalsIgnoreCase(tableName)) {
+                    for (ColumnMeta cm : scope.table().columns()) {
+                        if (cm.name().equalsIgnoreCase(col)) return cm.type();
+                    }
+                }
+            }
+        }
+        for (TableScope scope : tables) {
+            for (ColumnMeta cm : scope.table().columns()) {
+                if (cm.name().equalsIgnoreCase(colName)) return cm.type();
+            }
+        }
+        return null;
+    }
+
+    private SqlType promoteNumeric(SqlType a, SqlType b) {
+        if (a == null || b == null) return SqlType.DECIMAL;
+        if (a == SqlType.DECIMAL || b == SqlType.DECIMAL) return SqlType.DECIMAL;
+        if (a == SqlType.BIGINT || b == SqlType.BIGINT) return SqlType.BIGINT;
+        return SqlType.INT32;
+    }
+
+    /**
+     * 检查比较表达式两侧类型是否兼容。
+     * 数值类型之间可以比较，VARCHAR 只能和 VARCHAR 比较。
+     */
+    private void checkComparisonTypes(SqlNode left, SqlNode right, List<TableScope> tables) {
+        SqlType lt = inferType(left, tables);
+        SqlType rt = inferType(right, tables);
+        if (lt == null || rt == null) return; // 无法推断，跳过
+        boolean leftNumeric = isNumericType(lt);
+        boolean rightNumeric = isNumericType(rt);
+        if (leftNumeric != rightNumeric) {
+            throw new ValidationException(
+                "Type mismatch: cannot compare " + lt + " with " + rt);
+        }
+    }
+
+    /**
+     * 检查算术表达式操作数是否为数值类型。
+     */
+    private void checkArithmeticTypes(SqlNode left, SqlNode right, List<TableScope> tables) {
+        SqlType lt = inferType(left, tables);
+        SqlType rt = inferType(right, tables);
+        if (lt != null && !isNumericType(lt)) {
+            throw new ValidationException(
+                "Arithmetic operation requires numeric type, got " + lt);
+        }
+        if (rt != null && !isNumericType(rt)) {
+            throw new ValidationException(
+                "Arithmetic operation requires numeric type, got " + rt);
+        }
+    }
+
+    private boolean isNumericType(SqlType type) {
+        return type == SqlType.INT32 || type == SqlType.BIGINT || type == SqlType.DECIMAL;
     }
 
     private boolean isLiteral(SqlNode node) {

@@ -5,6 +5,8 @@ import cn.zhangyis.minidb.sql.rel.*;
 
 import java.util.*;
 
+import static cn.zhangyis.minidb.sql.ast.JoinType.*;
+
 /**
  * Filter(Join(L, R)) → Join(Filter(L), R) 或 Join(L, Filter(R))
  * 根据 Filter 条件引用的表，将 Filter 下推到 Join 的对应输入侧
@@ -45,6 +47,24 @@ public class FilterJoinPushdownRule extends RelOptRule {
             }
         }
 
+        // OUTER JOIN 限制下推方向
+        JoinType jt = join.joinType();
+        if (jt == LEFT) {
+            // LEFT JOIN: 不能下推到右侧（非保留侧），否则退化为 INNER
+            bothConditions.addAll(rightConditions);
+            rightConditions.clear();
+        } else if (jt == RIGHT) {
+            // RIGHT JOIN: 不能下推到左侧
+            bothConditions.addAll(leftConditions);
+            leftConditions.clear();
+        } else if (jt == FULL) {
+            // FULL JOIN: 两侧都不能下推
+            bothConditions.addAll(leftConditions);
+            bothConditions.addAll(rightConditions);
+            leftConditions.clear();
+            rightConditions.clear();
+        }
+
         // 构建新的 Filter 条件
         SqlNode leftFilterCond = buildAnd(leftConditions);
         SqlNode rightFilterCond = buildAnd(rightConditions);
@@ -69,7 +89,7 @@ public class FilterJoinPushdownRule extends RelOptRule {
             return node; // 没有变化
         }
 
-        return new RelJoin(newLeft, newRight, finalJoinCondition);
+        return new RelJoin(newLeft, newRight, finalJoinCondition, join.joinType());
     }
 
     private String extractTableName(RelNode node) {

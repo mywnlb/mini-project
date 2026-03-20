@@ -1,9 +1,6 @@
 package cn.zhangyis.minidb.sql.optimize.cost;
 
-import cn.zhangyis.minidb.sql.ast.SqlBinaryOp;
-import cn.zhangyis.minidb.sql.ast.SqlIdentifier;
-import cn.zhangyis.minidb.sql.ast.SqlKind;
-import cn.zhangyis.minidb.sql.ast.SqlNode;
+import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.exec.PhysicalPlanner.JoinAlgorithm;
 import cn.zhangyis.minidb.sql.rel.*;
 
@@ -23,7 +20,28 @@ public class CostModel {
     public double estimateRows(RelNode node) {
         if (node instanceof RelScan s) return s.tableMeta().rowCount();
         if (node instanceof RelFilter f) return estimateRows(f.input()) * selectivity(f.condition());
-        if (node instanceof RelJoin j) return estimateRows(j.left()) * estimateRows(j.right()) * 0.01;
+        if (node instanceof RelJoin j) {
+            int keys = countEquiKeys(j.condition());
+            double sel = keys > 0 ? Math.pow(0.1, keys) : 0.01;
+            double innerRows = estimateRows(j.left()) * estimateRows(j.right()) * sel;
+            return switch (j.joinType()) {
+                case INNER -> innerRows;
+                case LEFT -> Math.max(estimateRows(j.left()), innerRows);
+                case RIGHT -> Math.max(estimateRows(j.right()), innerRows);
+                case FULL -> Math.max(estimateRows(j.left()) + estimateRows(j.right()), innerRows);
+                case CROSS -> estimateRows(j.left()) * estimateRows(j.right());
+            };
+        }
+        if (node instanceof RelSemiJoin s) {
+            int keys = countEquiKeys(s.condition());
+            double sel = keys > 0 ? Math.min(0.5, Math.pow(0.3, keys)) : 0.3;
+            return estimateRows(s.left()) * sel;
+        }
+        if (node instanceof RelAntiJoin a) {
+            int keys = countEquiKeys(a.condition());
+            double sel = keys > 0 ? Math.min(0.5, Math.pow(0.3, keys)) : 0.3;
+            return estimateRows(a.left()) * (1 - sel);
+        }
         if (node instanceof RelAggregate a) return estimateRows(a.input()) * 0.1;
         if (node instanceof RelDistinct d) return Math.max(1, estimateRows(d.input()) * 0.7);
         if (node instanceof RelSort s) return estimateRows(s.input());
@@ -92,7 +110,15 @@ public class CostModel {
      * 这避免了“伪索引”问题，符合 roadmap 阶段4要求。</p>
      */
     public JoinAlgorithm chooseJoinAlgorithm(RelNode left, RelNode right, SqlNode condition) {
-        boolean isEquiJoin = isEquiJoinCondition(condition);
+        return chooseJoinAlgorithm(left, right, condition, JoinType.INNER);
+    }
+
+    public JoinAlgorithm chooseJoinAlgorithm(RelNode left, RelNode right, SqlNode condition, JoinType joinType) {
+        // CROSS JOIN 无 equi-key，强制 NL
+        if (joinType == JoinType.CROSS) return JoinAlgorithm.NESTED_LOOP;
+
+        int keyCount = countEquiKeys(condition);
+        boolean isEquiJoin = keyCount > 0;
         double leftRows = estimateRows(left);
         double rightRows = estimateRows(right);
 
@@ -101,9 +127,11 @@ public class CostModel {
         }
 
         double nlCost = nestedLoopJoinCost(leftRows, rightRows);
-        double hashCost = hashJoinCost(leftRows, rightRows);
+        double hashCost = hashJoinCost(leftRows, rightRows, keyCount);
         double smCost = sortMergeJoinCost(leftRows, rightRows);
-        double indexLookupCost = enableIndexLookup && supportsLookupJoin(left, right, condition)
+        // OUTER JOIN 时禁用 IndexNL（无法追踪未匹配行）
+        double indexLookupCost = enableIndexLookup && joinType == JoinType.INNER
+            && supportsLookupJoin(left, right, condition)
             ? indexNestedLoopCost(left, right, leftRows, rightRows, condition)
             : Double.MAX_VALUE;
 
@@ -131,11 +159,12 @@ public class CostModel {
     public JoinCostDetail joinCostDetail(RelNode left, RelNode right, SqlNode condition) {
         double leftRows = estimateRows(left);
         double rightRows = estimateRows(right);
-        boolean isEquiJoin = isEquiJoinCondition(condition);
+        int keyCount = countEquiKeys(condition);
+        boolean isEquiJoin = keyCount > 0;
 
         return new JoinCostDetail(
             nestedLoopJoinCost(leftRows, rightRows),
-            isEquiJoin ? hashJoinCost(leftRows, rightRows) : Double.MAX_VALUE,
+            isEquiJoin ? hashJoinCost(leftRows, rightRows, keyCount) : Double.MAX_VALUE,
             isEquiJoin ? sortMergeJoinCost(leftRows, rightRows) : Double.MAX_VALUE,
             enableIndexLookup && supportsLookupJoin(left, right, condition)
                 ? indexNestedLoopCost(left, right, leftRows, rightRows, condition)
@@ -151,11 +180,11 @@ public class CostModel {
         return leftRows * rightRows * 0.01;
     }
 
-    private double hashJoinCost(double leftRows, double rightRows) {
-        // Build: O(N), Probe: O(M), 内存: O(min(M,N))
+    private double hashJoinCost(double leftRows, double rightRows, int keyCount) {
+        // Build: O(N), Probe: O(M), 多 key 时 probe 碰撞更少
         double buildSide = Math.min(leftRows, rightRows);
         double probeSide = Math.max(leftRows, rightRows);
-        return buildSide * 0.02 + probeSide * 0.01;
+        return buildSide * 0.02 + probeSide * (0.01 / keyCount);
     }
 
     private double sortMergeJoinCost(double leftRows, double rightRows) {
@@ -179,11 +208,26 @@ public class CostModel {
 
     // ==================== 辅助方法 ====================
 
+    /**
+     * 判断条件中是否包含至少一个 equi-key（两侧都是 SqlIdentifier 的 EQ）。
+     * 支持纯 equi 条件和混合条件（AND 中部分 equi + 部分 non-equi）。
+     */
     private boolean isEquiJoinCondition(SqlNode condition) {
-        if (condition instanceof SqlBinaryOp binOp && binOp.kind() == SqlKind.BINARY_EQ) {
-            return binOp.left() instanceof SqlIdentifier && binOp.right() instanceof SqlIdentifier;
+        return countEquiKeys(condition) > 0;
+    }
+
+    /**
+     * 递归统计条件中 equi-key 的数量。
+     */
+    private int countEquiKeys(SqlNode condition) {
+        if (!(condition instanceof SqlBinaryOp binOp)) return 0;
+        if (binOp.kind() == SqlKind.BINARY_EQ) {
+            return (binOp.left() instanceof SqlIdentifier && binOp.right() instanceof SqlIdentifier) ? 1 : 0;
         }
-        return false;
+        if (binOp.kind() == SqlKind.AND) {
+            return countEquiKeys(binOp.left()) + countEquiKeys(binOp.right());
+        }
+        return 0;
     }
 
     private boolean supportsLookupJoin(RelNode left, RelNode right, SqlNode condition) {

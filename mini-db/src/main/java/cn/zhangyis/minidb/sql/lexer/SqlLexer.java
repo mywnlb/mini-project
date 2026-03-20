@@ -71,7 +71,20 @@ public class SqlLexer {
         keywords.put("ELSE", TokenType.ELSE);
         keywords.put("END", TokenType.END);
         keywords.put("UNION", TokenType.UNION);
+        keywords.put("EXCEPT", TokenType.EXCEPT);
+        keywords.put("INTERSECT", TokenType.INTERSECT);
         keywords.put("ALL", TokenType.ALL);
+        keywords.put("LEFT", TokenType.LEFT);
+        keywords.put("RIGHT", TokenType.RIGHT);
+        keywords.put("FULL", TokenType.FULL);
+        keywords.put("OUTER", TokenType.OUTER);
+        keywords.put("CROSS", TokenType.CROSS);
+        keywords.put("INNER", TokenType.INNER);
+        keywords.put("OVER", TokenType.OVER);
+        keywords.put("PARTITION", TokenType.PARTITION);
+        keywords.put("ROW_NUMBER", TokenType.ROW_NUMBER);
+        keywords.put("RANK", TokenType.RANK);
+        keywords.put("DENSE_RANK", TokenType.DENSE_RANK);
     }
 
     public Token nextToken() {
