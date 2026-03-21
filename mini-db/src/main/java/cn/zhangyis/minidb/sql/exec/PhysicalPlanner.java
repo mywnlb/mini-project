@@ -3,6 +3,7 @@ package cn.zhangyis.minidb.sql.exec;
 import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
 import cn.zhangyis.minidb.sql.catalog.MockCatalog;
+import cn.zhangyis.minidb.sql.catalog.StatisticsStore;
 import cn.zhangyis.minidb.sql.optimize.cost.CostOptimizer;
 import cn.zhangyis.minidb.sql.planner.SqlToRelConverter;
 import cn.zhangyis.minidb.sql.rel.*;
@@ -46,6 +47,7 @@ public class PhysicalPlanner {
     private final CostOptimizer costOptimizer;
     private final DataSourceSpi dataSource;
     private final CatalogSpi catalog;
+    private StatisticsStore statisticsStore;
     private ExecutionContext executionContext;
 
     public PhysicalPlanner() {
@@ -72,6 +74,10 @@ public class PhysicalPlanner {
 
     public void setExecutionContext(ExecutionContext ctx) {
         this.executionContext = ctx;
+    }
+
+    public void setStatisticsStore(StatisticsStore store) {
+        this.statisticsStore = store;
     }
 
     /**
@@ -111,6 +117,10 @@ public class PhysicalPlanner {
             return new IndexScanExec(indexedScan, dataSource);
         }
         if (relNode instanceof RelScan scan) {
+            if (executionContext != null && executionContext.parallelism() > 1
+                && dataSource.partitionCount(scan.tableName()) > 1) {
+                return new ParallelScanExec(scan.tableName(), scan.outputName(), dataSource, executionContext.parallelism());
+            }
             return new ScanExec(scan.tableName(), scan.outputName(), dataSource);
         }
         if (relNode instanceof RelDerivedScan derived) {
@@ -189,6 +199,12 @@ public class PhysicalPlanner {
         if (relNode instanceof RelAlterTable) {
             RelAlterTable alter = (RelAlterTable) relNode;
             return new AlterTableExec(alter, dataSource);
+        }
+        if (relNode instanceof cn.zhangyis.minidb.sql.rel.RelAnalyzeTable analyzeTable) {
+            if (statisticsStore == null) {
+                throw new IllegalStateException("StatisticsStore not set, cannot execute ANALYZE TABLE");
+            }
+            return new AnalyzeTableExec(analyzeTable.tableName(), dataSource, catalog, statisticsStore);
         }
         if (relNode instanceof RelCreateIndex) {
             RelCreateIndex createIdx = (RelCreateIndex) relNode;

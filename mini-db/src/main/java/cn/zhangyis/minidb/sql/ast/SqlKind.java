@@ -25,5 +25,9 @@ public enum SqlKind {
     // 窗口函数
     WINDOW_FUNCTION,
     // 事务控制
-    BEGIN_TXN, COMMIT_TXN, ROLLBACK_TXN
+    BEGIN_TXN, COMMIT_TXN, ROLLBACK_TXN,
+    // CTE
+    CTE, WITH_SELECT,
+    // 统计
+    ANALYZE_TABLE
 }

@@ -80,6 +80,10 @@ public class SqlLexer {
         keywords.put("OUTER", TokenType.OUTER);
         keywords.put("CROSS", TokenType.CROSS);
         keywords.put("INNER", TokenType.INNER);
+        keywords.put("NATURAL", TokenType.NATURAL);
+        keywords.put("USING", TokenType.USING);
+        keywords.put("WITH", TokenType.WITH);
+        keywords.put("ANALYZE", TokenType.ANALYZE);
         keywords.put("OVER", TokenType.OVER);
         keywords.put("PARTITION", TokenType.PARTITION);
         keywords.put("ROW_NUMBER", TokenType.ROW_NUMBER);

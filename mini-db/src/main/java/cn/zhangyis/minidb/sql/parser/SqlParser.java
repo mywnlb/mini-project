@@ -42,6 +42,8 @@ public class SqlParser {
             case CREATE -> parseCreate();
             case DROP -> parseDrop();
             case ALTER -> parseAlterTable();
+            case WITH -> parseWith();
+            case ANALYZE -> parseAnalyze();
             case BEGIN -> parseBegin();
             case COMMIT -> parseCommit();
             case ROLLBACK -> parseRollback();
@@ -109,21 +111,41 @@ public class SqlParser {
     private SqlNode parseFrom() {
         SqlNode left = parseFromItem();
         while (isJoinStart(tokens.current().type())) {
+            boolean natural = tokens.match(TokenType.NATURAL);
             JoinType joinType = parseJoinType();
             SqlNode right = parseFromItem();
-            SqlNode condition = null;
-            if (joinType != JoinType.CROSS) {
-                tokens.expect(TokenType.ON);
-                condition = parseExpression();
+
+            if (natural) {
+                left = factory.naturalJoin(joinType, left, right);
+            } else if (joinType != JoinType.CROSS && tokens.current().type() == TokenType.USING) {
+                tokens.next(); // consume USING
+                tokens.expect(TokenType.LPAREN);
+                java.util.List<String> cols = parseUsingColumnList();
+                tokens.expect(TokenType.RPAREN);
+                left = factory.usingJoin(joinType, left, right, cols);
+            } else {
+                SqlNode condition = null;
+                if (joinType != JoinType.CROSS) {
+                    tokens.expect(TokenType.ON);
+                    condition = parseExpression();
+                }
+                left = factory.join(joinType, left, right, condition);
             }
-            left = factory.join(joinType, left, right, condition);
         }
         return left;
     }
 
+    private java.util.List<String> parseUsingColumnList() {
+        java.util.List<String> cols = new java.util.ArrayList<>();
+        do {
+            cols.add(parseIdentifier().name());
+        } while (tokens.match(TokenType.COMMA));
+        return cols;
+    }
+
     private boolean isJoinStart(TokenType type) {
         return type == TokenType.JOIN || type == LEFT || type == RIGHT
-            || type == FULL || type == CROSS || type == INNER;
+            || type == FULL || type == CROSS || type == INNER || type == TokenType.NATURAL;
     }
 
     private JoinType parseJoinType() {
@@ -470,6 +492,32 @@ public class SqlParser {
         }
 
         return new SqlAlterTable(table, colName, colType, nullable, defaultValue);
+    }
+
+    // ==================== WITH (CTE) ====================
+
+    private SqlNode parseWith() {
+        tokens.expect(TokenType.WITH);
+        java.util.List<SqlCte> ctes = new java.util.ArrayList<>();
+        do {
+            String name = parseIdentifier().name();
+            tokens.expect(TokenType.AS);
+            tokens.expect(TokenType.LPAREN);
+            SqlSelect cteQuery = parseSelect();
+            tokens.expect(TokenType.RPAREN);
+            ctes.add(new SqlCte(name, cteQuery));
+        } while (tokens.match(TokenType.COMMA));
+        SqlSelect mainSelect = parseSelect();
+        return new SqlWithSelect(ctes, mainSelect);
+    }
+
+    // ==================== ANALYZE ====================
+
+    private SqlNode parseAnalyze() {
+        tokens.expect(TokenType.ANALYZE);
+        tokens.expect(TokenType.TABLE);
+        String tableName = parseIdentifier().name();
+        return new SqlAnalyzeTable(tableName);
     }
 
     // ==================== 事务控制 ====================

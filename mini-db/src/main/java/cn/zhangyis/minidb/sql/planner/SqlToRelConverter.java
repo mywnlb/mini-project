@@ -6,6 +6,7 @@ import cn.zhangyis.minidb.sql.catalog.TableMeta;
 import cn.zhangyis.minidb.sql.rel.*;
 import cn.zhangyis.minidb.sql.validation.ValidatedDml;
 import cn.zhangyis.minidb.sql.validation.ValidatedSqlSelect;
+import cn.zhangyis.minidb.sql.validation.ValidatedWithSelect;
 import cn.zhangyis.minidb.sql.validation.SqlValidator;
 
 import java.util.*;
@@ -31,8 +32,12 @@ public class SqlToRelConverter {
         this.catalog = catalog;
     }
 
+    // CTE 上下文：在 convertFrom 中如果表名匹配 CTE，使用缓存的 RelNode
+    private Map<String, RelNode> cteCache = new HashMap<>();
+
     public RelNode convert(SqlNode validated) {
         return switch (validated) {
+            case ValidatedWithSelect withSelect -> convertWithSelect(withSelect);
             case ValidatedSqlSelect select -> convertSelect(select);
             case SqlSelect select -> {
                 // 支持 UNION 中的原始 SELECT（验证后递归）
@@ -51,8 +56,26 @@ public class SqlToRelConverter {
             case SqlAlterTable alter -> new RelAlterTable(alter, catalog);
             case SqlCreateIndex createIdx -> new RelCreateIndex(createIdx, catalog);
             case SqlDropIndex dropIdx -> new RelDropIndex(dropIdx, catalog);
+            case SqlAnalyzeTable analyze -> new RelAnalyzeTable(analyze.tableName());
             default -> throw new IllegalArgumentException("Unsupported: " + validated.kind());
         };
+    }
+
+    private RelNode convertWithSelect(ValidatedWithSelect withSelect) {
+        // 转换每个 CTE 为 RelNode 并缓存
+        for (SqlCte cte : withSelect.ctes()) {
+            SqlValidator v = new SqlValidator(catalog);
+            SqlNode cteValidated = v.validate(cte.query());
+            RelNode ctePlan = convert(cteValidated);
+            cteCache.put(cte.name().toUpperCase(), ctePlan);
+        }
+        // 转换主查询
+        RelNode result = convertSelect(withSelect.mainSelect());
+        // 清理 CTE 缓存
+        for (SqlCte cte : withSelect.ctes()) {
+            cteCache.remove(cte.name().toUpperCase());
+        }
+        return result;
     }
 
     private RelNode convertSelect(ValidatedSqlSelect validated) {
@@ -97,7 +120,11 @@ public class SqlToRelConverter {
         if (from instanceof SqlJoin join) {
             RelNode left = convertFrom(join.left(), validated);
             RelNode right = convertFrom(join.right(), validated);
-            return factories.join(left, right, join.condition(), join.joinType());
+            SqlNode condition = join.condition();
+            if (join.natural() || join.usingColumns() != null) {
+                condition = expandNaturalOrUsing(join, validated);
+            }
+            return factories.join(left, right, condition, join.joinType());
         }
 
         if (from instanceof SqlDerivedTable derived) {
@@ -109,6 +136,12 @@ public class SqlToRelConverter {
         }
 
         SqlTableRef ref = asTableRef(from);
+        // CTE 引用 → 内联为 RelDerivedScan
+        String cteKey = ref.tableName().toUpperCase();
+        if (cteCache.containsKey(cteKey)) {
+            RelNode ctePlan = cteCache.get(cteKey);
+            return new RelDerivedScan(ctePlan, ref.visibleName(), null);
+        }
         TableMeta table = validated.table(ref.visibleName());
         if (table == null) {
             throw new IllegalArgumentException("Missing validated table scope for " + ref.visibleName());
@@ -234,6 +267,76 @@ public class SqlToRelConverter {
 
     private SqlNode unwrapAlias(SqlNode node) {
         return node instanceof SqlAlias alias ? alias.expression() : node;
+    }
+
+    /**
+     * NATURAL JOIN / USING → 展开为 equi-join ON 条件
+     */
+    private SqlNode expandNaturalOrUsing(SqlJoin join, ValidatedSqlSelect validated) {
+        List<String> commonCols;
+        if (join.natural()) {
+            Set<String> leftCols = collectColumnNames(join.left(), validated);
+            Set<String> rightCols = collectColumnNames(join.right(), validated);
+            commonCols = leftCols.stream().filter(rightCols::contains).collect(java.util.stream.Collectors.toList());
+            if (commonCols.isEmpty()) {
+                return null; // 退化为 CROSS JOIN
+            }
+        } else {
+            commonCols = join.usingColumns().stream().map(String::toUpperCase).toList();
+        }
+
+        String leftAlias = resolveFromAlias(join.left());
+        String rightAlias = resolveFromAlias(join.right());
+
+        SqlNode result = null;
+        for (String col : commonCols) {
+            SqlNode leftRef = new SqlIdentifier(leftAlias + "." + col);
+            SqlNode rightRef = new SqlIdentifier(rightAlias + "." + col);
+            SqlNode eq = new SqlBinaryOp(SqlKind.BINARY_EQ, leftRef, rightRef);
+            result = result == null ? eq : new SqlBinaryOp(SqlKind.AND, result, eq);
+        }
+        return result;
+    }
+
+    private Set<String> collectColumnNames(SqlNode from, ValidatedSqlSelect validated) {
+        Set<String> cols = new LinkedHashSet<>();
+        collectColumnNamesRecursive(from, validated, cols);
+        return cols;
+    }
+
+    private void collectColumnNamesRecursive(SqlNode from, ValidatedSqlSelect validated, Set<String> cols) {
+        if (from instanceof SqlJoin join) {
+            collectColumnNamesRecursive(join.left(), validated, cols);
+            collectColumnNamesRecursive(join.right(), validated, cols);
+            return;
+        }
+        if (from instanceof SqlDerivedTable derived) {
+            // TODO: derive columns from inner select
+            return;
+        }
+        SqlTableRef ref = asTableRef(from);
+        cn.zhangyis.minidb.sql.catalog.TableMeta table = validated.table(ref.visibleName());
+        if (table != null) {
+            for (cn.zhangyis.minidb.sql.catalog.ColumnMeta cm : table.columns()) {
+                cols.add(cm.name().toUpperCase());
+            }
+        }
+    }
+
+    private String resolveFromAlias(SqlNode from) {
+        if (from instanceof SqlTableRef ref) {
+            return ref.visibleName().toUpperCase();
+        }
+        if (from instanceof SqlIdentifier id) {
+            return id.name().toUpperCase();
+        }
+        if (from instanceof SqlDerivedTable derived) {
+            return derived.alias().toUpperCase();
+        }
+        if (from instanceof SqlAlias alias) {
+            return alias.alias().toUpperCase();
+        }
+        return "UNKNOWN";
     }
 
     private RelNode convertDml(ValidatedDml dml) {

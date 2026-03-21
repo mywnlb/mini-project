@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.sql.optimize;
 
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
+import cn.zhangyis.minidb.sql.optimize.cost.CostModel;
 import cn.zhangyis.minidb.sql.rel.*;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,6 +18,10 @@ public class RuleOptimizer {
     }
 
     public RuleOptimizer(boolean enableIndexedLookup, CatalogSpi catalog) {
+        this(enableIndexedLookup, catalog, null);
+    }
+
+    public RuleOptimizer(boolean enableIndexedLookup, CatalogSpi catalog, CostModel costModel) {
         List<RelOptRule> ruleList = new ArrayList<>();
         // SubqueryUnnestingRule 必须排在 FilterJoinPushdownRule 之前
         if (catalog != null) {
@@ -26,6 +31,10 @@ public class RuleOptimizer {
         ruleList.add(FilterProjectTransposeRule.INSTANCE);
         ruleList.add(FilterJoinPushdownRule.INSTANCE);
         ruleList.add(enableIndexedLookup ? new PushFilterIntoScanRule() : PushFilterIntoScanRule.INSTANCE);
+        // JOIN 重排序（在 FilterJoinPushdown 之后、JoinCommute 之前）
+        if (costModel != null) {
+            ruleList.add(new JoinReorderRule(costModel));
+        }
         ruleList.add(JoinCommuteRule.INSTANCE);
         ruleList.add(ProjectionPruningRule.INSTANCE);
         ruleList.add(LimitPushdownRule.INSTANCE);

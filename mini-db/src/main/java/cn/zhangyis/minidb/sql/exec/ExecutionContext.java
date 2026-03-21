@@ -22,12 +22,16 @@ public class ExecutionContext {
     private final TransactionManager txnManager;
     private final List<TransactionLifecycleParticipant> participants = new ArrayList<>();
     private Transaction currentTxn;
+    private int parallelism = 1;
 
     public ExecutionContext(TransactionManager txnManager) {
         this.txnManager = txnManager;
     }
 
     public TransactionManager txnManager() { return txnManager; }
+
+    public int parallelism() { return parallelism; }
+    public void setParallelism(int p) { this.parallelism = Math.max(1, p); }
 
     public Transaction currentTxn() { return currentTxn; }
 

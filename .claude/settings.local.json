@@ -22,7 +22,9 @@
       "Bash(find D:/code/java/mini-project/mini-db/src/test -type f -name *Validation* -o -name *Window* -o -name *Sort*)",
       "Bash(find D:/code/java/mini-project/mini-db/src/test -type f -name *.java)",
       "Bash(find D:/code/java/mini-project/mini-db/src/main/java/cn/zhangyis/minidb/sql -type f -name *.java)",
-      "Bash(grep -E \"\\\\.java$\")"
+      "Bash(grep -E \"\\\\.java$\")",
+      "Bash(find /c/coding/java/self/miniproject/miniproject -type d -name *optim* -o -type d -name *plan* -o -type d -name *rule* -o -type d -name *rel* -o -type d -name *exec*)",
+      "Bash(grep -r \"SQL\\\\|Optimizer\\\\|Query Planning\\\\|Join\" /c/coding/java/self/miniproject/miniproject/md --include=*.md)"
     ]
   },
   "enabledPlugins": {

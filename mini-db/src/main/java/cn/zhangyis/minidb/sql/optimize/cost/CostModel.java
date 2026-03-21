@@ -1,18 +1,27 @@
 package cn.zhangyis.minidb.sql.optimize.cost;
 
 import cn.zhangyis.minidb.sql.ast.*;
+import cn.zhangyis.minidb.sql.catalog.ColumnStatistics;
+import cn.zhangyis.minidb.sql.catalog.StatisticsStore;
+import cn.zhangyis.minidb.sql.catalog.TableStatistics;
 import cn.zhangyis.minidb.sql.exec.PhysicalPlanner.JoinAlgorithm;
 import cn.zhangyis.minidb.sql.rel.*;
 
 public class CostModel {
     private final boolean enableIndexLookup;
+    private final StatisticsStore statsStore;
 
     public CostModel() {
         this(false);
     }
 
     public CostModel(boolean enableIndexLookup) {
+        this(enableIndexLookup, null);
+    }
+
+    public CostModel(boolean enableIndexLookup, StatisticsStore statsStore) {
         this.enableIndexLookup = enableIndexLookup;
+        this.statsStore = statsStore;
     }
 
     // ==================== 基数估计 ====================
@@ -54,8 +63,27 @@ public class CostModel {
     private double selectivity(SqlNode condition) {
         if (condition instanceof SqlBinaryOp binOp) {
             return switch (binOp.kind()) {
-                case BINARY_EQ -> 0.1;   // 等值条件选择率 10%
-                case BINARY_LT, BINARY_GT, BINARY_LE, BINARY_GE -> 0.3;
+                case BINARY_EQ -> {
+                    if (statsStore != null) {
+                        ColumnStatistics cs = resolveColumnStats(binOp);
+                        if (cs != null) yield cs.selectivityEq();
+                    }
+                    yield 0.1; // 回退
+                }
+                case BINARY_LT, BINARY_GT, BINARY_LE, BINARY_GE -> {
+                    if (statsStore != null) {
+                        ColumnStatistics cs = resolveColumnStats(binOp);
+                        if (cs != null) {
+                            Comparable<?> value = extractLiteralValue(binOp);
+                            if (value != null) {
+                                boolean isLessThan = binOp.kind() == SqlKind.BINARY_LT
+                                    || binOp.kind() == SqlKind.BINARY_LE;
+                                yield cs.selectivityRange(value, isLessThan);
+                            }
+                        }
+                    }
+                    yield 0.3; // 回退
+                }
                 case BINARY_NE -> 0.9;
                 case AND -> selectivity(binOp.left()) * selectivity(binOp.right());
                 case OR -> Math.min(1.0, selectivity(binOp.left()) + selectivity(binOp.right()));
@@ -63,6 +91,43 @@ public class CostModel {
             };
         }
         return 0.3;
+    }
+
+    /**
+     * 从 binOp 中提取列的 ColumnStatistics
+     */
+    private ColumnStatistics resolveColumnStats(SqlBinaryOp binOp) {
+        SqlIdentifier colId = null;
+        if (binOp.left() instanceof SqlIdentifier id) colId = id;
+        else if (binOp.right() instanceof SqlIdentifier id) colId = id;
+        if (colId == null) return null;
+
+        String name = colId.name();
+        String tableName;
+        String colName;
+        if (name.contains(".")) {
+            String[] parts = name.split("\\.", 2);
+            tableName = parts[0];
+            colName = parts[1];
+        } else {
+            return null; // 需要 qualified name 才能查找统计
+        }
+
+        TableStatistics ts = statsStore.getTableStatistics(tableName);
+        if (ts == null) return null;
+        return ts.column(colName);
+    }
+
+    private Comparable<?> extractLiteralValue(SqlBinaryOp binOp) {
+        SqlNode valueNode = (binOp.left() instanceof SqlIdentifier) ? binOp.right() : binOp.left();
+        if (valueNode instanceof cn.zhangyis.minidb.sql.ast.SqlLiteral lit) {
+            try {
+                return Double.parseDouble(lit.value());
+            } catch (NumberFormatException e) {
+                return lit.value();
+            }
+        }
+        return null;
     }
 
     // ==================== 算子代价 ====================

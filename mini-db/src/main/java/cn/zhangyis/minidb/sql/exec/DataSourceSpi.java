@@ -40,6 +40,14 @@ public interface DataSourceSpi {
     /**
      * 是否支持基于某一列的真实索引点查。
      */
+    /** 表的分区数（默认 1 = 不分区） */
+    default int partitionCount(String tableName) { return 1; }
+
+    /** 按分区扫描（默认退化为全表扫描） */
+    default Iterator<Row> scanPartition(String tableName, int partitionId, int totalPartitions) {
+        return scan(tableName);
+    }
+
     default boolean supportsLookup(String tableName, String columnName) {
         return false;
     }

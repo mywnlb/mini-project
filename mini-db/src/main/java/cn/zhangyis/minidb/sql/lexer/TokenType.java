@@ -3,7 +3,7 @@ package cn.zhangyis.minidb.sql.lexer;
 public enum TokenType {
     SELECT, FROM, WHERE, JOIN, ON, GROUP, BY, ORDER, LIMIT, OFFSET, DISTINCT, ASC, DESC,
     CAST, CASE, WHEN, THEN, ELSE, END, UNION, EXCEPT, INTERSECT, ALL,
-    LEFT, RIGHT, FULL, OUTER, CROSS, INNER,
+    LEFT, RIGHT, FULL, OUTER, CROSS, INNER, NATURAL, USING, WITH,
 
     // Keywords - Logic
     AND, OR, HAVING, NOT,
@@ -21,7 +21,7 @@ public enum TokenType {
     LIKE, BETWEEN, IN, IS, NULL,
 
     // Keywords - Aggregate
-    COUNT, SUM, AVG, MAX, MIN,
+    COUNT, SUM, AVG, MAX, MIN, ANALYZE,
 
     // Keywords - Window
     OVER, PARTITION, ROW_NUMBER, RANK, DENSE_RANK,

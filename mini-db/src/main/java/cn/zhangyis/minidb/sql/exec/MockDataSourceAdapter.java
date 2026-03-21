@@ -30,4 +30,22 @@ public class MockDataSourceAdapter implements DataSourceSpi {
     public int deleteRows(String tableName, Predicate<Row> filter) {
         return MockDataSource.deleteRows(tableName, filter);
     }
+
+    @Override
+    public int partitionCount(String tableName) {
+        java.util.List<Row> data = MockDataSource.getTableData(tableName);
+        return Math.max(1, data.size()); // 每行一个分区（测试用极端分区）
+    }
+
+    @Override
+    public Iterator<Row> scanPartition(String tableName, int partitionId, int totalPartitions) {
+        java.util.List<Row> data = MockDataSource.getTableData(tableName);
+        java.util.List<Row> partition = new java.util.ArrayList<>();
+        for (int i = 0; i < data.size(); i++) {
+            if (i % totalPartitions == partitionId) {
+                partition.add(data.get(i));
+            }
+        }
+        return partition.iterator();
+    }
 }

@@ -34,6 +34,14 @@ public class SqlNodeFactory {
         return new SqlJoin(joinType, left, right, condition);
     }
 
+    public SqlJoin naturalJoin(JoinType joinType, SqlNode left, SqlNode right) {
+        return new SqlJoin(joinType, left, right, null, null, true);
+    }
+
+    public SqlJoin usingJoin(JoinType joinType, SqlNode left, SqlNode right, java.util.List<String> usingColumns) {
+        return new SqlJoin(joinType, left, right, null, usingColumns, false);
+    }
+
     public SqlTableRef tableRef(String tableName, String alias) {
         return new SqlTableRef(tableName, alias);
     }

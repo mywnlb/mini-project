@@ -33,26 +33,129 @@ public class SqlValidator {
             case SqlCreateIndex createIdx -> validateCreateIndex(createIdx);
             case SqlDropIndex dropIdx -> validateDropIndex(dropIdx);
             case SqlSetOperation setOp -> validateSetOperation(setOp);
+            case SqlWithSelect withSelect -> validateWithSelect(withSelect);
+            case SqlAnalyzeTable analyze -> analyze; // pass-through
             default -> throw new ValidationException("Unsupported statement: " + node.kind());
         };
     }
 
     private ValidatedSqlSelect validateSelect(SqlSelect select) {
+        return validateSelectWithCteScope(select, Map.of());
+    }
+
+    private ValidatedSqlSelect validateSelectWithCteScope(SqlSelect select, Map<String, TableMeta> cteSchemas) {
         Map<String, TableMeta> tables = new LinkedHashMap<>();
+        // CTE schemas injected as virtual tables
+        tables.putAll(cteSchemas);
         if (select.from() != null) {
-            validateFrom(select.from(), tables);
+            validateFromWithCte(select.from(), tables, cteSchemas);
         }
         List<TableScope> scopes = tableScopes(tables);
         validateCommon(select, scopes);
         return new ValidatedSqlSelect(select, tables);
     }
 
+    private SqlNode validateWithSelect(SqlWithSelect withSelect) {
+        Map<String, TableMeta> cteSchemas = new LinkedHashMap<>();
+        for (SqlCte cte : withSelect.ctes()) {
+            // 检测递归引用
+            if (referencesTable(cte.query(), cte.name())) {
+                throw new ValidationException("Recursive CTE not supported: " + cte.name());
+            }
+            // 验证 CTE 查询（可能引用前面定义的 CTE）
+            ValidatedSqlSelect validated = validateSelectWithCteScope(cte.query(), cteSchemas);
+            TableMeta cteMeta = deriveCteSchema(cte.name(), validated);
+            cteSchemas.put(cte.name().toUpperCase(), cteMeta);
+        }
+        ValidatedSqlSelect mainValidated = validateSelectWithCteScope(withSelect.select(), cteSchemas);
+        return new ValidatedWithSelect(withSelect.ctes(), mainValidated);
+    }
+
+    private boolean referencesTable(SqlSelect query, String tableName) {
+        if (query.from() == null) return false;
+        return fromReferencesTable(query.from(), tableName);
+    }
+
+    private boolean fromReferencesTable(SqlNode from, String tableName) {
+        if (from instanceof SqlJoin join) {
+            return fromReferencesTable(join.left(), tableName)
+                || fromReferencesTable(join.right(), tableName);
+        }
+        if (from instanceof SqlDerivedTable derived) {
+            return referencesTable(derived.select(), tableName);
+        }
+        SqlTableRef ref = asTableRef(from);
+        return ref.tableName().equalsIgnoreCase(tableName);
+    }
+
+    private TableMeta deriveCteSchema(String cteName, ValidatedSqlSelect validated) {
+        SqlSelect inner = validated.original();
+        List<ColumnMeta> columns = new ArrayList<>();
+        if (inner.projection().size() == 1 && inner.projection().get(0).kind() == SqlKind.STAR) {
+            for (TableMeta tm : validated.tables().values()) {
+                for (ColumnMeta cm : tm.columns()) {
+                    columns.add(new ColumnMeta(cm.name(), cm.type(), false));
+                }
+            }
+        } else {
+            Map<String, TableMeta> innerTables = new LinkedHashMap<>(validated.tables());
+            List<TableScope> innerScopes = tableScopes(innerTables);
+            for (SqlNode node : inner.projection().nodes()) {
+                String colName = deriveColumnName(node);
+                cn.zhangyis.minidb.sql.types.SqlType type = inferType(node, innerScopes);
+                if (type == null) type = cn.zhangyis.minidb.sql.types.SqlType.VARCHAR;
+                columns.add(new ColumnMeta(colName, type, false));
+            }
+        }
+        return TableMeta.of(cteName, columns, 0);
+    }
+
+    private void validateFromWithCte(SqlNode from, Map<String, TableMeta> tables, Map<String, TableMeta> cteSchemas) {
+        if (from instanceof SqlJoin join) {
+            validateFromWithCte(join.left(), tables, cteSchemas);
+            validateFromWithCte(join.right(), tables, cteSchemas);
+            if (join.joinType() != cn.zhangyis.minidb.sql.ast.JoinType.CROSS && join.condition() == null
+                && !join.natural() && join.usingColumns() == null) {
+                throw new ValidationException("Non-CROSS JOIN must have ON/USING/NATURAL condition");
+            }
+            if (join.condition() != null) {
+                validateCondition(join.condition(), tableScopes(tables));
+            }
+            return;
+        }
+
+        if (from instanceof SqlDerivedTable derived) {
+            validateSelect(derived.select());
+            String alias = derived.alias().toUpperCase();
+            if (tables.containsKey(alias)) {
+                throw new ValidationException("Duplicate table alias '" + derived.alias() + "'");
+            }
+            TableMeta virtualMeta = derivedTableMeta(derived);
+            tables.put(alias, virtualMeta);
+            return;
+        }
+
+        SqlTableRef ref = asTableRef(from);
+        String visibleName = ref.visibleName().toUpperCase();
+        if (tables.containsKey(visibleName) && !cteSchemas.containsKey(visibleName)) {
+            throw new ValidationException("Duplicate table alias '" + ref.visibleName() + "'");
+        }
+
+        // CTE 名优先于物理表
+        if (cteSchemas.containsKey(ref.tableName().toUpperCase())) {
+            tables.put(visibleName, cteSchemas.get(ref.tableName().toUpperCase()));
+        } else {
+            tables.put(visibleName, resolveTable(ref.tableName()));
+        }
+    }
+
     private void validateFrom(SqlNode from, Map<String, TableMeta> tables) {
         if (from instanceof SqlJoin join) {
             validateFrom(join.left(), tables);
             validateFrom(join.right(), tables);
-            if (join.joinType() != cn.zhangyis.minidb.sql.ast.JoinType.CROSS && join.condition() == null) {
-                throw new ValidationException("Non-CROSS JOIN must have ON condition");
+            if (join.joinType() != cn.zhangyis.minidb.sql.ast.JoinType.CROSS && join.condition() == null
+                && !join.natural() && join.usingColumns() == null) {
+                throw new ValidationException("Non-CROSS JOIN must have ON/USING/NATURAL condition");
             }
             if (join.condition() != null) {
                 validateCondition(join.condition(), tableScopes(tables));
