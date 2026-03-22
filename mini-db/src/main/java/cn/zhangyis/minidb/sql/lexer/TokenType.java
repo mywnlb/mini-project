@@ -23,6 +23,9 @@ public enum TokenType {
     // Keywords - Aggregate
     COUNT, SUM, AVG, MAX, MIN, ANALYZE,
 
+    // Keywords - Utility
+    EXPLAIN,
+
     // Keywords - Window
     OVER, PARTITION, ROW_NUMBER, RANK, DENSE_RANK,
 

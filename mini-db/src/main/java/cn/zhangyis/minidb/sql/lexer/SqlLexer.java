@@ -84,6 +84,7 @@ public class SqlLexer {
         keywords.put("USING", TokenType.USING);
         keywords.put("WITH", TokenType.WITH);
         keywords.put("ANALYZE", TokenType.ANALYZE);
+        keywords.put("EXPLAIN", TokenType.EXPLAIN);
         keywords.put("OVER", TokenType.OVER);
         keywords.put("PARTITION", TokenType.PARTITION);
         keywords.put("ROW_NUMBER", TokenType.ROW_NUMBER);

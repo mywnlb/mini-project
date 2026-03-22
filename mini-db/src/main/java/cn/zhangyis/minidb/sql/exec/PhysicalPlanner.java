@@ -119,7 +119,7 @@ public class PhysicalPlanner {
         if (relNode instanceof RelScan scan) {
             if (executionContext != null && executionContext.parallelism() > 1
                 && dataSource.partitionCount(scan.tableName()) > 1) {
-                return new ParallelScanExec(scan.tableName(), scan.outputName(), dataSource, executionContext.parallelism());
+                return new ParallelScanExec(scan.tableName(), scan.outputName(), dataSource, executionContext.parallelism(), executionContext.queryThreadPool());
             }
             return new ScanExec(scan.tableName(), scan.outputName(), dataSource);
         }
@@ -155,6 +155,10 @@ public class PhysicalPlanner {
         }
         if (relNode instanceof RelAggregate agg) {
             ExecNode input = planInternal(agg.input(), overrideAlgo);
+            if (executionContext != null && executionContext.parallelism() > 1) {
+                List<String> groupByCols = extractGroupByColumnNames(agg.groupKeys());
+                return new ParallelAggregateExec(input, agg.aggCalls(), groupByCols, executionContext.queryThreadPool());
+            }
             return new AggregateExec(input, agg.groupKeys(), agg.aggCalls());
         }
         if (relNode instanceof RelUnion union) {
@@ -164,6 +168,10 @@ public class PhysicalPlanner {
         }
         if (relNode instanceof RelSort sort) {
             ExecNode input = planInternal(sort.input(), overrideAlgo);
+            if (executionContext != null && executionContext.parallelism() > 1
+                && sort.limit() == null && sort.offset() == null) {
+                return new ParallelSortExec(input, executionContext.queryThreadPool());
+            }
             Integer limit = null;
             Integer offset = null;
             if (sort.limit() instanceof SqlLiteral lit) {
@@ -222,12 +230,21 @@ public class PhysicalPlanner {
         ExecNode right = planInternal(join.right(), overrideAlgo);
         cn.zhangyis.minidb.sql.ast.JoinType joinType = join.joinType();
 
+        JoinKeys keys = extractJoinKeys(join);
+
+        // 并行 Hash Join：INNER JOIN + equi-keys + parallelism > 1
+        if (executionContext != null && executionContext.parallelism() > 1
+            && joinType == cn.zhangyis.minidb.sql.ast.JoinType.INNER
+            && keys != null) {
+            List<String> equiCols = keys.leftKeys().stream().map(this::bareColumn).toList();
+            ExecNode joinExec = new ParallelHashJoinExec(left, right, join.condition(), equiCols, executionContext.queryThreadPool());
+            return wrapResidual(joinExec, keys.residual());
+        }
+
         // CBO 自动选择 or 手动指定
         JoinAlgorithm algo = overrideAlgo != null
             ? overrideAlgo
             : costOptimizer.chooseJoinAlgorithm(join);
-
-        JoinKeys keys = extractJoinKeys(join);
 
         return switch (algo) {
             case NESTED_LOOP -> new NestedLoopJoinExec(left, right, join.condition(), joinType);
@@ -538,6 +555,19 @@ public class PhysicalPlanner {
 
     private String bareColumn(String identifier) {
         return identifier.contains(".") ? identifier.split("\\.", 2)[1] : identifier;
+    }
+
+    private List<String> extractGroupByColumnNames(SqlNodeList groupKeys) {
+        if (groupKeys == null) return List.of();
+        List<String> cols = new ArrayList<>();
+        for (SqlNode node : groupKeys.nodes()) {
+            if (node instanceof SqlIdentifier id) {
+                cols.add(id.name());
+            } else {
+                cols.add(node.toString());
+            }
+        }
+        return cols;
     }
 
     /**

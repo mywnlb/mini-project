@@ -1,12 +1,11 @@
 package cn.zhangyis.minidb.sql.exec;
 
-import cn.zhangyis.minidb.sql.ast.SqlKind;
-import cn.zhangyis.minidb.sql.ast.SqlNode;
-import cn.zhangyis.minidb.sql.ast.SqlTransaction;
+import cn.zhangyis.minidb.sql.ast.*;
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
 import cn.zhangyis.minidb.sql.lexer.SqlLexer;
 import cn.zhangyis.minidb.sql.lexer.TokenStream;
 import cn.zhangyis.minidb.sql.optimize.RuleOptimizer;
+import cn.zhangyis.minidb.sql.optimize.cost.CostModel;
 import cn.zhangyis.minidb.sql.optimize.cost.CostOptimizer;
 import cn.zhangyis.minidb.sql.parser.SqlParser;
 import cn.zhangyis.minidb.sql.planner.SqlToRelConverter;
@@ -57,6 +56,15 @@ public class SqlSession {
             return execNode(planner.planSqlNode(ast));
         }
 
+        // EXPLAIN：走完整优化链路但不实际执行，仅输出计划
+        if (ast instanceof SqlExplain explain) {
+            SqlNode inner = explain.query();
+            if (inner instanceof SqlTransaction || inner instanceof SqlExplain) {
+                throw new IllegalArgumentException("EXPLAIN does not support: " + inner.kind());
+            }
+            return executeExplain(inner);
+        }
+
         // 普通语句走完整链路
         SqlValidator validator = new SqlValidator(catalog);
         SqlNode validated = validator.validate(ast);
@@ -96,6 +104,24 @@ public class SqlSession {
         }
         exec.close();
         return results;
+    }
+
+    private List<Row> executeExplain(SqlNode query) {
+        SqlValidator validator = new SqlValidator(catalog);
+        SqlNode validated = validator.validate(query);
+        SqlToRelConverter converter = new SqlToRelConverter(catalog);
+        RelNode logicalPlan = converter.convert(validated);
+
+        RelNode optimized;
+        if (isDdl(logicalPlan)) {
+            optimized = logicalPlan;
+        } else {
+            RuleOptimizer ruleOpt = new RuleOptimizer(enableIndexedLookup);
+            optimized = ruleOpt.optimize(logicalPlan);
+        }
+
+        CostModel costModel = new CostModel(enableIndexedLookup);
+        return execNode(new ExplainExec(optimized, costModel));
     }
 
     private boolean isDdl(RelNode node) {

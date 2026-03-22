@@ -24,7 +24,16 @@
       "Bash(find D:/code/java/mini-project/mini-db/src/main/java/cn/zhangyis/minidb/sql -type f -name *.java)",
       "Bash(grep -E \"\\\\.java$\")",
       "Bash(find /c/coding/java/self/miniproject/miniproject -type d -name *optim* -o -type d -name *plan* -o -type d -name *rule* -o -type d -name *rel* -o -type d -name *exec*)",
-      "Bash(grep -r \"SQL\\\\|Optimizer\\\\|Query Planning\\\\|Join\" /c/coding/java/self/miniproject/miniproject/md --include=*.md)"
+      "Bash(grep -r \"SQL\\\\|Optimizer\\\\|Query Planning\\\\|Join\" /c/coding/java/self/miniproject/miniproject/md --include=*.md)",
+      "Bash(cd /d D:codejavamini-project)",
+      "Bash(./gradlew :mini-db:classes --quiet)",
+      "Bash(find /d/code/java/mini-project -path */test/* -name *Histogram* -o -path */test/* -name *Statistics* -o -path */test/* -name *Analyze*)",
+      "Bash(grep -r \"selectivityRange\\\\|selectivityEq\" /d/code/java/mini-project/mini-db/src/test --include=*.java)",
+      "Bash(grep:*)",
+      "Bash(chmod +x gradlew)",
+      "Bash(find /d/code/java/mini-project/docs -name *14* -o -name *natural* -o -name *using*)",
+      "Bash(gradle :mini-db:compileJava)",
+      "Bash(xargs -I {} basename {} .java)"
     ]
   },
   "enabledPlugins": {

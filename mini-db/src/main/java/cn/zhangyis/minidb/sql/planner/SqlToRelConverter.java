@@ -34,6 +34,8 @@ public class SqlToRelConverter {
 
     // CTE 上下文：在 convertFrom 中如果表名匹配 CTE，使用缓存的 RelNode
     private Map<String, RelNode> cteCache = new HashMap<>();
+    // CTE schema 上下文：在 convertFrom 中对派生表内层重新验证时传递 CTE 作用域
+    private Map<String, cn.zhangyis.minidb.sql.catalog.TableMeta> cteSchemaMap = new HashMap<>();
 
     public RelNode convert(SqlNode validated) {
         return switch (validated) {
@@ -62,11 +64,12 @@ public class SqlToRelConverter {
     }
 
     private RelNode convertWithSelect(ValidatedWithSelect withSelect) {
-        // 转换每个 CTE 为 RelNode 并缓存
-        for (SqlCte cte : withSelect.ctes()) {
-            SqlValidator v = new SqlValidator(catalog);
-            SqlNode cteValidated = v.validate(cte.query());
-            RelNode ctePlan = convert(cteValidated);
+        // 注入 CTE schema，供派生表内层重新验证时使用
+        cteSchemaMap.putAll(withSelect.cteSchemas());
+        // 使用验证阶段已产出的 ValidatedSqlSelect，避免重新验证丢失 CTE 上下文
+        for (int i = 0; i < withSelect.ctes().size(); i++) {
+            SqlCte cte = withSelect.ctes().get(i);
+            RelNode ctePlan = convertSelect(withSelect.validatedCtes().get(i));
             cteCache.put(cte.name().toUpperCase(), ctePlan);
         }
         // 转换主查询
@@ -74,6 +77,7 @@ public class SqlToRelConverter {
         // 清理 CTE 缓存
         for (SqlCte cte : withSelect.ctes()) {
             cteCache.remove(cte.name().toUpperCase());
+            cteSchemaMap.remove(cte.name().toUpperCase());
         }
         return result;
     }
@@ -128,9 +132,11 @@ public class SqlToRelConverter {
         }
 
         if (from instanceof SqlDerivedTable derived) {
-            // 递归验证并转换内层 SELECT
+            // 递归验证并转换内层 SELECT（携带 CTE 上下文）
             SqlValidator validator = new SqlValidator(catalog);
-            SqlNode innerValidated = validator.validate(derived.select());
+            SqlNode innerValidated = cteSchemaMap.isEmpty()
+                ? validator.validate(derived.select())
+                : validator.validateWithCteContext(derived.select(), cteSchemaMap);
             RelNode innerPlan = convert(innerValidated);
             return new RelDerivedScan(innerPlan, derived.alias(), derived.select());
         }
@@ -311,7 +317,15 @@ public class SqlToRelConverter {
             return;
         }
         if (from instanceof SqlDerivedTable derived) {
-            // TODO: derive columns from inner select
+            SqlSelect innerSelect = derived.select();
+            for (SqlNode proj : innerSelect.projection().nodes()) {
+                if (proj instanceof SqlAlias alias) {
+                    cols.add(alias.alias().toUpperCase());
+                } else if (proj instanceof SqlIdentifier id) {
+                    String name = id.name();
+                    cols.add((name.contains(".") ? name.substring(name.indexOf('.') + 1) : name).toUpperCase());
+                }
+            }
             return;
         }
         SqlTableRef ref = asTableRef(from);

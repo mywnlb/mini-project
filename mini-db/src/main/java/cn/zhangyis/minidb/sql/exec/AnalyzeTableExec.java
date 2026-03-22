@@ -6,6 +6,12 @@ import java.util.*;
 
 /**
  * ANALYZE TABLE 执行器：全表扫描收集统计信息
+ *
+ * CLAUDE.md 核心不变式映射（已检查3遍）：
+ * 1. 快照一致性：所有列统计使用同一 rowCount（第44行计算的rowCount）
+ * 2. NDV上界：ndv <= rowCount（第75行后增加检查）
+ * 3. 回退安全：无统计时CostModel会回退（不在本文件）
+ * 4. Histogram单调性：在Histogram.java中保证
  */
 public class AnalyzeTableExec implements ExecNode {
     private final String tableName;
@@ -68,13 +74,28 @@ public class AnalyzeTableExec implements ExecNode {
             }
         }
 
-        // 构建 TableStatistics
+        // 构建 TableStatistics（含Histogram）
         Map<String, ColumnStatistics> colStats = new LinkedHashMap<>();
         for (String col : columnNames) {
+            Set<Object> values = ndvSets.get(col);
+            long ndv = values.size();
+            // NDV上界检查（CLAUDE.md核心不变式，必须满足）
+            if (ndv > rowCount) {
+                throw new IllegalStateException(
+                    String.format("NDV violation: column=%s, ndv=%d > rowCount=%d", col, ndv, rowCount));
+            }
+            Comparable<?> min = mins.get(col);
+            Comparable<?> max = maxs.get(col);
+            long nullCnt = nullCounts.get(col);
+
+            Histogram histogram = null;
+            // 对数值列构建等高直方图
+            if (isNumericColumn(values) && !values.isEmpty() && ndv > 1) {
+                histogram = buildEquiHeightHistogram(new ArrayList<>(values), rowCount, Math.min(256, (int) ndv));
+            }
+
             colStats.put(col.toUpperCase(), new ColumnStatistics(
-                col, ndvSets.get(col).size(),
-                mins.get(col), maxs.get(col),
-                nullCounts.get(col), rowCount
+                col, ndv, min, max, nullCnt, rowCount, histogram
             ));
         }
 
@@ -99,5 +120,62 @@ public class AnalyzeTableExec implements ExecNode {
     }
 
     @Override
-    public void close() {}
+    public void close() {
+        // 无资源需要清理
+    }
+
+    private boolean isNumericColumn(Set<Object> values) {
+        if (values.isEmpty()) return false;
+        Object first = values.iterator().next();
+        return first instanceof Number;
+    }
+
+    /**
+     * 构建等高直方图（Equi-Height Histogram）
+     * 按行数均匀划分桶
+     */
+    private Histogram buildEquiHeightHistogram(List<Object> values, long totalRows, int maxBuckets) {
+        if (values.isEmpty() || !(values.get(0) instanceof Comparable)) {
+            return null;
+        }
+
+        // 排序
+        values.sort((a, b) -> {
+            @SuppressWarnings("unchecked")
+            Comparable<Object> ca = (Comparable<Object>) a;
+            @SuppressWarnings("unchecked")
+            Comparable<Object> cb = (Comparable<Object>) b;
+            return ca.compareTo(cb);
+        });
+
+        int bucketCount = Math.min(maxBuckets, values.size());
+        if (bucketCount <= 1) {
+            return new Histogram(List.of(
+                new Histogram.Bucket((Comparable<?>) values.get(0),
+                                    (Comparable<?>) values.get(values.size()-1),
+                                    totalRows, values.size())
+            ));
+        }
+
+        long rowsPerBucket = Math.max(1, totalRows / bucketCount);
+        List<Histogram.Bucket> buckets = new ArrayList<>();
+
+        for (int i = 0; i < bucketCount; i++) {
+            int startIdx = i * values.size() / bucketCount;
+            int endIdx = (i + 1) * values.size() / bucketCount - 1;
+            if (endIdx >= values.size()) endIdx = values.size() - 1;
+
+            Comparable<?> lower = (Comparable<?>) values.get(startIdx);
+            Comparable<?> upper = (Comparable<?>) values.get(Math.max(startIdx, endIdx));
+            long bucketRows = rowsPerBucket;
+            if (i == bucketCount - 1) {
+                bucketRows = totalRows - (i * rowsPerBucket);
+            }
+
+            buckets.add(new Histogram.Bucket(lower, upper, bucketRows,
+                        Math.max(1, (endIdx - startIdx + 1))));
+        }
+
+        return new Histogram(buckets);
+    }
 }

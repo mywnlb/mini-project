@@ -23,6 +23,7 @@ public class ExecutionContext {
     private final List<TransactionLifecycleParticipant> participants = new ArrayList<>();
     private Transaction currentTxn;
     private int parallelism = 1;
+    private QueryThreadPool queryThreadPool;  // 新增：查询级共享线程池
 
     public ExecutionContext(TransactionManager txnManager) {
         this.txnManager = txnManager;
@@ -31,7 +32,20 @@ public class ExecutionContext {
     public TransactionManager txnManager() { return txnManager; }
 
     public int parallelism() { return parallelism; }
-    public void setParallelism(int p) { this.parallelism = Math.max(1, p); }
+    public void setParallelism(int p) {
+        this.parallelism = Math.max(1, p);
+        if (queryThreadPool != null) {
+            queryThreadPool.close();
+        }
+        queryThreadPool = new QueryThreadPool(this.parallelism);
+    }
+
+    public QueryThreadPool queryThreadPool() {
+        if (queryThreadPool == null) {
+            queryThreadPool = new QueryThreadPool(parallelism);
+        }
+        return queryThreadPool;
+    }
 
     public Transaction currentTxn() { return currentTxn; }
 

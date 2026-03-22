@@ -10,7 +10,8 @@ import java.util.*;
  */
 public class JoinGraph {
 
-    public record JoinEdge(int leftIdx, int rightIdx, SqlNode condition) {}
+    public record JoinEdge(int leftIdx, int rightIdx, SqlNode condition) {
+    }
 
     private final List<RelNode> relations;
     private final List<JoinEdge> edges;
@@ -20,8 +21,13 @@ public class JoinGraph {
         this.edges = edges;
     }
 
-    public List<RelNode> relations() { return relations; }
-    public List<JoinEdge> edges() { return edges; }
+    public List<RelNode> relations() {
+        return relations;
+    }
+
+    public List<JoinEdge> edges() {
+        return edges;
+    }
 
     /**
      * 从左深 RelJoin 树扁平化为 JoinGraph
@@ -104,7 +110,7 @@ public class JoinGraph {
                 return scan.outputName().equalsIgnoreCase(prefix);
             }
             return scan.tableMeta().columns().stream()
-                .anyMatch(c -> c.name().equalsIgnoreCase(identifier));
+                    .anyMatch(c -> c.name().equalsIgnoreCase(identifier));
         }
         if (node instanceof RelFilter f) return relationOutputs(f.input(), identifier);
         if (node instanceof RelProject p) return relationOutputs(p.input(), identifier);
@@ -117,14 +123,35 @@ public class JoinGraph {
     }
 
     /**
-     * 从贪心合并顺序重建 RelJoin 树
+     * 返回连接两个子集的所有 JoinEdge
      */
-    public RelNode rebuild(List<RelNode> mergedRelations, List<SqlNode> mergedConditions) {
-        RelNode result = mergedRelations.get(0);
-        for (int i = 1; i < mergedRelations.size(); i++) {
-            SqlNode cond = i - 1 < mergedConditions.size() ? mergedConditions.get(i - 1) : null;
-            result = new RelJoin(result, mergedRelations.get(i), cond, JoinType.INNER);
+    public List<JoinEdge> edgesBetween(BitSet s1, BitSet s2) {
+        List<JoinEdge> result = new ArrayList<>();
+        for (JoinEdge e : edges) {
+            boolean leftInS1 = s1.get(e.leftIdx());
+            boolean rightInS2 = s2.get(e.rightIdx());
+            boolean leftInS2 = s2.get(e.leftIdx());
+            boolean rightInS1 = s1.get(e.rightIdx());
+            if ((leftInS1 && rightInS2) || (leftInS2 && rightInS1)) {
+                result.add(e);
+            }
         }
         return result;
+    }
+
+    /**
+     * 快速判断两个子集是否有连接（连通性检查）
+     */
+    public boolean hasConnection(BitSet s1, BitSet s2) {
+        for (JoinEdge e : edges) {
+            boolean leftInS1 = s1.get(e.leftIdx());
+            boolean rightInS2 = s2.get(e.rightIdx());
+            boolean leftInS2 = s2.get(e.leftIdx());
+            boolean rightInS1 = s1.get(e.rightIdx());
+            if ((leftInS1 && rightInS2) || (leftInS2 && rightInS1)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

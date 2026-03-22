@@ -44,6 +44,7 @@ public class SqlParser {
             case ALTER -> parseAlterTable();
             case WITH -> parseWith();
             case ANALYZE -> parseAnalyze();
+            case EXPLAIN -> parseExplain();
             case BEGIN -> parseBegin();
             case COMMIT -> parseCommit();
             case ROLLBACK -> parseRollback();
@@ -501,14 +502,36 @@ public class SqlParser {
         java.util.List<SqlCte> ctes = new java.util.ArrayList<>();
         do {
             String name = parseIdentifier().name();
+
+            // 解析可选的列名列表: WITH cte(col1, col2) AS (...)
+            List<String> columnNames = null;
+            if (tokens.current().type() == TokenType.LPAREN) {
+                Token nextToken = tokens.peek();
+                if (nextToken.type() == TokenType.IDENTIFIER) {
+                    // 是列名列表，而不是 (SELECT ...)
+                    tokens.next(); // consume LPAREN
+                    columnNames = parseColumnNameList();
+                    tokens.expect(TokenType.RPAREN);
+                }
+            }
+
             tokens.expect(TokenType.AS);
             tokens.expect(TokenType.LPAREN);
             SqlSelect cteQuery = parseSelect();
             tokens.expect(TokenType.RPAREN);
-            ctes.add(new SqlCte(name, cteQuery));
+
+            ctes.add(new SqlCte(name, columnNames, cteQuery));
         } while (tokens.match(TokenType.COMMA));
         SqlSelect mainSelect = parseSelect();
         return new SqlWithSelect(ctes, mainSelect);
+    }
+
+    private List<String> parseColumnNameList() {
+        List<String> cols = new java.util.ArrayList<>();
+        do {
+            cols.add(parseIdentifier().name());
+        } while (tokens.match(TokenType.COMMA));
+        return cols;
     }
 
     // ==================== ANALYZE ====================
@@ -518,6 +541,12 @@ public class SqlParser {
         tokens.expect(TokenType.TABLE);
         String tableName = parseIdentifier().name();
         return new SqlAnalyzeTable(tableName);
+    }
+
+    private SqlNode parseExplain() {
+        tokens.expect(TokenType.EXPLAIN);
+        SqlNode query = parseStatement();
+        return new SqlExplain(query);
     }
 
     // ==================== 事务控制 ====================

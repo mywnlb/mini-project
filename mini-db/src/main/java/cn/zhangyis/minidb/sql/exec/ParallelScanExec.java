@@ -14,9 +14,11 @@ public class ParallelScanExec implements ExecNode {
     private final String outputName;
     private final DataSourceSpi dataSource;
     private final int parallelism;
+    private final QueryThreadPool sharedPool;
 
     private BlockingQueue<Row> queue;
     private ExecutorService executor;
+    private boolean ownsExecutor;
     private AtomicInteger finishedCount;
     private AtomicReference<Throwable> error;
     private volatile boolean closed;
@@ -25,10 +27,16 @@ public class ParallelScanExec implements ExecNode {
     private static final Row POISON = new Row(Map.of());
 
     public ParallelScanExec(String tableName, String outputName, DataSourceSpi dataSource, int parallelism) {
+        this(tableName, outputName, dataSource, parallelism, null);
+    }
+
+    public ParallelScanExec(String tableName, String outputName, DataSourceSpi dataSource,
+                            int parallelism, QueryThreadPool sharedPool) {
         this.tableName = tableName;
         this.outputName = outputName;
         this.dataSource = dataSource;
         this.parallelism = parallelism;
+        this.sharedPool = sharedPool;
     }
 
     @Override
@@ -38,7 +46,13 @@ public class ParallelScanExec implements ExecNode {
         finishedCount = new AtomicInteger(0);
         error = new AtomicReference<>();
         closed = false;
-        executor = Executors.newFixedThreadPool(partitions);
+        if (sharedPool != null) {
+            executor = sharedPool.executor();
+            ownsExecutor = false;
+        } else {
+            executor = Executors.newFixedThreadPool(partitions);
+            ownsExecutor = true;
+        }
 
         for (int i = 0; i < partitions; i++) {
             final int pid = i;
@@ -82,7 +96,7 @@ public class ParallelScanExec implements ExecNode {
     @Override
     public void close() {
         closed = true;
-        if (executor != null) {
+        if (ownsExecutor && executor != null) {
             executor.shutdownNow();
         }
     }

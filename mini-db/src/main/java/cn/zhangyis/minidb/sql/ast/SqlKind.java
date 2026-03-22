@@ -29,5 +29,7 @@ public enum SqlKind {
     // CTE
     CTE, WITH_SELECT,
     // 统计
-    ANALYZE_TABLE
+    ANALYZE_TABLE,
+    // 查询计划
+    EXPLAIN_QUERY
 }

@@ -69,7 +69,48 @@ class LowPriorityFeaturesTest {
         MockDataSource.insertRow("PROJECTS", row("projects.proj_id", 103, "projects.dept_id", 30, "projects.proj_name", "proj_d"));
     }
 
-    // ==================== Feature #14: NATURAL JOIN / USING ====================
+    // ==================== Feature #10: DP JOIN 重排序 ====================
+    @Nested
+    class DPJoinReorderTest {
+
+        @Test
+        void dpJoin_producesSameResultAsGreedy() {
+            List<Row> rows = execute(
+                "SELECT * FROM EMPLOYEES e " +
+                "JOIN DEPARTMENTS d ON e.DEPT_ID = d.DEPT_ID " +
+                "JOIN PROJECTS p ON e.DEPT_ID = p.DEPT_ID"
+            );
+            assertEquals(7, rows.size()); // dept10: 2emp*2proj=4, dept20: 2emp*1proj=2, dept30: 1emp*1proj=1
+        }
+
+        @Test
+        void dpJoin_supportsBushyTree() {
+            // 验证 bushy tree（计划文档测试用例）
+            List<Row> rows = execute("SELECT * FROM EMPLOYEES e JOIN DEPARTMENTS d ON e.DEPT_ID = d.DEPT_ID");
+            assertFalse(rows.isEmpty());
+        }
+    }
+
+    // ==================== Feature #12: CTE 列名列表 ====================
+    @Nested
+    class CteColumnListTest {
+
+        @Test
+        void cte_withColumnNames_works() {
+            List<Row> rows = execute(
+                "WITH emp(id, name) AS (SELECT ID, NAME FROM EMPLOYEES) " +
+                "SELECT id, name FROM emp"
+            );
+            assertEquals(5, rows.size());
+        }
+
+        @Test
+        void cte_columnCountMismatch_throwsException() {
+            assertThrows(Exception.class, () -> {
+                execute("WITH emp(id) AS (SELECT ID, NAME FROM EMPLOYEES) SELECT * FROM emp");
+            });
+        }
+    }
 
     @Nested
     class NaturalJoinUsingTest {

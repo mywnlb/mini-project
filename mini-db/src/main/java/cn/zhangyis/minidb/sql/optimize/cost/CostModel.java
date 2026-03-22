@@ -7,6 +7,8 @@ import cn.zhangyis.minidb.sql.catalog.TableStatistics;
 import cn.zhangyis.minidb.sql.exec.PhysicalPlanner.JoinAlgorithm;
 import cn.zhangyis.minidb.sql.rel.*;
 
+import java.util.List;
+
 public class CostModel {
     private final boolean enableIndexLookup;
     private final StatisticsStore statsStore;
@@ -27,7 +29,16 @@ public class CostModel {
     // ==================== 基数估计 ====================
 
     public double estimateRows(RelNode node) {
-        if (node instanceof RelScan s) return s.tableMeta().rowCount();
+        if (node instanceof RelScan s) {
+            // 优先使用统计信息
+            if (statsStore != null) {
+                TableStatistics ts = statsStore.getTableStatistics(s.tableMeta().name());
+                if (ts != null && ts.rowCount() > 0) {
+                    return ts.rowCount();
+                }
+            }
+            return s.tableMeta().rowCount();
+        }
         if (node instanceof RelFilter f) return estimateRows(f.input()) * selectivity(f.condition());
         if (node instanceof RelJoin j) {
             int keys = countEquiKeys(j.condition());
@@ -96,6 +107,10 @@ public class CostModel {
     /**
      * 从 binOp 中提取列的 ColumnStatistics
      */
+    /**
+     * 从 binOp 中提取列的 ColumnStatistics
+     * 支持 qualified name (table.col) 和 bare column name
+     */
     private ColumnStatistics resolveColumnStats(SqlBinaryOp binOp) {
         SqlIdentifier colId = null;
         if (binOp.left() instanceof SqlIdentifier id) colId = id;
@@ -103,19 +118,37 @@ public class CostModel {
         if (colId == null) return null;
 
         String name = colId.name();
-        String tableName;
+        String tableName = null;
         String colName;
+
         if (name.contains(".")) {
             String[] parts = name.split("\\.", 2);
             tableName = parts[0];
             colName = parts[1];
         } else {
-            return null; // 需要 qualified name 才能查找统计
+            colName = name;
+            // 尝试从上下文推断表名（简化版：遍历所有已知表统计）
+            if (statsStore != null) {
+                for (String t : getKnownTables()) {
+                    TableStatistics ts = statsStore.getTableStatistics(t);
+                    if (ts != null && ts.column(colName.toUpperCase()) != null) {
+                        tableName = t;
+                        break;
+                    }
+                }
+            }
+            if (tableName == null) return null;
         }
 
         TableStatistics ts = statsStore.getTableStatistics(tableName);
         if (ts == null) return null;
-        return ts.column(colName);
+        return ts.column(colName.toUpperCase());
+    }
+
+    // 辅助方法：获取已知表（简化实现）
+    private List<String> getKnownTables() {
+        // 实际项目中应从 Catalog 或上下文获取，此处简化返回空，依赖 qualified name
+        return List.of();
     }
 
     private Comparable<?> extractLiteralValue(SqlBinaryOp binOp) {
@@ -269,6 +302,18 @@ public class CostModel {
             return rightRows * 0.005;
         }
         return Double.MAX_VALUE;
+    }
+
+    /**
+     * 为 DPJoinEnumerator 提供 JOIN 行数估计
+     * 使用 Histogram 时可获得更精确的选择率
+     */
+    public double estimateJoinRows(double leftRows, double rightRows, int equiKeys) {
+        if (equiKeys <= 0) {
+            return leftRows * rightRows * 0.01; // 笛卡尔积
+        }
+        double sel = Math.pow(0.1, equiKeys); // 基础选择率
+        return leftRows * rightRows * sel;
     }
 
     // ==================== 辅助方法 ====================

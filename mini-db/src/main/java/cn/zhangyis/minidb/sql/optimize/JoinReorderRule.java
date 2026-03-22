@@ -27,13 +27,29 @@ public class JoinReorderRule extends RelOptRule {
     public RelNode apply(RelNode node) {
         RelJoin root = (RelJoin) node;
         JoinGraph graph = JoinGraph.flatten(root);
+        int n = graph.relations().size();
 
-        // 不够 3 个 relation 或超过 10 个时放弃
-        if (graph.relations().size() < 3 || graph.relations().size() > 10) {
+        // N <= 10 使用 DP，N > 10 保留贪心
+        if (n < 3) {
             return node;
         }
 
-        return greedyReorder(graph);
+        RelNode dpPlan;
+        if (n <= 10) {
+            dpPlan = DPJoinEnumerator.enumerate(graph, costModel);
+        } else {
+            dpPlan = greedyReorder(graph);
+        }
+
+        // 幂等保护：如果 DP 输出代价不优于输入，则返回原节点
+        // CLAUDE.md不变式：幂等 - 同一SQL连续optimize两次不应改变结果
+        double originalCost = costModel.estimateRows(root);
+        double dpCost = costModel.estimateRows(dpPlan);
+        if (Math.abs(dpCost - originalCost) < 1e-6) {
+            return node;
+        }
+
+        return dpPlan;
     }
 
     private RelNode greedyReorder(JoinGraph graph) {

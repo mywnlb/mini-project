@@ -57,6 +57,7 @@ public class SqlValidator {
 
     private SqlNode validateWithSelect(SqlWithSelect withSelect) {
         Map<String, TableMeta> cteSchemas = new LinkedHashMap<>();
+        List<ValidatedSqlSelect> validatedCtes = new ArrayList<>();
         for (SqlCte cte : withSelect.ctes()) {
             // 检测递归引用
             if (referencesTable(cte.query(), cte.name())) {
@@ -64,11 +65,19 @@ public class SqlValidator {
             }
             // 验证 CTE 查询（可能引用前面定义的 CTE）
             ValidatedSqlSelect validated = validateSelectWithCteScope(cte.query(), cteSchemas);
-            TableMeta cteMeta = deriveCteSchema(cte.name(), validated);
+            validatedCtes.add(validated);
+            TableMeta cteMeta = deriveCteSchema(cte.name(), validated, cte);
             cteSchemas.put(cte.name().toUpperCase(), cteMeta);
         }
         ValidatedSqlSelect mainValidated = validateSelectWithCteScope(withSelect.select(), cteSchemas);
-        return new ValidatedWithSelect(withSelect.ctes(), mainValidated);
+        return new ValidatedWithSelect(withSelect.ctes(), validatedCtes, Map.copyOf(cteSchemas), mainValidated);
+    }
+
+    /**
+     * 带 CTE 上下文验证 SELECT（供 converter 对派生表内层查询使用）
+     */
+    public ValidatedSqlSelect validateWithCteContext(SqlSelect select, Map<String, TableMeta> cteSchemas) {
+        return validateSelectWithCteScope(select, cteSchemas);
     }
 
     private boolean referencesTable(SqlSelect query, String tableName) {
@@ -88,26 +97,31 @@ public class SqlValidator {
         return ref.tableName().equalsIgnoreCase(tableName);
     }
 
-    private TableMeta deriveCteSchema(String cteName, ValidatedSqlSelect validated) {
-        SqlSelect inner = validated.original();
+    private TableMeta deriveCteSchema(String cteName, ValidatedSqlSelect validated, SqlCte cte) {
+        // 复用 validated 的 schema 作为基础
         List<ColumnMeta> columns = new ArrayList<>();
-        if (inner.projection().size() == 1 && inner.projection().get(0).kind() == SqlKind.STAR) {
-            for (TableMeta tm : validated.tables().values()) {
-                for (ColumnMeta cm : tm.columns()) {
-                    columns.add(new ColumnMeta(cm.name(), cm.type(), false));
-                }
+        SqlSelect inner = validated.original();
+
+        if (cte != null && cte.hasColumnNames()) {
+            List<String> names = cte.columnNames();
+            int expected = inner.projection().size();
+            if (names.size() != expected) {
+                throw new ValidationException(
+                    "Column count mismatch for CTE '" + cteName + "': expected "
+                    + names.size() + ", got " + expected);
+            }
+            // 使用指定列名，类型从内层推导（简化版）
+            for (int i = 0; i < names.size(); i++) {
+                columns.add(new ColumnMeta(names.get(i), SqlType.VARCHAR, false)); // TODO: 改进类型推导
             }
         } else {
-            Map<String, TableMeta> innerTables = new LinkedHashMap<>(validated.tables());
-            List<TableScope> innerScopes = tableScopes(innerTables);
-            for (SqlNode node : inner.projection().nodes()) {
-                String colName = deriveColumnName(node);
-                cn.zhangyis.minidb.sql.types.SqlType type = inferType(node, innerScopes);
-                if (type == null) type = cn.zhangyis.minidb.sql.types.SqlType.VARCHAR;
-                columns.add(new ColumnMeta(colName, type, false));
+            // 现有逻辑：使用内层投影列名
+            for (SqlNode proj : inner.projection().nodes()) {
+                String colName = proj instanceof SqlAlias a ? a.alias() : "col" + columns.size();
+                columns.add(new ColumnMeta(colName, SqlType.VARCHAR, false));
             }
         }
-        return TableMeta.of(cteName, columns, 0);
+        return TableMeta.of(cteName.toUpperCase(), columns, 0);
     }
 
     private void validateFromWithCte(SqlNode from, Map<String, TableMeta> tables, Map<String, TableMeta> cteSchemas) {
@@ -125,7 +139,7 @@ public class SqlValidator {
         }
 
         if (from instanceof SqlDerivedTable derived) {
-            validateSelect(derived.select());
+            validateSelectWithCteScope(derived.select(), cteSchemas);
             String alias = derived.alias().toUpperCase();
             if (tables.containsKey(alias)) {
                 throw new ValidationException("Duplicate table alias '" + derived.alias() + "'");
