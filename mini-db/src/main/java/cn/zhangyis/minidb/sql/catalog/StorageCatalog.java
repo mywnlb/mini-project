@@ -1,5 +1,7 @@
 package cn.zhangyis.minidb.sql.catalog;
 
+import cn.zhangyis.minidb.sql.exec.ExecutionContext;
+import cn.zhangyis.minidb.sql.exec.StorageDataSource;
 import cn.zhangyis.minidb.storage.btree.IndexDescriptor;
 import cn.zhangyis.minidb.storage.btree.IndexManager;
 import cn.zhangyis.minidb.storage.btree.IndexType;
@@ -390,21 +392,33 @@ public class StorageCatalog implements CatalogSpi {
      * 从 TableDescriptor 的 indexId 列表构建最小 IndexMeta（无 bufferPool 时的降级路径）
      */
     private List<IndexMeta> buildIndexMetaFromDescriptor(TableDescriptor tableDesc) {
-        List<IndexMeta> result = new ArrayList<>();
+        List<IndexMeta> indexes = new ArrayList<>();
+        // 主键索引
         if (tableDesc.getPrimaryIndexId() > 0) {
-            // 主键索引：列信息从 NOT NULL 列推断
-            List<String> pkCols = tableDesc.getColumns().stream()
-                .filter(c -> !c.isNullable())
-                .map(cn.zhangyis.minidb.storage.catalog.ColumnMeta::getName)
-                .collect(Collectors.toList());
-            if (!pkCols.isEmpty()) {
-                result.add(new IndexMeta("PRIMARY", tableDesc.getTableName(), pkCols, true, true));
-            }
+            indexes.add(new IndexMeta(
+                "PRIMARY",
+                tableDesc.getTableName(),
+                List.of(),  // 列信息在无 bufferPool 时无法精确获取
+                true,
+                true
+            ));
         }
-        // 二级索引无法推断列信息，跳过
-        return result;
+        // 二级索引（仅占位）
+        for (Long indexId : tableDesc.getSecondaryIndexIds()) {
+            indexes.add(new IndexMeta(
+                "idx_" + indexId,
+                tableDesc.getTableName(),
+                List.of(),
+                false,
+                false
+            ));
+        }
+        return indexes;
     }
 
+    /**
+     * 从 TableDescriptor 的 indexId 列表推断主键列名
+     */
     private Set<String> primaryColumnNames(TableDescriptor tableDesc) {
         try {
             return getIndexes(tableDesc.getTableName()).stream()
@@ -419,6 +433,17 @@ public class StorageCatalog implements CatalogSpi {
                 .map(c -> c.getName().toUpperCase())
                 .collect(Collectors.toSet());
         }
+    }
+
+    /**
+     * 为当前连接创建 StorageDataSource 实例
+     * 必须在 ExecutionContext 创建之后调用
+     */
+    public StorageDataSource createStorageDataSource(ExecutionContext executionContext) {
+        if (bufferPool == null) {
+            throw new IllegalStateException("BufferPool is required to create StorageDataSource");
+        }
+        return new StorageDataSource(catalogManager, databaseName, executionContext, bufferPool);
     }
 
     private long rowCount(TableDescriptor tableDesc) {

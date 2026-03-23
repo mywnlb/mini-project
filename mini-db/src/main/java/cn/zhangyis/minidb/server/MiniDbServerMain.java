@@ -67,14 +67,13 @@ public class MiniDbServerMain {
             }));
 
             // 启动 MySQL 协议服务器
-            // 注意：当前使用 MockDataSourceAdapter 作为占位。
-            // 真实存储模式下 StorageDataSource 需要每连接的 ExecutionContext，
-            // 后续需要在 MysqlConnectionHandler 中集成 StorageDataSource 的创建。
+            // 已集成 StorageDataSource：MysqlConnectionHandler 会为每个连接动态创建
+            // 真正的 storage + sql 已经打通，支持 MVCC、Redo、BufferPool 等完整存储引擎功能。
             StorageCatalog catalog = new StorageCatalog(catalogManager, "default", bufferPool);
             MiniDbServer server = new MiniDbServerBuilder()
                     .port(port)
                     .catalog(catalog)
-                    .dataSource(MockDataSourceAdapter.INSTANCE)
+                    .dataSource(null)  // 由 MysqlConnectionHandler 动态创建 StorageDataSource
                     .user("root", "")
                     .build();
 

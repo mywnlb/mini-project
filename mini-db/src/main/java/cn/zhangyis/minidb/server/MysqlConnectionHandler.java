@@ -9,8 +9,11 @@ import cn.zhangyis.minidb.server.netty.RawMysqlPacket;
 import cn.zhangyis.minidb.server.protocol.MysqlConstants;
 import cn.zhangyis.minidb.server.protocol.packets.*;
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
+import cn.zhangyis.minidb.sql.catalog.StorageCatalog;
 import cn.zhangyis.minidb.sql.exec.DataSourceSpi;
 import cn.zhangyis.minidb.sql.exec.ExecutionContext;
+import cn.zhangyis.minidb.sql.exec.MockDataSourceAdapter;
+import cn.zhangyis.minidb.sql.exec.StorageDataSource;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -130,12 +133,16 @@ public class MysqlConnectionHandler extends ChannelInboundHandlerAdapter {
 
         // 创建会话——每连接独立的 ExecutionContext 保证事务隔离
         ExecutionContext execCtx = new ExecutionContext(txnManager);
-        this.session = new ConnectionSession(connectionId, catalog, dataSource, execCtx);
-        session.setUsername(username);
-        session.setClientCapabilities(response.clientCapabilities());
-        if (response.database() != null) {
-            session.setCurrentDatabase(response.database());
+
+        // 如果传入的是 StorageCatalog，则创建真实的 StorageDataSource
+        DataSourceSpi effectiveDataSource = dataSource;
+        if (catalog instanceof StorageCatalog storageCatalog &&
+            (dataSource == null || dataSource instanceof MockDataSourceAdapter)) {
+            effectiveDataSource = storageCatalog.createStorageDataSource(execCtx);
+            log.info("使用真实 StorageDataSource for connectionId={}", connectionId);
         }
+
+        this.session = new ConnectionSession(connectionId, catalog, effectiveDataSource, execCtx);
 
         this.dispatcher = new CommandDispatcher(session, writer);
 
