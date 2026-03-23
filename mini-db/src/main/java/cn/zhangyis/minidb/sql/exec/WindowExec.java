@@ -23,11 +23,17 @@ public class WindowExec implements ExecNode {
     private Iterator<Row> iterator;
 
     public record WindowSpec(String funcName, String outputLabel,
-                             SqlNodeList partitionBy, SqlNodeList orderBy, SqlNode arg) {
-        /** 兼容旧构造：排名函数无 arg */
+                             SqlNodeList partitionBy, SqlNodeList orderBy,
+                             SqlNode arg, SqlNodeList extraArgs) {
+        /** 兼容旧构造：排名函数无 arg 和 extraArgs */
         public WindowSpec(String funcName, String outputLabel,
                           SqlNodeList partitionBy, SqlNodeList orderBy) {
-            this(funcName, outputLabel, partitionBy, orderBy, null);
+            this(funcName, outputLabel, partitionBy, orderBy, null, null);
+        }
+        /** 兼容构造：有 arg 无 extraArgs */
+        public WindowSpec(String funcName, String outputLabel,
+                          SqlNodeList partitionBy, SqlNodeList orderBy, SqlNode arg) {
+            this(funcName, outputLabel, partitionBy, orderBy, arg, null);
         }
     }
 
@@ -82,6 +88,11 @@ public class WindowExec implements ExecNode {
                 case "AVG" -> computeRunningAvg(rows, partition, spec);
                 case "MIN" -> computeRunningMin(rows, partition, spec);
                 case "MAX" -> computeRunningMax(rows, partition, spec);
+                case "LAG" -> computeLag(rows, partition, spec);
+                case "LEAD" -> computeLead(rows, partition, spec);
+                case "NTILE" -> computeNtile(rows, partition, spec);
+                case "PERCENT_RANK" -> computePercentRank(rows, partition, spec);
+                case "CUME_DIST" -> computeCumeDist(rows, partition, spec);
             }
 
             sortedOrder.addAll(partition);
@@ -259,6 +270,117 @@ public class WindowExec implements ExecNode {
             return lv;
         }
         return value;
+    }
+
+    // ==================== LAG/LEAD/NTILE/PERCENT_RANK/CUME_DIST ====================
+
+    private void computeLag(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        int offset = 1;
+        Object defaultVal = null;
+        if (spec.extraArgs() != null) {
+            if (spec.extraArgs().size() >= 2) {
+                Object offVal = resolveValue(rows.get(partition.get(0)), spec.extraArgs().get(1));
+                if (offVal instanceof Number n) offset = n.intValue();
+            }
+            if (spec.extraArgs().size() >= 3) {
+                defaultVal = resolveValue(rows.get(partition.get(0)), spec.extraArgs().get(2));
+            }
+        }
+        for (int i = 0; i < partition.size(); i++) {
+            int idx = partition.get(i);
+            if (i - offset >= 0) {
+                int lagIdx = partition.get(i - offset);
+                rows.get(idx).put(spec.outputLabel(), resolveArgValue(rows.get(lagIdx), spec.arg()));
+            } else {
+                rows.get(idx).put(spec.outputLabel(), defaultVal);
+            }
+        }
+    }
+
+    private void computeLead(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        int offset = 1;
+        Object defaultVal = null;
+        if (spec.extraArgs() != null) {
+            if (spec.extraArgs().size() >= 2) {
+                Object offVal = resolveValue(rows.get(partition.get(0)), spec.extraArgs().get(1));
+                if (offVal instanceof Number n) offset = n.intValue();
+            }
+            if (spec.extraArgs().size() >= 3) {
+                defaultVal = resolveValue(rows.get(partition.get(0)), spec.extraArgs().get(2));
+            }
+        }
+        for (int i = 0; i < partition.size(); i++) {
+            int idx = partition.get(i);
+            if (i + offset < partition.size()) {
+                int leadIdx = partition.get(i + offset);
+                rows.get(idx).put(spec.outputLabel(), resolveArgValue(rows.get(leadIdx), spec.arg()));
+            } else {
+                rows.get(idx).put(spec.outputLabel(), defaultVal);
+            }
+        }
+    }
+
+    private void computeNtile(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        int n = 1;
+        if (spec.arg() != null) {
+            Object nVal = resolveValue(rows.get(partition.get(0)), spec.arg());
+            if (nVal instanceof Number num) n = num.intValue();
+        }
+        if (n <= 0) n = 1;
+        int size = partition.size();
+        int baseSize = size / n;
+        int remainder = size % n;
+        int bucket = 1;
+        int count = 0;
+        int currentBucketSize = baseSize + (bucket <= remainder ? 1 : 0);
+        for (int i = 0; i < size; i++) {
+            rows.get(partition.get(i)).put(spec.outputLabel(), (long) bucket);
+            count++;
+            if (count >= currentBucketSize && bucket < n) {
+                bucket++;
+                count = 0;
+                currentBucketSize = baseSize + (bucket <= remainder ? 1 : 0);
+            }
+        }
+    }
+
+    private void computePercentRank(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        int size = partition.size();
+        if (size <= 1) {
+            for (int idx : partition) {
+                rows.get(idx).put(spec.outputLabel(), 0.0);
+            }
+            return;
+        }
+        // 先计算 RANK
+        long[] ranks = new long[size];
+        ranks[0] = 1;
+        for (int i = 1; i < size; i++) {
+            if (orderByEquals(rows.get(partition.get(i)), rows.get(partition.get(i - 1)), spec.orderBy())) {
+                ranks[i] = ranks[i - 1];
+            } else {
+                ranks[i] = i + 1;
+            }
+        }
+        for (int i = 0; i < size; i++) {
+            double percentRank = (double) (ranks[i] - 1) / (size - 1);
+            rows.get(partition.get(i)).put(spec.outputLabel(), percentRank);
+        }
+    }
+
+    private void computeCumeDist(List<Row> rows, List<Integer> partition, WindowSpec spec) {
+        int size = partition.size();
+        for (int i = 0; i < size; i++) {
+            // CUME_DIST = (行的位置，即等于或小于当前值的行数) / 分区总行数
+            // 找到最后一个与当前行 ORDER BY 值相同的位置
+            int lastEqual = i;
+            while (lastEqual + 1 < size &&
+                    orderByEquals(rows.get(partition.get(i)), rows.get(partition.get(lastEqual + 1)), spec.orderBy())) {
+                lastEqual++;
+            }
+            double cumeDist = (double) (lastEqual + 1) / size;
+            rows.get(partition.get(i)).put(spec.outputLabel(), cumeDist);
+        }
     }
 
     // ==================== 通用辅助方法 ====================

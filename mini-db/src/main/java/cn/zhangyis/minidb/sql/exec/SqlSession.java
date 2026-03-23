@@ -56,11 +56,14 @@ public class SqlSession {
             return execNode(planner.planSqlNode(ast));
         }
 
-        // EXPLAIN：走完整优化链路但不实际执行，仅输出计划
+        // EXPLAIN / EXPLAIN ANALYZE
         if (ast instanceof SqlExplain explain) {
             SqlNode inner = explain.query();
             if (inner instanceof SqlTransaction || inner instanceof SqlExplain) {
                 throw new IllegalArgumentException("EXPLAIN does not support: " + inner.kind());
+            }
+            if (explain.analyze()) {
+                return executeExplainAnalyze(inner);
             }
             return executeExplain(inner);
         }
@@ -122,6 +125,25 @@ public class SqlSession {
 
         CostModel costModel = new CostModel(enableIndexedLookup);
         return execNode(new ExplainExec(optimized, costModel));
+    }
+
+    private List<Row> executeExplainAnalyze(SqlNode query) {
+        SqlValidator validator = new SqlValidator(catalog);
+        SqlNode validated = validator.validate(query);
+        SqlToRelConverter converter = new SqlToRelConverter(catalog);
+        RelNode logicalPlan = converter.convert(validated);
+
+        RelNode optimized;
+        if (isDdl(logicalPlan)) {
+            optimized = logicalPlan;
+        } else {
+            RuleOptimizer ruleOpt = new RuleOptimizer(enableIndexedLookup);
+            optimized = ruleOpt.optimize(logicalPlan);
+        }
+
+        CostModel costModel = new CostModel(enableIndexedLookup);
+        ExecNode execTree = planner.plan(optimized);
+        return execNode(new ExplainAnalyzeExec(execTree, optimized, costModel));
     }
 
     private boolean isDdl(RelNode node) {

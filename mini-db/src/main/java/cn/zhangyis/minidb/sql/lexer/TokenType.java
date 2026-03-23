@@ -28,6 +28,7 @@ public enum TokenType {
 
     // Keywords - Window
     OVER, PARTITION, ROW_NUMBER, RANK, DENSE_RANK,
+    LAG, LEAD, NTILE, PERCENT_RANK, CUME_DIST,
 
     // Identifiers & Literals
     IDENTIFIER, NUMBER, STRING, STAR,
@@ -40,6 +41,9 @@ public enum TokenType {
 
     // Alias
     AS,
+
+    // Parameter placeholder
+    PARAMETER,
 
     // Special
     EOF;

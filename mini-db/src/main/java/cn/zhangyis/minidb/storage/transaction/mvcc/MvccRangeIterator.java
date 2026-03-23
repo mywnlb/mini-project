@@ -1,7 +1,10 @@
 package cn.zhangyis.minidb.storage.transaction.mvcc;
 
+import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.btree.BTreeSearchResult;
+import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
+import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.record.logical.DataTuple;
 import cn.zhangyis.minidb.storage.transaction.dml.TransactionalDml;
 import org.slf4j.Logger;
@@ -195,17 +198,19 @@ public class MvccRangeIterator implements Iterator<DataTuple> {
     /**
      * 从 B+Tree 搜索结果读取记录
      *
-     * @param result B+Tree 搜索结果
+     * <p>通过 TransactionalDml.readRecordVersionPublic() 从页面中读取 RecordVersion，
+     * 包括 TRX_ID、ROLL_PTR 和删除标记。</p>
+     *
+     * @param result B+Tree 搜索结果（包含 PageId 和 recordOffset）
      * @return RecordVersion 对象
      */
     private RecordVersion readRecordFromBTree(BTreeSearchResult result) {
-        // 这里需要实现从 B+Tree 结果读取记录的逻辑
-        // 由于 TransactionalDml 中有 readRecordVersion 方法，
-        // 我们需要通过反射或其他方式调用它
-        // 为了简化，这里返回一个占位符
-        // 实际实现应该在 TransactionalDml 中提供公开方法
-
-        // TODO: 实现从 B+Tree 结果读取记录的逻辑
-        throw new UnsupportedOperationException("readRecordFromBTree not implemented");
+        try {
+            Page page = mtr.getPage(result.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+            return dml.readRecordVersionPublic(page, result.getRecordOffset());
+        } catch (MiniDbException e) {
+            throw new RuntimeException("Failed to read record from B+Tree: pageId=" +
+                    result.getPageId() + ", offset=" + result.getRecordOffset(), e);
+        }
     }
 }

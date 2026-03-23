@@ -171,6 +171,15 @@ public class TransactionManager {
      */
     private volatile LockManager lockManager;
 
+    /**
+     * Undo 记录应用器 (可选)
+     *
+     * <p>I-RB2: UndoApplier 为可选组件。设置后，rollback 时会通过此接口
+     * 将 Undo 记录应用到数据页，实际恢复物理数据。
+     * 未设置时 rollback 仅做 Undo 日志层面的清理，不恢复数据页。</p>
+     */
+    private volatile UndoApplier undoApplier;
+
     // ==================== 构造函数 ====================
 
     /**
@@ -459,14 +468,28 @@ public class TransactionManager {
             if (undoLogManager != null) {
                 Iterable<UndoRecord> undoRecords = undoLogManager.rollbackTransaction(trx);
 
-                // 应用 Undo 记录 (简化实现：记录已通过 UndoLogManager 处理)
+                // R1: Undo 记录按逆序遍历（UndoLogManager 已保证顺序）
                 int undoCount = 0;
+                UndoApplier applier = this.undoApplier;
+
                 for (UndoRecord record : undoRecords) {
-                    // TODO: 实际应用 Undo 记录恢复数据
+                    // R3: 通过 UndoApplier 将 Undo 应用到数据页
+                    if (applier != null) {
+                        try {
+                            applier.applyUndo(trx, record);
+                        } catch (MiniDbException e) {
+                            // R3: 应用失败必须传播，部分回滚 = 数据损坏
+                            logger.error("Failed to apply undo record during rollback: trx={}, record={}",
+                                    trx.getId(), record.getRollbackDescription(), e);
+                            throw new RuntimeException(
+                                    "Undo apply failed during rollback of trx " + trx.getId(), e);
+                        }
+                    }
                     undoCount++;
-                    logger.trace("Applied undo record: {}", record);
+                    logger.trace("Applied undo record: {}", record.getRollbackDescription());
                 }
-                logger.debug("Applied {} undo records for rollback", undoCount);
+                logger.debug("Applied {} undo records for rollback (applier={})",
+                        undoCount, applier != null ? "active" : "none");
             }
 
             // 状态转换: ROLLBACK_PENDING -> ROLLED_BACK
@@ -740,6 +763,30 @@ public class TransactionManager {
      */
     public UndoLogManager getUndoLogManager() {
         return undoLogManager;
+    }
+
+    // ==================== Undo Applier 集成 ====================
+
+    /**
+     * 设置 Undo 记录应用器
+     *
+     * <p>I-RB2: UndoApplier 为可选组件，设置后 rollback 会通过此接口
+     * 将 Undo 记录实际应用到数据页。应在 TransactionManager 初始化后、
+     * 处理事务之前调用。</p>
+     *
+     * @param undoApplier Undo 应用器实例
+     */
+    public void setUndoApplier(UndoApplier undoApplier) {
+        this.undoApplier = undoApplier;
+    }
+
+    /**
+     * 获取 Undo 记录应用器
+     *
+     * @return UndoApplier，未设置时返回 null
+     */
+    public UndoApplier getUndoApplier() {
+        return undoApplier;
     }
 
     // ==================== 关闭方法 ====================

@@ -90,6 +90,11 @@ public class SqlLexer {
         keywords.put("ROW_NUMBER", TokenType.ROW_NUMBER);
         keywords.put("RANK", TokenType.RANK);
         keywords.put("DENSE_RANK", TokenType.DENSE_RANK);
+        keywords.put("LAG", TokenType.LAG);
+        keywords.put("LEAD", TokenType.LEAD);
+        keywords.put("NTILE", TokenType.NTILE);
+        keywords.put("PERCENT_RANK", TokenType.PERCENT_RANK);
+        keywords.put("CUME_DIST", TokenType.CUME_DIST);
     }
 
     public Token nextToken() {
@@ -133,6 +138,7 @@ public class SqlLexer {
             case ',': pos++; return new Token(TokenType.COMMA, ",", start, pos);
             case ';': pos++; return new Token(TokenType.SEMICOLON, ";", start, pos);
             case '.': pos++; return new Token(TokenType.DOT, ".", start, pos);
+            case '?': pos++; return new Token(TokenType.PARAMETER, "?", start, pos);
         }
 
         // 数字

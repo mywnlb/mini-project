@@ -2,6 +2,7 @@ package cn.zhangyis.minidb.sql.parser;
 
 import cn.zhangyis.minidb.sql.lexer.*;
 import cn.zhangyis.minidb.sql.ast.*;
+import cn.zhangyis.minidb.sql.functions.FunctionRegistry;
 import cn.zhangyis.minidb.sql.types.SqlType;
 import java.util.List;
 
@@ -10,10 +11,15 @@ import static cn.zhangyis.minidb.sql.lexer.TokenType.*;
 public class SqlParser {
     private final TokenStream tokens;
     private final SqlNodeFactory factory;
+    private int paramIndex = 0;
 
     public SqlParser(TokenStream tokens) {
         this.tokens = tokens;
         this.factory = SqlNodeFactory.DEFAULT;
+    }
+
+    public int paramCount() {
+        return paramIndex;
     }
 
     public SqlNode parseStatement() {
@@ -545,8 +551,12 @@ public class SqlParser {
 
     private SqlNode parseExplain() {
         tokens.expect(TokenType.EXPLAIN);
+        boolean analyze = tokens.current().type() == TokenType.ANALYZE;
+        if (analyze) {
+            tokens.next(); // consume ANALYZE
+        }
         SqlNode query = parseStatement();
-        return new SqlExplain(query);
+        return new SqlExplain(query, analyze);
     }
 
     // ==================== 事务控制 ====================
@@ -602,13 +612,26 @@ public class SqlParser {
     }
 
     private boolean isWindowFunction(TokenType type) {
-        return type == TokenType.ROW_NUMBER || type == TokenType.RANK || type == TokenType.DENSE_RANK;
+        return type == TokenType.ROW_NUMBER || type == TokenType.RANK || type == TokenType.DENSE_RANK
+            || type == TokenType.LAG || type == TokenType.LEAD
+            || type == TokenType.NTILE || type == TokenType.PERCENT_RANK || type == TokenType.CUME_DIST;
     }
 
     private SqlNode parseWindowFunction() {
         String funcName = tokens.current().value();
         tokens.next();
         tokens.expect(TokenType.LPAREN);
+
+        // LAG/LEAD: (col [, offset [, default]])
+        // NTILE: (n)
+        // ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST: ()
+        SqlNodeList args = null;
+        if (tokens.current().type() != TokenType.RPAREN) {
+            args = factory.nodeList();
+            do {
+                args.add(parseExpression());
+            } while (tokens.match(TokenType.COMMA));
+        }
         tokens.expect(TokenType.RPAREN);
         tokens.expect(TokenType.OVER);
         tokens.expect(TokenType.LPAREN);
@@ -631,7 +654,15 @@ public class SqlParser {
         }
 
         tokens.expect(TokenType.RPAREN);
-        return new SqlWindowFunction(funcName, partitionBy, orderBy);
+
+        // 将参数编码到 SqlWindowFunction
+        SqlNode arg = args != null && args.size() > 0 ? args.get(0) : null;
+        SqlWindowFunction wf = new SqlWindowFunction(funcName, arg, partitionBy, orderBy);
+        // 存储额外参数（offset, default for LAG/LEAD; n for NTILE）
+        if (args != null && args.size() > 1) {
+            wf = new SqlWindowFunction(funcName, arg, partitionBy, orderBy, args);
+        }
+        return wf;
     }
 
     private SqlNode parseAggWindowFunction(SqlAggCall aggCall) {
@@ -847,6 +878,10 @@ public class SqlParser {
             tokens.expect(TokenType.RPAREN);
             return new SqlExists(sub, false);
         }
+        if (token.type() == TokenType.PARAMETER) {
+            tokens.next();
+            return new SqlParameter(paramIndex++);
+        }
         if (token.type() == TokenType.NUMBER) {
             tokens.next();
             return factory.number(token.value());
@@ -881,11 +916,11 @@ public class SqlParser {
             return aggCall;
         }
 
-        // 支持标量函数 UPPER/LOWER/COALESCE(...)
+        // 支持标量函数（动态查询 FunctionRegistry）
         Token currentToken = tokens.current();
         if (currentToken.type() == TokenType.IDENTIFIER) {
             String funcName = currentToken.value().toUpperCase();
-            if (funcName.equals("UPPER") || funcName.equals("LOWER") || funcName.equals("COALESCE")) {
+            if (FunctionRegistry.contains(funcName)) {
                 tokens.next(); // consume function name
                 tokens.expect(TokenType.LPAREN);
                 SqlNodeList args = factory.nodeList();

@@ -1,8 +1,6 @@
 package cn.zhangyis.minidb.sql.functions;
 
-import cn.zhangyis.minidb.sql.functions.impl.LowerFunction;
-import cn.zhangyis.minidb.sql.functions.impl.CoalesceFunction;
-import cn.zhangyis.minidb.sql.functions.impl.UpperFunction;
+import cn.zhangyis.minidb.sql.functions.impl.*;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -16,7 +14,22 @@ public class FunctionRegistry {
         register(new UpperFunction());
         register(new LowerFunction());
         register(new CoalesceFunction());
-        // CAST 后续实现
+        // 字符串函数
+        register(new ConcatFunction());
+        register(new SubstringFunction());
+        register(new TrimFunction());
+        register(new LengthFunction());
+        register(new ReplaceFunction());
+        // 数学函数
+        register(new AbsFunction());
+        register(new CeilFunction());
+        register(new FloorFunction());
+        register(new RoundFunction());
+        register(new ModFunction());
+        // 日期函数
+        register(new NowFunction());
+        register(new DateFormatFunction());
+        register(new DateDiffFunction());
     }
 
     public static void register(ScalarFunction function) {

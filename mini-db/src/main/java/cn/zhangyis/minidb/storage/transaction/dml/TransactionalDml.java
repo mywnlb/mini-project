@@ -2,16 +2,20 @@ package cn.zhangyis.minidb.storage.transaction.dml;
 
 import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.btree.BTree;
+import cn.zhangyis.minidb.storage.btree.BTreeCursor;
 import cn.zhangyis.minidb.storage.btree.BTreeRangeScanner;
 import cn.zhangyis.minidb.storage.btree.BTreeSearchResult;
 import cn.zhangyis.minidb.storage.btree.MvccBTreeRangeScanner;
 import cn.zhangyis.minidb.storage.btree.RangeBound;
+import cn.zhangyis.minidb.storage.buffer.BufferFrame;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
 import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.record.RecordHeader;
 import cn.zhangyis.minidb.storage.record.format.CompactRecordFormat;
+import cn.zhangyis.minidb.storage.record.format.FieldOffsets;
+import cn.zhangyis.minidb.storage.record.logical.DataField;
 import cn.zhangyis.minidb.storage.record.logical.DataTuple;
 import cn.zhangyis.minidb.storage.record.physical.SystemLayout;
 import cn.zhangyis.minidb.storage.record.schema.RecordSchema;
@@ -24,14 +28,19 @@ import cn.zhangyis.minidb.storage.transaction.pointer.RollbackPointer;
 import cn.zhangyis.minidb.storage.transaction.core.Transaction.IsolationLevel;
 import cn.zhangyis.minidb.storage.transaction.lock.LockManager;
 import cn.zhangyis.minidb.storage.transaction.lock.LockMode;
+import cn.zhangyis.minidb.storage.transaction.undo.DeleteUndoRecord;
+import cn.zhangyis.minidb.storage.transaction.undo.InsertUndoRecord;
 import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
+import cn.zhangyis.minidb.storage.transaction.undo.UndoRecord;
 import cn.zhangyis.minidb.storage.transaction.undo.UpdateUndoRecord;
+import cn.zhangyis.minidb.storage.transaction.core.UndoApplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 
 /**
@@ -489,15 +498,10 @@ public class TransactionalDml {
         RangeBound lower = lowerBound != null ? RangeBound.inclusive(lowerBound) : RangeBound.unbounded();
         RangeBound upper = upperBound != null ? RangeBound.inclusive(upperBound) : RangeBound.unbounded();
 
-        // 3. 创建 MVCC 感知的 B+Tree 范围扫描器
-        MvccBTreeRangeScanner mvccScanner = MvccBTreeRangeScanner.range(
-            btree, bufferPool, null, mtr, lower, upper,
-            readView, versionChainReader,
-            new RecordVersionReaderImpl()
-        );
-
-        // 4. 包装为 DataTuple 迭代器
-        return new DataTupleIteratorAdapter(mvccScanner);
+        // 3. 直接使用 BTreeCursor + MVCC 可见性检查
+        // 注意：不使用 MvccBTreeRangeScanner + ScanEntry，因为 ScanEntry 底层使用
+        // SimpleRecordBuilder 格式读取 key/value，与 CompactRecordFormat 物理布局不兼容
+        return new MvccDataTupleIterator(mtr, readView, lower, upper);
     }
 
     // ==================== 锁辅助方法 ====================
@@ -987,30 +991,273 @@ public class TransactionalDml {
     private record EncodedRecord(byte[] bytes, int recordHeaderOffset) {
     }
 
-    /**
-     * DataTuple 迭代器适配器
-     *
-     * <p>将 BTreeRangeScanner.ScanEntry 迭代器转换为 DataTuple 迭代器。</p>
-     */
-    private static class DataTupleIteratorAdapter implements Iterator<DataTuple> {
-        private final Iterator<BTreeRangeScanner.ScanEntry> scanIterator;
+    // ==================== Undo 回滚支持 ====================
 
-        DataTupleIteratorAdapter(MvccBTreeRangeScanner mvccScanner) {
-            this.scanIterator = mvccScanner.iterator();
+    /**
+     * 创建 UndoApplier 实例
+     *
+     * <p>返回的 UndoApplier 可注册到 TransactionManager，使 rollback 能实际恢复数据页。
+     * 每次 applyUndo 调用内部创建独立 MTR，保证原子性 (I-RB1)。</p>
+     *
+     * <h2>回滚语义</h2>
+     * <ul>
+     *   <li><b>INSERT Undo</b>: 从 B+Tree 物理删除记录</li>
+     *   <li><b>UPDATE Undo</b>: 删除当前记录，用旧数据重新插入</li>
+     *   <li><b>DELETE Undo</b>: 清除 delete_flag，恢复 TRX_ID/ROLL_PTR</li>
+     * </ul>
+     *
+     * @return UndoApplier 实例
+     */
+    public UndoApplier createUndoApplier() {
+        return (trx, undoRecord) -> {
+            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+                switch (undoRecord.getType()) {
+                    case INSERT -> applyInsertUndo(mtr, (InsertUndoRecord) undoRecord);
+                    case UPDATE -> applyUpdateUndo(mtr, trx, (UpdateUndoRecord) undoRecord);
+                    case DELETE_MARK -> applyDeleteUndo(mtr, trx, (DeleteUndoRecord) undoRecord);
+                    default -> throw new MiniDbException(
+                            "Unknown undo record type: " + undoRecord.getType());
+                }
+                mtr.commit();
+            }
+        };
+    }
+
+    /**
+     * 回滚 INSERT: 从 B+Tree 物理删除记录
+     */
+    private void applyInsertUndo(MiniTransaction mtr,
+                                  InsertUndoRecord undoRecord) throws MiniDbException {
+        byte[] primaryKey = undoRecord.getPrimaryKeyData();
+        BTreeSearchResult result = btree.search(primaryKey, mtr);
+        if (result.isExactMatch()) {
+            int recordSize = getOldRecordSize(result, mtr);
+            btree.delete(primaryKey, recordSize, mtr);
+            logger.trace("Rollback INSERT: deleted pk={}", bytesToHex(primaryKey));
+        } else {
+            logger.warn("Rollback INSERT: record not found, pk={}", bytesToHex(primaryKey));
+        }
+    }
+
+    /**
+     * 回滚 UPDATE: 用旧列值恢复记录
+     *
+     * <p>策略：删除当前版本，使用 prevUndoPtr 中的 TRX_ID/ROLL_PTR 和旧列值重建记录。
+     * 简化实现：读取当前记录 → 替换被修改的列 → 删除旧记录 → 插入恢复后的记录。</p>
+     */
+    private void applyUpdateUndo(MiniTransaction mtr, Transaction trx,
+                                  UpdateUndoRecord undoRecord) throws MiniDbException {
+        byte[] primaryKey = undoRecord.getPrimaryKeyData();
+        BTreeSearchResult result = btree.search(primaryKey, mtr);
+        if (!result.isExactMatch()) {
+            logger.warn("Rollback UPDATE: record not found, pk={}", bytesToHex(primaryKey));
+            return;
+        }
+
+        // 读取当前记录
+        Page page = mtr.getPage(result.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        ByteBuffer buf = page.getBuffer();
+        int recStart = result.getRecordOffset();
+
+        FieldOffsets offsets = recordFormat.parseOffsets(buf, recStart, schema, layout);
+        DataTuple currentTuple = recordFormat.decode(buf, recStart, offsets, schema, layout);
+
+        // 用旧列值替换修改过的列
+        DataTuple restoredTuple = DataTuple.create(currentTuple.getFieldCount());
+        for (int i = 0; i < currentTuple.getFieldCount(); i++) {
+            restoredTuple.setField(i, currentTuple.getField(i));
+        }
+        for (UpdateUndoRecord.OldColumnValue oldCol : undoRecord.getOldColumns()) {
+            if (oldCol.value == null || oldCol.value.length == 0) {
+                restoredTuple.setField(oldCol.columnId,
+                        DataField.nullField(schema.getColumnType(oldCol.columnId)));
+            } else {
+                restoredTuple.setField(oldCol.columnId,
+                        DataField.fromBytes(schema.getColumnType(oldCol.columnId), oldCol.value));
+            }
+        }
+
+        // 从 Undo 记录的 prevUndoPtr 恢复旧的 ROLL_PTR
+        RollbackPointer prevRollPtr = undoRecord.getPrevUndoPtr();
+        long prevTrxId = undoRecord.getTrxId().getValue();
+
+        // 删除当前版本
+        int recordSize = getOldRecordSize(result, mtr);
+        btree.delete(primaryKey, recordSize, mtr);
+
+        // 插入恢复后的记录（使用 Undo 中记录的旧 TRX_ID 和 ROLL_PTR）
+        EncodedRecord restoredData = encodeRecord(
+                restoredTuple, prevTrxId, prevRollPtr.encode(), currentSchemaVersion(), 0);
+        btree.insert(restoredData.bytes(), restoredData.recordHeaderOffset(), primaryKey, mtr);
+
+        logger.trace("Rollback UPDATE: restored pk={}", bytesToHex(primaryKey));
+    }
+
+    /**
+     * 回滚 DELETE: 清除 delete_flag，恢复行可见性
+     *
+     * <p>DELETE 只设置了 delete_flag，回滚时清除即可。
+     * 同时恢复旧的 TRX_ID/ROLL_PTR。</p>
+     */
+    private void applyDeleteUndo(MiniTransaction mtr, Transaction trx,
+                                  DeleteUndoRecord undoRecord) throws MiniDbException {
+        byte[] primaryKey = undoRecord.getPrimaryKeyData();
+        BTreeSearchResult result = btree.search(primaryKey, mtr);
+        if (!result.isExactMatch()) {
+            logger.warn("Rollback DELETE: record not found, pk={}", bytesToHex(primaryKey));
+            return;
+        }
+
+        Page page = mtr.getPage(result.getPageId(), BufferPool.FetchMode.READ_EXISTING);
+        ByteBuffer buf = page.getBuffer();
+        int recStart = result.getRecordOffset();
+
+        // 1. 清除 delete_flag
+        RecordHeader header = RecordHeader.readFrom(buf, recStart);
+        header.setDeleted(false);
+        header.writeTo(buf, recStart);
+
+        // 2. 恢复旧 TRX_ID（Undo 记录中的 trxId 是执行 DELETE 的事务，
+        //    prevUndoPtr 指向上一个版本）
+        int dataStart = recStart + RecordHeader.SIZE;
+        RollbackPointer prevRollPtr = undoRecord.getPrevUndoPtr();
+        writeTrxId(buf, dataStart + SystemLayout.OFF_TRX_ID, undoRecord.getTrxId().getValue());
+        writeRollPtr(buf, dataStart + SystemLayout.OFF_ROLL_PTR, prevRollPtr.encode());
+
+        mtr.markDirty(page);
+        logger.trace("Rollback DELETE: cleared delete flag, pk={}", bytesToHex(primaryKey));
+    }
+
+    /**
+     * MVCC 感知的 DataTuple 迭代器
+     *
+     * <p>直接使用 BTreeCursor 遍历 B+Tree，从页面 ByteBuffer 读取记录，
+     * 使用 CompactRecordFormat 解码为 DataTuple。</p>
+     *
+     * <p>设计约束：
+     * <ul>
+     *   <li><b>DML2</b>：TRX_ID/ROLL_PTR 位于 dataStart 的固定偏移</li>
+     *   <li><b>M1</b>：ReadView 不可变，遍历期间可见性判断一致</li>
+     *   <li><b>I3</b>：TRX_ID(+0), ROLL_PTR(+6) 偏移恒定</li>
+     * </ul>
+     * </p>
+     *
+     * <p>注意：不使用 MvccBTreeRangeScanner + ScanEntry，因为 ScanEntry 底层使用
+     * SimpleRecordBuilder 格式（KEY_SIZE=4, 固定偏移），与 CompactRecordFormat
+     * 的物理布局不兼容，会导致偏移错位和数据损坏。</p>
+     */
+    private class MvccDataTupleIterator implements Iterator<DataTuple> {
+        private final MiniTransaction mtr;
+        private final ReadView readView;
+        private final BTreeCursor cursor;
+        private DataTuple nextTuple;
+        private boolean hasNextComputed;
+
+        MvccDataTupleIterator(MiniTransaction mtr, ReadView readView,
+                              RangeBound lowerBound, RangeBound upperBound) throws MiniDbException {
+            this.mtr = mtr;
+            this.readView = readView;
+            this.cursor = btree.openCursor(mtr);
+            cursor.setRange(lowerBound, upperBound);
+
+            // 定位到范围起始位置
+            if (lowerBound.isUnbounded()) {
+                cursor.seekFirst();
+            } else if (lowerBound.isInclusive()) {
+                cursor.seek(lowerBound.getKey());
+            } else {
+                cursor.seekGreater(lowerBound.getKey());
+            }
+
+            this.nextTuple = null;
+            this.hasNextComputed = false;
         }
 
         @Override
         public boolean hasNext() {
-            return scanIterator.hasNext();
+            if (hasNextComputed) {
+                return nextTuple != null;
+            }
+            computeNext();
+            return nextTuple != null;
         }
 
         @Override
         public DataTuple next() {
-            BTreeRangeScanner.ScanEntry entry = scanIterator.next();
-            // 这里需要将 ScanEntry 转换为 DataTuple
-            // 简化实现：返回一个占位符
-            // 实际实现需要根据具体的记录格式调整
-            return null; // TODO: 实现转换逻辑
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            DataTuple result = nextTuple;
+            nextTuple = null;
+            hasNextComputed = false;
+            return result;
+        }
+
+        /**
+         * 查找下一个可见的、未删除的记录并解码为 DataTuple
+         */
+        private void computeNext() {
+            hasNextComputed = true;
+            nextTuple = null;
+
+            while (cursor.isValid()) {
+                try {
+                    PageId pageId = cursor.getPosition().getPageId();
+                    int recordOffset = cursor.getPosition().getRecordOffset();
+
+                    // 从页面读取记录版本信息和 DataTuple
+                    BufferFrame frame = bufferPool.getPage(pageId, BufferPool.FetchMode.READ_EXISTING);
+                    frame.readLock();
+                    try {
+                        ByteBuffer buf = frame.buffer();
+
+                        // 读取 RecordHeader
+                        RecordHeader header = RecordHeader.readFrom(buf, recordOffset);
+                        int dataStart = recordOffset + RecordHeader.SIZE;
+
+                        // 读取 TRX_ID (I3: 偏移恒定 +0)
+                        long trxId = CompactRecordFormat.readTrxId(buf, dataStart + SystemLayout.OFF_TRX_ID);
+
+                        // 检查 MVCC 可见性
+                        if (readView == null || VisibilityChecker.isVisible(trxId, readView)) {
+                            // 当前版本可见
+                            if (!header.isDeleted()) {
+                                // 使用 CompactRecordFormat 解码为 DataTuple
+                                FieldOffsets offsets = recordFormat.parseOffsets(
+                                        buf, recordOffset, schema, layout);
+                                nextTuple = recordFormat.decode(
+                                        buf, recordOffset, offsets, schema, layout);
+
+                                cursor.next();
+                                return;
+                            }
+                        } else if (versionChainReader != null) {
+                            // 当前版本不可见，遍历版本链查找可见版本
+                            long rollPtrValue = CompactRecordFormat.readRollPtr(
+                                    buf, dataStart + SystemLayout.OFF_ROLL_PTR);
+                            RollbackPointer rollPtr = RollbackPointer.decode(rollPtrValue);
+
+                            Optional<RecordVersion> visibleVersion =
+                                    versionChainReader.findVisibleVersion(rollPtr, readView);
+
+                            if (visibleVersion.isPresent() && !visibleVersion.get().isDeleteMarked()) {
+                                nextTuple = visibleVersion.get().toDataTuple();
+
+                                cursor.next();
+                                return;
+                            }
+                        }
+                    } finally {
+                        frame.readUnlock();
+                    }
+
+                    // 当前记录不可见或已删除，移动到下一条
+                    cursor.next();
+
+                } catch (MiniDbException e) {
+                    throw new RuntimeException("MVCC scan failed", e);
+                }
+            }
         }
     }
 }

@@ -31,5 +31,7 @@ public enum SqlKind {
     // 统计
     ANALYZE_TABLE,
     // 查询计划
-    EXPLAIN_QUERY
+    EXPLAIN_QUERY,
+    // 参数占位符
+    PARAMETER
 }

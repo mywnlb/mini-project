@@ -33,7 +33,11 @@
       "Bash(chmod +x gradlew)",
       "Bash(find /d/code/java/mini-project/docs -name *14* -o -name *natural* -o -name *using*)",
       "Bash(gradle :mini-db:compileJava)",
-      "Bash(xargs -I {} basename {} .java)"
+      "Bash(xargs -I {} basename {} .java)",
+      "Bash(find /c/coding/java/self/miniproject/miniproject/mini-db/src -name *Executor* -o -name *Planner* -o -name *Optimizer*)",
+      "Bash(find /c/coding/java/self/miniproject/miniproject/md -name *.md -type f)",
+      "Bash(find C:codingjavaselfminiprojectminiprojectmini-dbsrctestjavacnzhangyisminidbsql -type f -name *.java)",
+      "Bash(find C:/coding/java/self/miniproject/miniproject -name *Type*.java -path */ast/* -o -name *Type*.java -path */rel/*)"
     ]
   },
   "enabledPlugins": {

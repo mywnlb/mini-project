@@ -22,6 +22,11 @@ public class RuleOptimizer {
     }
 
     public RuleOptimizer(boolean enableIndexedLookup, CatalogSpi catalog, CostModel costModel) {
+        this(enableIndexedLookup, catalog, costModel, false);
+    }
+
+    public RuleOptimizer(boolean enableIndexedLookup, CatalogSpi catalog, CostModel costModel,
+                         boolean enableAggregateSplit) {
         List<RelOptRule> ruleList = new ArrayList<>();
         // SubqueryUnnestingRule 必须排在 FilterJoinPushdownRule 之前
         if (catalog != null) {
@@ -38,6 +43,10 @@ public class RuleOptimizer {
         ruleList.add(JoinCommuteRule.INSTANCE);
         ruleList.add(ProjectionPruningRule.INSTANCE);
         ruleList.add(LimitPushdownRule.INSTANCE);
+        ruleList.add(SortPushdownRule.INSTANCE);
+        if (enableAggregateSplit) {
+            ruleList.add(AggregateSplitRule.INSTANCE);
+        }
         this.rules = List.copyOf(ruleList);
     }
 
@@ -104,6 +113,14 @@ public class RuleOptimizer {
             RelNode optR = optimize(anti.right());
             return (optL != anti.left() || optR != anti.right())
                 ? anti.copy(List.of(optL, optR)) : node;
+        }
+        if (node instanceof RelPartialAggregate pa) {
+            RelNode opt = optimize(pa.input());
+            return opt != pa.input() ? pa.copy(List.of(opt)) : node;
+        }
+        if (node instanceof RelFinalAggregate fa) {
+            RelNode opt = optimize(fa.input());
+            return opt != fa.input() ? fa.copy(List.of(opt)) : node;
         }
         return node;
     }

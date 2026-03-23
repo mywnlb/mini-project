@@ -1,5 +1,6 @@
 description = "mini db"
 
 dependencies {
+    implementation 'io.netty:netty-all:4.1.100.Final'
     testImplementation 'org.mockito:mockito-core:5.12.0'
 }

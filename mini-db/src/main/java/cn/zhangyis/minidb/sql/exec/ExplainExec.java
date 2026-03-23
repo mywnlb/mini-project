@@ -75,6 +75,8 @@ public class ExplainExec implements ExecNode {
         if (node instanceof RelJoin j) return j.joinType().name() + " Join";
         if (node instanceof RelSemiJoin) return "SemiJoin";
         if (node instanceof RelAntiJoin) return "AntiJoin";
+        if (node instanceof RelPartialAggregate) return "PartialAggregate";
+        if (node instanceof RelFinalAggregate) return "FinalAggregate";
         if (node instanceof RelAggregate) return "Aggregate";
         if (node instanceof RelSort) return "Sort";
         if (node instanceof RelDistinct) return "Distinct";
@@ -116,6 +118,14 @@ public class ExplainExec implements ExecNode {
         if (node instanceof RelAntiJoin a) {
             return "condition=" + (a.condition() != null ? a.condition() : "true");
         }
+        if (node instanceof RelPartialAggregate pa) {
+            int groupCount = pa.groupKeys() != null ? pa.groupKeys().nodes().size() : 0;
+            return "groups=" + groupCount + ", partialAggs=" + pa.partialCalls().size();
+        }
+        if (node instanceof RelFinalAggregate fa) {
+            int groupCount = fa.groupKeys() != null ? fa.groupKeys().nodes().size() : 0;
+            return "groups=" + groupCount + ", finalAggs=" + fa.originalCalls().size();
+        }
         if (node instanceof RelAggregate a) {
             int groupCount = a.groupKeys() != null ? a.groupKeys().nodes().size() : 0;
             return "groups=" + groupCount + ", aggs=" + a.aggCalls().size();
@@ -151,6 +161,8 @@ public class ExplainExec implements ExecNode {
         else if (node instanceof RelProject p) list.add(p.input());
         else if (node instanceof RelSort s) list.add(s.input());
         else if (node instanceof RelDistinct d) list.add(d.input());
+        else if (node instanceof RelPartialAggregate pa) list.add(pa.input());
+        else if (node instanceof RelFinalAggregate fa) list.add(fa.input());
         else if (node instanceof RelAggregate a) list.add(a.input());
         else if (node instanceof RelJoin j) { list.add(j.left()); list.add(j.right()); }
         else if (node instanceof RelSemiJoin s) { list.add(s.left()); list.add(s.right()); }

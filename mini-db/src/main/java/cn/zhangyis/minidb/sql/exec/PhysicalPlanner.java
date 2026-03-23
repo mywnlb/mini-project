@@ -153,6 +153,14 @@ public class PhysicalPlanner {
         if (relNode instanceof RelJoin join) {
             return planJoin(join, overrideAlgo);
         }
+        if (relNode instanceof RelPartialAggregate pa) {
+            ExecNode input = planInternal(pa.input(), overrideAlgo);
+            return new PartialAggregateExec(input, pa.groupKeys(), pa.partialCalls());
+        }
+        if (relNode instanceof RelFinalAggregate fa) {
+            ExecNode input = planInternal(fa.input(), overrideAlgo);
+            return new FinalAggregateExec(input, fa.groupKeys(), fa.originalCalls(), fa.partialCalls());
+        }
         if (relNode instanceof RelAggregate agg) {
             ExecNode input = planInternal(agg.input(), overrideAlgo);
             if (executionContext != null && executionContext.parallelism() > 1) {
@@ -170,7 +178,7 @@ public class PhysicalPlanner {
             ExecNode input = planInternal(sort.input(), overrideAlgo);
             if (executionContext != null && executionContext.parallelism() > 1
                 && sort.limit() == null && sort.offset() == null) {
-                return new ParallelSortExec(input, executionContext.queryThreadPool());
+                return new ParallelSortExec(input, sort.orderBy(), executionContext.queryThreadPool());
             }
             Integer limit = null;
             Integer offset = null;
@@ -364,7 +372,7 @@ public class PhysicalPlanner {
             SqlNode expr = node instanceof SqlAlias alias ? alias.expression() : node;
             if (expr instanceof SqlWindowFunction wf) {
                 String label = node instanceof SqlAlias alias ? alias.alias() : wf.toString();
-                specs.add(new WindowExec.WindowSpec(wf.funcName(), label, wf.partitionBy(), wf.orderBy()));
+                specs.add(new WindowExec.WindowSpec(wf.funcName(), label, wf.partitionBy(), wf.orderBy(), wf.arg(), wf.extraArgs()));
             }
         }
         return specs;
