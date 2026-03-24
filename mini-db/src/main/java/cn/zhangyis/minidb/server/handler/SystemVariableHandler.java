@@ -43,13 +43,33 @@ public class SystemVariableHandler {
     private static final Pattern SHOW_WARNINGS = Pattern.compile(
             "(?i)^\\s*SHOW\\s+WARNINGS\\s*$");
 
+    // 匹配 SHOW VARIABLES LIKE 'xxx'
+    private static final Pattern SHOW_VARIABLES = Pattern.compile(
+            "(?i)^\\s*SHOW\\s+VARIABLES\\s+LIKE\\s+'([^']*)'\\s*$");
+
+    // 匹配通用 SET variable = value（兜底，处理 Navicat 的各种 SET 语句）
+    private static final Pattern SET_GENERAL = Pattern.compile(
+            "(?i)^\\s*SET\\s+(?:(?:GLOBAL|SESSION|LOCAL)\\s+)?\\w+\\s*=.*$");
+
+    // 匹配 SELECT ... FROM information_schema（Navicat 探测查询）
+    private static final Pattern INFORMATION_SCHEMA = Pattern.compile(
+            "(?i)^\\s*SELECT\\s+.+\\s+FROM\\s+information_schema\\..*$");
+
     // 匹配 SELECT DATABASE()
     private static final Pattern SELECT_DATABASE = Pattern.compile(
             "(?i)^\\s*SELECT\\s+DATABASE\\s*\\(\\s*\\)\\s*$");
 
-    // 匹配 SHOW TABLES
+    // 匹配 SHOW TABLES / SHOW FULL TABLES [WHERE ...]
     private static final Pattern SHOW_TABLES = Pattern.compile(
-            "(?i)^\\s*SHOW\\s+TABLES\\s*$");
+            "(?i)^\\s*SHOW\\s+(?:FULL\\s+)?TABLES(?:\\s+WHERE\\s+.+)?\\s*$");
+
+    // 匹配 SHOW TABLE STATUS [FROM db] [LIKE 'pattern'] [WHERE ...]
+    private static final Pattern SHOW_TABLE_STATUS = Pattern.compile(
+            "(?i)^\\s*SHOW\\s+TABLE\\s+STATUS(?:\\s+.+)?\\s*$");
+
+    // 匹配 SHOW CHARACTER SET / SHOW COLLATION / SHOW ENGINES 等 Navicat 探测命令
+    private static final Pattern SHOW_MISC = Pattern.compile(
+            "(?i)^\\s*SHOW\\s+(?:CHARACTER\\s+SET|COLLATION|ENGINES|GRANTS|PROCESSLIST|STATUS|DATABASES)(?:\\s+.+)?\\s*$");
 
     // 匹配 BEGIN / COMMIT / ROLLBACK
     private static final Pattern TXN_CONTROL = Pattern.compile(
@@ -98,12 +118,60 @@ public class SystemVariableHandler {
         if (SHOW_TABLES.matcher(sql).matches()) {
             String db = session.currentDatabase();
             String columnName = "Tables_in_" + (db != null ? db : "");
+            boolean full = sql.toUpperCase().contains("FULL");
             List<String> tables = session.catalog().listTables(db != null ? db : "");
             List<Row> rows = new java.util.ArrayList<>();
             for (String table : tables) {
-                rows.add(new Row(Map.of(columnName, (Object) table)));
+                if (full) {
+                    rows.add(new Row(Map.of(columnName, (Object) table, "Table_type", (Object) "BASE TABLE")));
+                } else {
+                    rows.add(new Row(Map.of(columnName, (Object) table)));
+                }
             }
             return rows;
+        }
+
+        // SHOW TABLE STATUS → 返回表元数据行
+        if (SHOW_TABLE_STATUS.matcher(sql).matches()) {
+            String db = session.currentDatabase();
+            List<String> tables = session.catalog().listTables(db != null ? db : "");
+            List<Row> rows = new java.util.ArrayList<>();
+            for (String table : tables) {
+                rows.add(buildTableStatusRow(table));
+            }
+            return rows;
+        }
+
+        // SHOW CHARACTER SET / SHOW COLLATION 等 → 返回空
+        if (SHOW_MISC.matcher(sql).matches()) {
+            return List.of();
+        }
+
+        // BEGIN / COMMIT / ROLLBACK → DML 类，返回空
+        Matcher txnMatcher = TXN_CONTROL.matcher(sql);
+        if (txnMatcher.matches()) {
+            String cmd = txnMatcher.group(1).toUpperCase();
+            var txnMgr = session.executionContext().txnManager();
+            if (txnMgr != null) {
+                switch (cmd) {
+                    case "BEGIN" -> {
+                        if (!session.executionContext().inTransaction()) {
+                            session.executionContext().begin();
+                        }
+                    }
+                    case "COMMIT" -> {
+                        if (session.executionContext().inTransaction()) {
+                            session.executionContext().commit();
+                        }
+                    }
+                    case "ROLLBACK" -> {
+                        if (session.executionContext().inTransaction()) {
+                            session.executionContext().rollback();
+                        }
+                    }
+                }
+            }
+            return List.of();
         }
 
         return null;
@@ -120,7 +188,13 @@ public class SystemVariableHandler {
                 || SET_AUTOCOMMIT.matcher(sql).matches()
                 || SHOW_WARNINGS.matcher(sql).matches()
                 || SELECT_DATABASE.matcher(sql).matches()
-                || SHOW_TABLES.matcher(sql).matches();
+                || SHOW_TABLES.matcher(sql).matches()
+                || SHOW_TABLE_STATUS.matcher(sql).matches()
+                || SHOW_VARIABLES.matcher(sql).matches()
+                || SHOW_MISC.matcher(sql).matches()
+                || SET_GENERAL.matcher(sql).matches()
+                || INFORMATION_SCHEMA.matcher(sql).matches()
+                || TXN_CONTROL.matcher(sql).matches();
     }
 
     /**
@@ -182,20 +256,72 @@ public class SystemVariableHandler {
             return true;
         }
 
-        // SHOW TABLES
+        // SHOW TABLES / SHOW FULL TABLES [WHERE ...]
         if (SHOW_TABLES.matcher(sql).matches()) {
-            handleShowTables(session, writer);
+            boolean full = sql.toUpperCase().contains("FULL");
+            handleShowTables(session, writer, full);
             return true;
         }
 
-        // BEGIN / COMMIT / ROLLBACK（txnManager 为 null 时直接返回 OK）
+        // BEGIN / COMMIT / ROLLBACK
+        // MySQL 行为：COMMIT/ROLLBACK 在无活跃事务时是 no-op，不报错
         Matcher txnMatcher = TXN_CONTROL.matcher(sql);
         if (txnMatcher.matches()) {
             String cmd = txnMatcher.group(1).toUpperCase();
-            if (session.executionContext().txnManager() != null) {
-                return false; // 有 txnManager，交给 SQL 引擎正常处理
+            var txnMgr = session.executionContext().txnManager();
+            if (txnMgr != null) {
+                switch (cmd) {
+                    case "BEGIN" -> {
+                        if (!session.executionContext().inTransaction()) {
+                            session.executionContext().begin();
+                        }
+                    }
+                    case "COMMIT" -> {
+                        if (session.executionContext().inTransaction()) {
+                            session.executionContext().commit();
+                        }
+                    }
+                    case "ROLLBACK" -> {
+                        if (session.executionContext().inTransaction()) {
+                            session.executionContext().rollback();
+                        }
+                    }
+                }
             }
-            // 无 txnManager（测试环境），直接返回 OK
+            // 无论 txnManager 是否存在，都返回 OK
+            writeOk(writer, session);
+            return true;
+        }
+
+        // SHOW VARIABLES LIKE 'xxx'
+        Matcher showVarMatcher = SHOW_VARIABLES.matcher(sql);
+        if (showVarMatcher.matches()) {
+            handleShowVariables(showVarMatcher.group(1), session, writer);
+            return true;
+        }
+
+        // SHOW TABLE STATUS（返回表元数据）
+        if (SHOW_TABLE_STATUS.matcher(sql).matches()) {
+            handleShowTableStatus(session, writer);
+            return true;
+        }
+
+        // SHOW CHARACTER SET / SHOW COLLATION / SHOW ENGINES 等（返回空结果集）
+        if (SHOW_MISC.matcher(sql).matches()) {
+            writeEmptyResultSet(writer, session,
+                    List.of("result"), List.of(MysqlConstants.MYSQL_TYPE_VAR_STRING));
+            return true;
+        }
+
+        // SELECT ... FROM information_schema（返回空结果集）
+        if (INFORMATION_SCHEMA.matcher(sql).matches()) {
+            writeEmptyResultSet(writer, session,
+                    List.of("result"), List.of(MysqlConstants.MYSQL_TYPE_VAR_STRING));
+            return true;
+        }
+
+        // 通用 SET（兜底，直接返回 OK）
+        if (SET_GENERAL.matcher(sql).matches()) {
             writeOk(writer, session);
             return true;
         }
@@ -269,24 +395,182 @@ public class SystemVariableHandler {
         writer.flush();
     }
 
-    /** 处理 SHOW TABLES：列出当前数据库的所有表 */
-    private static void handleShowTables(ConnectionSession session, PacketWriter writer) {
+    /** 处理 SHOW VARIABLES LIKE 'pattern' */
+    private static void handleShowVariables(String likePattern, ConnectionSession session,
+                                             PacketWriter writer) {
+        // 已知系统变量
+        Map<String, String> allVars = Map.ofEntries(
+                Map.entry("lower_case_table_names", "0"),
+                Map.entry("lower_case_file_system", "OFF"),
+                Map.entry("sql_mode", "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES"),
+                Map.entry("version", MysqlConstants.SERVER_VERSION),
+                Map.entry("version_comment", "mini-db"),
+                Map.entry("character_set_client", "utf8mb4"),
+                Map.entry("character_set_connection", "utf8mb4"),
+                Map.entry("character_set_results", "utf8mb4"),
+                Map.entry("character_set_server", "utf8mb4"),
+                Map.entry("collation_connection", "utf8mb4_general_ci"),
+                Map.entry("collation_server", "utf8mb4_general_ci"),
+                Map.entry("max_allowed_packet", String.valueOf(MysqlConstants.DEFAULT_MAX_PACKET_SIZE)),
+                Map.entry("transaction_isolation", "REPEATABLE-READ"),
+                Map.entry("autocommit", session.executionContext().inTransaction() ? "0" : "1"),
+                Map.entry("wait_timeout", "28800"),
+                Map.entry("interactive_timeout", "28800")
+        );
+
+        // 将 LIKE 通配符转换为正则（% → .*, _ → .）
+        String regex = "(?i)^" + likePattern.replace("%", ".*").replace("_", ".") + "$";
+        Pattern p = Pattern.compile(regex);
+
+        int statusFlags = StatusFlagBuilder.build(session.executionContext());
+
+        writer.writeColumnCount(2);
+        writer.writeColumnDefinition(new ColumnDefinitionPacket.Builder()
+                .name("Variable_name").orgName("Variable_name")
+                .columnType(MysqlConstants.MYSQL_TYPE_VAR_STRING).columnLength(255).build());
+        writer.writeColumnDefinition(new ColumnDefinitionPacket.Builder()
+                .name("Value").orgName("Value")
+                .columnType(MysqlConstants.MYSQL_TYPE_VAR_STRING).columnLength(255).build());
+        writer.writeEof(new EofPacket(0, statusFlags));
+
+        allVars.entrySet().stream()
+                .filter(e -> p.matcher(e.getKey()).matches())
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(e -> writer.writeResultSetRow(
+                        new ResultSetRowPacket(List.of(e.getKey(), e.getValue()))));
+
+        writer.writeEof(new EofPacket(0, statusFlags));
+        writer.flush();
+    }
+
+    /**
+     * 处理 SHOW TABLE STATUS：返回当前数据库中每张表的元数据。
+     * 兼容 MySQL 协议的 18 列格式，mini-db 未实现的字段用默认值填充。
+     */
+    private static void handleShowTableStatus(ConnectionSession session, PacketWriter writer) {
+        String db = session.currentDatabase();
+        List<String> tables = session.catalog().listTables(db != null ? db : "");
+
+        int statusFlags = StatusFlagBuilder.build(session.executionContext());
+
+        // SHOW TABLE STATUS 标准 18 列
+        List<String> columns = List.of(
+                "Name", "Engine", "Version", "Row_format", "Rows",
+                "Avg_row_length", "Data_length", "Max_data_length",
+                "Index_length", "Data_free", "Auto_increment",
+                "Create_time", "Update_time", "Check_time",
+                "Collation", "Checksum", "Create_options", "Comment");
+
+        writer.writeColumnCount(columns.size());
+        for (String col : columns) {
+            int colType = switch (col) {
+                case "Version", "Rows", "Avg_row_length", "Data_length",
+                     "Max_data_length", "Index_length", "Data_free",
+                     "Auto_increment", "Checksum" -> MysqlConstants.MYSQL_TYPE_LONGLONG;
+                default -> MysqlConstants.MYSQL_TYPE_VAR_STRING;
+            };
+            writer.writeColumnDefinition(new ColumnDefinitionPacket.Builder()
+                    .name(col).orgName(col)
+                    .columnType(colType)
+                    .columnLength(255)
+                    .build());
+        }
+        writer.writeEof(new EofPacket(0, statusFlags));
+
+        for (String table : tables) {
+            writer.writeResultSetRow(new ResultSetRowPacket(List.of(
+                    table,              // Name
+                    "MiniDB",           // Engine
+                    "10",               // Version
+                    "Dynamic",          // Row_format
+                    "0",                // Rows
+                    "0",                // Avg_row_length
+                    "0",                // Data_length
+                    "0",                // Max_data_length
+                    "0",                // Index_length
+                    "0",                // Data_free
+                    "",                 // Auto_increment (NULL → 空串)
+                    "",                 // Create_time
+                    "",                 // Update_time
+                    "",                 // Check_time
+                    "utf8mb4_general_ci", // Collation
+                    "",                 // Checksum
+                    "",                 // Create_options
+                    ""                  // Comment
+            )));
+        }
+
+        writer.writeEof(new EofPacket(0, statusFlags));
+        writer.flush();
+    }
+
+    /** 构造 SHOW TABLE STATUS 的单行结果（用于二进制协议） */
+    private static Row buildTableStatusRow(String tableName) {
+        java.util.LinkedHashMap<String, Object> cols = new java.util.LinkedHashMap<>();
+        cols.put("Name", tableName);
+        cols.put("Engine", "MiniDB");
+        cols.put("Version", "10");
+        cols.put("Row_format", "Dynamic");
+        cols.put("Rows", "0");
+        cols.put("Avg_row_length", "0");
+        cols.put("Data_length", "0");
+        cols.put("Max_data_length", "0");
+        cols.put("Index_length", "0");
+        cols.put("Data_free", "0");
+        cols.put("Auto_increment", "");
+        cols.put("Create_time", "");
+        cols.put("Update_time", "");
+        cols.put("Check_time", "");
+        cols.put("Collation", "utf8mb4_general_ci");
+        cols.put("Checksum", "");
+        cols.put("Create_options", "");
+        cols.put("Comment", "");
+        return new Row(cols);
+    }
+
+    /**
+     * 处理 SHOW TABLES / SHOW FULL TABLES：列出当前数据库的所有表。
+     *
+     * @param full true 时返回两列（表名 + Table_type），兼容 Navicat 的 SHOW FULL TABLES WHERE ...
+     */
+    private static void handleShowTables(ConnectionSession session, PacketWriter writer, boolean full) {
         String db = session.currentDatabase();
         String columnName = "Tables_in_" + (db != null ? db : "");
         List<String> tables = session.catalog().listTables(db != null ? db : "");
 
         int statusFlags = StatusFlagBuilder.build(session.executionContext());
 
-        writer.writeColumnCount(1);
-        writer.writeColumnDefinition(new ColumnDefinitionPacket.Builder()
-                .name(columnName).orgName(columnName)
-                .columnType(MysqlConstants.MYSQL_TYPE_VAR_STRING)
-                .columnLength(255)
-                .build());
-        writer.writeEof(new EofPacket(0, statusFlags));
+        if (full) {
+            // SHOW FULL TABLES：两列（表名 + Table_type）
+            writer.writeColumnCount(2);
+            writer.writeColumnDefinition(new ColumnDefinitionPacket.Builder()
+                    .name(columnName).orgName(columnName)
+                    .columnType(MysqlConstants.MYSQL_TYPE_VAR_STRING)
+                    .columnLength(255)
+                    .build());
+            writer.writeColumnDefinition(new ColumnDefinitionPacket.Builder()
+                    .name("Table_type").orgName("Table_type")
+                    .columnType(MysqlConstants.MYSQL_TYPE_VAR_STRING)
+                    .columnLength(255)
+                    .build());
+            writer.writeEof(new EofPacket(0, statusFlags));
 
-        for (String table : tables) {
-            writer.writeResultSetRow(new ResultSetRowPacket(List.of(table)));
+            for (String table : tables) {
+                writer.writeResultSetRow(new ResultSetRowPacket(List.of(table, "BASE TABLE")));
+            }
+        } else {
+            // SHOW TABLES：单列
+            writer.writeColumnCount(1);
+            writer.writeColumnDefinition(new ColumnDefinitionPacket.Builder()
+                    .name(columnName).orgName(columnName)
+                    .columnType(MysqlConstants.MYSQL_TYPE_VAR_STRING)
+                    .columnLength(255)
+                    .build());
+            writer.writeEof(new EofPacket(0, statusFlags));
+
+            for (String table : tables) {
+                writer.writeResultSetRow(new ResultSetRowPacket(List.of(table)));
+            }
         }
 
         writer.writeEof(new EofPacket(0, statusFlags));

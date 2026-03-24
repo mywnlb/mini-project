@@ -110,7 +110,9 @@ public class StorageCatalog implements CatalogSpi {
 
             for (int i = 0; i < table.columns().size(); i++) {
                 ColumnMeta sqlCol = table.columns().get(i);
-                FieldType fieldType = sqlTypeToFieldType(sqlCol.type(), sqlCol.isPrimaryKey());
+                // nullable 取 SQL 层显式声明与主键约束的综合结果
+                boolean nullable = sqlCol.nullable() && !sqlCol.isPrimaryKey();
+                FieldType fieldType = sqlTypeToFieldType(sqlCol.type(), nullable);
                 // columnId 用占位值 (i+1)，CatalogManager.assignColumnIds 会重新分配
                 storageColumns.add(new cn.zhangyis.minidb.storage.catalog.ColumnMeta(
                     i + 1, sqlCol.name(), fieldType, i, null
@@ -150,12 +152,8 @@ public class StorageCatalog implements CatalogSpi {
     public void addColumn(String tableName, ColumnMeta column) {
         requireBufferPool("addColumn");
 
-        // 转换 SQL 类型为存储层 FieldType（ADD COLUMN 不是主键，nullable 由 column.nullable() 决定）
-        FieldType fieldType = sqlTypeToFieldType(column.type(), false);
-        // 如果 SQL 层指定 NOT NULL，覆盖 nullable 标记
-        if (!column.nullable()) {
-            fieldType = FieldType.of(fieldType.getKind(), fieldType.getLength(), false);
-        }
+        // 转换 SQL 类型为存储层 FieldType，nullable 由 SQL 层显式声明决定
+        FieldType fieldType = sqlTypeToFieldType(column.type(), column.nullable());
 
         // 转换默认值为 DataField
         DataField defaultField = convertDefaultValue(column.defaultValue(), fieldType);
@@ -367,8 +365,7 @@ public class StorageCatalog implements CatalogSpi {
      *   <li>DATETIME → FieldType.bigint（暂无 DATETIME，用 BIGINT 存时间戳）</li>
      * </ul>
      */
-    static FieldType sqlTypeToFieldType(SqlType sqlType, boolean isPrimaryKey) {
-        boolean nullable = !isPrimaryKey;
+    static FieldType sqlTypeToFieldType(SqlType sqlType, boolean nullable) {
         return switch (sqlType) {
             case INT32 -> FieldType.intType(nullable);
             case BIGINT -> FieldType.bigint(nullable);

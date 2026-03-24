@@ -1,14 +1,25 @@
 package cn.zhangyis.minidb.storage;
 
 import cn.zhangyis.minidb.common.exception.MiniDbException;
+import cn.zhangyis.minidb.storage.buffer.BufferFrame;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.catalog.CatalogManager;
+import cn.zhangyis.minidb.storage.catalog.ColumnMeta;
+import cn.zhangyis.minidb.storage.catalog.ddl.DdlLogPage;
+import cn.zhangyis.minidb.storage.catalog.persist.CatalogBootstrap;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
+import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
+import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.page.PageType;
+import cn.zhangyis.minidb.storage.record.schema.FieldType;
+import cn.zhangyis.minidb.storage.space.TableSpace;
+import cn.zhangyis.minidb.storage.transaction.core.TransactionSysPage;
 import org.junit.jupiter.api.*;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,9 +28,9 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * <p>验证 crash recovery 端到端启动流程的正确性：</p>
  * <ul>
- *   <li>首次启动：跳过 redo，初始化 catalog</li>
+ *   <li>首次启动：空 data dir 自动初始化 system space，随后初始化 catalog</li>
  *   <li>幂等性：重复 start() 不会重复执行</li>
- *   <li>system space 打开失败时 fail-stop</li>
+ *   <li>system space 缺失但 data dir 非空时 fail-stop</li>
  *   <li>shutdown 后可重新 start</li>
  * </ul>
  */
@@ -125,9 +136,8 @@ public class DatabaseBootstrapTest {
 
     @Test
     @Order(4)
-    @DisplayName("system space 文件不存在时启动失败")
-    void start_failsIfSystemSpaceCannotOpen() throws Exception {
-        // 创建一个新的 DiskManager，不创建 system space 文件
+    @DisplayName("空 data dir 首次启动时自动初始化 system space")
+    void start_initializesSystemSpaceWhenDataDirIsEmpty() throws Exception {
         Path emptyDir = Files.createTempDirectory("minidb_empty_");
         try {
             DiskManager emptyDiskManager = new DiskManager(emptyDir);
@@ -137,15 +147,53 @@ public class DatabaseBootstrapTest {
             DatabaseBootstrap bootstrap = new DatabaseBootstrap(
                     emptyDiskManager, emptyBufferPool, emptyCatalogManager, SYSTEM_SPACE_NAME);
 
-            // system space 文件不存在，openTablespace 应抛异常
-            assertThrows(MiniDbException.class, bootstrap::start,
-                    "system space 不存在时应抛出异常");
-            assertFalse(bootstrap.isStarted());
-
-            emptyBufferPool.close();
-            emptyDiskManager.close();
+            try {
+                assertDoesNotThrow(bootstrap::start);
+                assertTrue(bootstrap.isStarted());
+                assertTrue(Files.exists(emptyDir.resolve(SYSTEM_SPACE_NAME + ".ibd")));
+                assertEquals(PageType.FIL_PAGE_DDL_LOG,
+                        readPageType(emptyBufferPool, PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO)));
+                assertNotNull(findTrxSysPageId(emptyBufferPool, emptyDiskManager));
+            } finally {
+                if (bootstrap.isStarted()) {
+                    bootstrap.shutdown();
+                }
+                emptyBufferPool.close();
+                emptyDiskManager.close();
+            }
         } finally {
             Files.walk(emptyDir)
+                    .sorted((a, b) -> -a.compareTo(b))
+                    .forEach(p -> {
+                        try { Files.delete(p); } catch (IOException e) { /* ignore */ }
+                    });
+        }
+    }
+
+    @Test
+    @Order(5)
+    @DisplayName("system space 缺失但 data dir 非空时启动失败")
+    void start_failsIfSystemSpaceMissingInNonEmptyDataDir() throws Exception {
+        Path brokenDir = Files.createTempDirectory("minidb_missing_system_");
+        try {
+            DiskManager brokenDiskManager = new DiskManager(brokenDir);
+            brokenDiskManager.createTablespace(1, "orphan");
+            BufferPool brokenBufferPool = new BufferPool(BUFFER_POOL_SIZE, brokenDiskManager);
+            CatalogManager brokenCatalogManager = new CatalogManager(brokenBufferPool);
+
+            DatabaseBootstrap bootstrap = new DatabaseBootstrap(
+                    brokenDiskManager, brokenBufferPool, brokenCatalogManager, SYSTEM_SPACE_NAME);
+
+            try {
+                assertThrows(MiniDbException.class, bootstrap::start,
+                        "非空 data dir 缺失 system space 时应 fail-stop");
+                assertFalse(bootstrap.isStarted());
+            } finally {
+                brokenBufferPool.close();
+                brokenDiskManager.close();
+            }
+        } finally {
+            Files.walk(brokenDir)
                     .sorted((a, b) -> -a.compareTo(b))
                     .forEach(p -> {
                         try { Files.delete(p); } catch (IOException e) { /* ignore */ }
@@ -156,7 +204,7 @@ public class DatabaseBootstrapTest {
     // ==================== shutdown 后可重新 start ====================
 
     @Test
-    @Order(5)
+    @Order(6)
     @DisplayName("shutdown 后可重新 start")
     void start_afterShutdown_canRestartSuccessfully() throws Exception {
         DatabaseBootstrap bootstrap = new DatabaseBootstrap(
@@ -178,7 +226,7 @@ public class DatabaseBootstrapTest {
     // ==================== shutdown 未启动时静默返回 ====================
 
     @Test
-    @Order(6)
+    @Order(7)
     @DisplayName("未启动时 shutdown 静默返回")
     void shutdown_notStarted_silentlyReturns() throws Exception {
         DatabaseBootstrap bootstrap = new DatabaseBootstrap(
@@ -187,5 +235,166 @@ public class DatabaseBootstrapTest {
         // 不调用 start，直接 shutdown 不应抛异常
         assertDoesNotThrow(bootstrap::shutdown);
         assertFalse(bootstrap.isStarted());
+    }
+
+    @Test
+    @Order(8)
+    @DisplayName("启动后 page 5 保持 DDL log，TRX_SYS 使用独立页")
+    void start_keepsDdlLogHeadSeparateFromTrxSysPage() throws Exception {
+        DatabaseBootstrap bootstrap = new DatabaseBootstrap(
+                diskManager, bufferPool, catalogManager, SYSTEM_SPACE_NAME);
+
+        try {
+            bootstrap.start();
+
+            assertEquals(PageType.FIL_PAGE_DDL_LOG,
+                    readPageType(PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO)));
+
+            PageId trxSysPageId = findTrxSysPageId();
+            assertNotNull(trxSysPageId, "TRX_SYS page should exist after startup");
+            assertNotEquals(DdlLogPage.DDL_LOG_PAGE_NO, trxSysPageId.getPageNo());
+            assertTrue(trxSysPageId.getPageNo() >= TransactionSysPage.DEFAULT_PAGE_NO);
+        } finally {
+            if (bootstrap.isStarted()) {
+                bootstrap.shutdown();
+            }
+        }
+    }
+
+    @Test
+    @Order(9)
+    @DisplayName("启动后 CREATE TABLE 可正常追加 DDL log")
+    void start_allowsCreateTableAfterTransactionSubsystemInit() throws Exception {
+        DatabaseBootstrap bootstrap = new DatabaseBootstrap(
+                diskManager, bufferPool, catalogManager, SYSTEM_SPACE_NAME);
+
+        try {
+            bootstrap.start();
+            catalogManager.createDatabase("sql_mode");
+
+            assertDoesNotThrow(() -> catalogManager.createTable(
+                    "sql_mode",
+                    "tb_person",
+                    List.of(
+                            new ColumnMeta(1, "id", FieldType.bigint(false), 0, null),
+                            new ColumnMeta(2, "age", FieldType.intType(true), 1, null)
+                    )));
+
+            assertEquals(PageType.FIL_PAGE_DDL_LOG,
+                    readPageType(PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO)));
+            assertNotNull(catalogManager.getTable("sql_mode", "tb_person"));
+        } finally {
+            if (bootstrap.isStarted()) {
+                bootstrap.shutdown();
+            }
+        }
+    }
+
+    @Test
+    @Order(10)
+    @DisplayName("升级路径：legacy page 5 TRX_SYS 迁移后保留 nextTrxId")
+    void start_migratesLegacyTrxSysPageAndPreservesNextTrxId() throws Exception {
+        long legacyNextTrxId = 123L;
+        seedLegacyCatalogWithTrxSysPage(legacyNextTrxId);
+
+        DatabaseBootstrap bootstrap = new DatabaseBootstrap(
+                diskManager, bufferPool, catalogManager, SYSTEM_SPACE_NAME);
+
+        try {
+            bootstrap.start();
+
+            assertEquals(PageType.FIL_PAGE_DDL_LOG,
+                    readPageType(PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO)));
+
+            PageId trxSysPageId = findTrxSysPageId();
+            assertNotNull(trxSysPageId, "migrated TRX_SYS page should exist");
+            assertNotEquals(DdlLogPage.DDL_LOG_PAGE_NO, trxSysPageId.getPageNo());
+            assertEquals(legacyNextTrxId, readNextTrxId(trxSysPageId));
+            assertEquals(legacyNextTrxId, bootstrap.getTransactionManager().getNextTrxId());
+        } finally {
+            if (bootstrap.isStarted()) {
+                bootstrap.shutdown();
+            }
+        }
+    }
+
+    private void seedLegacyCatalogWithTrxSysPage(long nextTrxId) throws Exception {
+        initializeSystemTablespace();
+        CatalogBootstrap catalogBootstrap = new CatalogBootstrap(bufferPool);
+        catalogBootstrap.initCatalog();
+
+        PageId legacyPageId = PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO);
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            BufferFrame frame = mtr.getPageFrame(legacyPageId, BufferPool.FetchMode.READ_EXISTING);
+            frame.writeLock();
+            try {
+                TransactionSysPage.init(frame.buffer(), SYSTEM_SPACE_ID);
+                TransactionSysPage.setNextTrxId(frame.buffer(), nextTrxId);
+                mtr.markDirty(frame.getPage());
+            } finally {
+                frame.writeUnlock();
+            }
+            mtr.commit();
+        }
+        bufferPool.flushPage(legacyPageId);
+    }
+
+    private void initializeSystemTablespace() throws Exception {
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            TableSpace tableSpace = new TableSpace(SYSTEM_SPACE_ID, bufferPool);
+            tableSpace.initializeTablespace(mtr);
+            mtr.commit();
+        }
+    }
+
+    private PageType readPageType(PageId pageId) throws Exception {
+        return readPageType(bufferPool, pageId);
+    }
+
+    private PageType readPageType(BufferPool targetBufferPool, PageId pageId) throws Exception {
+        try (MiniTransaction mtr = new MiniTransaction(targetBufferPool)) {
+            BufferFrame frame = mtr.getPageFrame(pageId, BufferPool.FetchMode.READ_EXISTING);
+            frame.readLock();
+            try {
+                return frame.getPage().getPageType();
+            } finally {
+                frame.readUnlock();
+            }
+        }
+    }
+
+    private PageId findTrxSysPageId() throws Exception {
+        return findTrxSysPageId(bufferPool, diskManager);
+    }
+
+    private PageId findTrxSysPageId(BufferPool targetBufferPool, DiskManager targetDiskManager) throws Exception {
+        int pageCount = targetDiskManager.getPageCount(SYSTEM_SPACE_ID);
+        for (int pageNo = TransactionSysPage.DEFAULT_PAGE_NO; pageNo < pageCount; pageNo++) {
+            PageId pageId = PageId.of(SYSTEM_SPACE_ID, pageNo);
+            try (MiniTransaction mtr = new MiniTransaction(targetBufferPool)) {
+                BufferFrame frame = mtr.getPageFrame(pageId, BufferPool.FetchMode.READ_EXISTING);
+                frame.readLock();
+                try {
+                    if (TransactionSysPage.isTrxSysPage(frame.buffer())) {
+                        return pageId;
+                    }
+                } finally {
+                    frame.readUnlock();
+                }
+            }
+        }
+        return null;
+    }
+
+    private long readNextTrxId(PageId pageId) throws Exception {
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            BufferFrame frame = mtr.getPageFrame(pageId, BufferPool.FetchMode.READ_EXISTING);
+            frame.readLock();
+            try {
+                return TransactionSysPage.getNextTrxId(frame.buffer());
+            } finally {
+                frame.readUnlock();
+            }
+        }
     }
 }

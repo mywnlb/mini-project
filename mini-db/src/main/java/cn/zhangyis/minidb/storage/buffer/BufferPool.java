@@ -426,8 +426,8 @@ public class BufferPool implements AutoCloseable {
                         adjustedCount, elapsedMs, String.format("%.2f", precision * 100));
             }
 
-            // 检查LRU精确度，如果过低发出警告
-            if (precision < 0.8) {
+            // 检查LRU精确度，页面太少时跳过（启动阶段精度无意义）
+            if (precision < 0.8 && lruList.getTotalSize() >= 10) {
                 logger.warn("LRU precision is low: {}%, consider increasing reorder frequency",
                         String.format("%.2f", precision * 100));
             }

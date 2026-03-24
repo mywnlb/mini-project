@@ -29,6 +29,7 @@ public class MiniDbServerBuilder {
     private TransactionManager txnManager;
     private UserManager userManager = UserManager.getInstance();
     private int sqlThreadPoolSize = Runtime.getRuntime().availableProcessors();
+    private String defaultDatabase;
 
     public MiniDbServerBuilder port(int port) {
         this.port = port;
@@ -66,13 +67,16 @@ public class MiniDbServerBuilder {
         return this;
     }
 
+    public MiniDbServerBuilder defaultDatabase(String defaultDatabase) {
+        this.defaultDatabase = defaultDatabase;
+        return this;
+    }
+
     public MiniDbServer build() {
         if (catalog == null) {
             throw new IllegalStateException("CatalogSpi 不能为空");
         }
-        if (dataSource == null) {
-            throw new IllegalStateException("DataSourceSpi 不能为空");
-        }
-        return new MiniDbServer(port, catalog, dataSource, txnManager, userManager, sqlThreadPoolSize);
+        // dataSource 允许为 null：MysqlConnectionHandler 会在认证时动态创建 StorageDataSource
+        return new MiniDbServer(port, catalog, dataSource, txnManager, userManager, sqlThreadPoolSize, defaultDatabase);
     }
 }

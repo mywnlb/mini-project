@@ -1,6 +1,7 @@
 package cn.zhangyis.minidb.storage.transaction.core;
 
 import cn.zhangyis.minidb.common.exception.MiniDbException;
+import cn.zhangyis.minidb.storage.buffer.BufferFrame;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.Page;
@@ -105,9 +106,11 @@ public class TransactionManager {
     private final int spaceId;
 
     /**
-     * 事务系统页 PageId
+     * 事务系统页 PageId。
+     *
+     * <p>构造时先放默认候选页，initialize() 后解析为真实页面。</p>
      */
-    private final PageId sysPageId;
+    private volatile PageId sysPageId;
 
     /**
      * 活跃事务映射
@@ -239,38 +242,28 @@ public class TransactionManager {
                 return;
             }
 
+            PageId resolvedPageId = findExistingTrxSysPageId();
             try (MiniTransaction mtr = new MiniTransaction(bufferPool, redoLogManager)) {
-                Page sysPage;
-
-                try {
-                    // 尝试读取现有系统页
-                    sysPage = mtr.getPage(sysPageId, BufferPool.FetchMode.READ_EXISTING);
-                    ByteBuffer buf = sysPage.getBuffer();
-
-                    if (TransactionSysPage.isTrxSysPage(buf)) {
-                        // 从系统页恢复 TRX_ID
-                        long nextTrxId = TransactionSysPage.getNextTrxId(buf);
-                        nextTrxIdCache.set(nextTrxId);
-                        trxIdCacheLimit = nextTrxId;
-                        logger.info("Recovered next TRX_ID from system page: {}", nextTrxId);
-                    } else {
-                        // 页面存在但不是系统页，初始化它
-                        TransactionSysPage.init(buf, spaceId);
-                        mtr.markDirty(sysPage);
-                        nextTrxIdCache.set(TransactionSysPage.INITIAL_TRX_ID);
-                        trxIdCacheLimit = TransactionSysPage.INITIAL_TRX_ID;
-                        logger.info("Initialized TRX_SYS page");
-                    }
-                } catch (MiniDbException e) {
-                    // 系统页不存在，创建新的
-                    sysPage = mtr.getPage(sysPageId, BufferPool.FetchMode.NEW_PAGE);
-                    TransactionSysPage.init(sysPage.getBuffer(), spaceId);
-                    mtr.markDirty(sysPage);
+                if (resolvedPageId == null) {
+                    BufferFrame newFrame = createTrxSysPage(mtr);
+                    resolvedPageId = newFrame.getPageId();
                     nextTrxIdCache.set(TransactionSysPage.INITIAL_TRX_ID);
                     trxIdCacheLimit = TransactionSysPage.INITIAL_TRX_ID;
-                    logger.info("Created new TRX_SYS page");
+                    logger.info("Created new TRX_SYS page at {}", resolvedPageId);
+                } else {
+                    BufferFrame sysFrame = mtr.getPageFrame(resolvedPageId, BufferPool.FetchMode.READ_EXISTING);
+                    sysFrame.readLock();
+                    try {
+                        long nextTrxId = TransactionSysPage.getNextTrxId(sysFrame.buffer());
+                        nextTrxIdCache.set(nextTrxId);
+                        trxIdCacheLimit = nextTrxId;
+                    } finally {
+                        sysFrame.readUnlock();
+                    }
+                    logger.info("Recovered next TRX_ID from system page {}: {}", resolvedPageId,
+                            nextTrxIdCache.get());
                 }
-
+                this.sysPageId = resolvedPageId;
                 mtr.commit();
             }
 
@@ -608,11 +601,15 @@ public class TransactionManager {
 
             // 从系统页批量分配
             try (MiniTransaction mtr = new MiniTransaction(bufferPool, redoLogManager)) {
-                Page sysPage = mtr.getPage(sysPageId, BufferPool.FetchMode.READ_EXISTING);
-                ByteBuffer buf = sysPage.getBuffer();
-
-                TransactionId firstId = TransactionSysPage.allocateTrxIdBatch(buf, TRX_ID_BATCH_SIZE);
-                mtr.markDirty(sysPage);
+                BufferFrame sysFrame = mtr.getPageFrame(sysPageId, BufferPool.FetchMode.READ_EXISTING);
+                TransactionId firstId;
+                sysFrame.writeLock();
+                try {
+                    firstId = TransactionSysPage.allocateTrxIdBatch(sysFrame.buffer(), TRX_ID_BATCH_SIZE);
+                    mtr.markDirty(sysFrame.getPage());
+                } finally {
+                    sysFrame.writeUnlock();
+                }
                 mtr.commit();
 
                 // 更新缓存
@@ -719,6 +716,47 @@ public class TransactionManager {
     public void unregisterReadView(ReadView readView) {
         if (readView != null && purgeCoordinator != null) {
             purgeCoordinator.unregisterReadView(readView);
+        }
+    }
+
+    private PageId findExistingTrxSysPageId() throws MiniDbException {
+        int pageCount = bufferPool.getDiskManager().getPageCount(spaceId);
+        for (int pageNo = TransactionSysPage.DEFAULT_PAGE_NO; pageNo < pageCount; pageNo++) {
+            PageId pageId = PageId.of(spaceId, pageNo);
+            if (isTrxSysPage(pageId)) {
+                return pageId;
+            }
+        }
+        return null;
+    }
+
+    private boolean isTrxSysPage(PageId pageId) throws MiniDbException {
+        BufferFrame frame = bufferPool.getPage(pageId, BufferPool.FetchMode.READ_EXISTING);
+        try {
+            frame.readLock();
+            try {
+                return TransactionSysPage.isTrxSysPage(frame.buffer());
+            } finally {
+                frame.readUnlock();
+            }
+        } finally {
+            bufferPool.unpinPage(pageId, false);
+        }
+    }
+
+    private BufferFrame createTrxSysPage(MiniTransaction mtr) throws MiniDbException {
+        BufferFrame frame = mtr.newPageFrame(spaceId);
+        frame.writeLock();
+        try {
+            if (frame.getPageId().getPageNo() < TransactionSysPage.DEFAULT_PAGE_NO) {
+                throw new MiniDbException("TRX_SYS page allocation violated reserved system page range: "
+                        + frame.getPageId());
+            }
+            TransactionSysPage.init(frame.buffer(), spaceId);
+            mtr.markDirty(frame.getPage());
+            return frame;
+        } finally {
+            frame.writeUnlock();
         }
     }
 

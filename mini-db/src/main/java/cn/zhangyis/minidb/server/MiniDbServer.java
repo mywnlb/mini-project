@@ -44,6 +44,7 @@ public class MiniDbServer {
     private final TransactionManager txnManager;
     private final UserManager userManager;
     private final int sqlThreadPoolSize;
+    private final String defaultDatabase;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -52,13 +53,14 @@ public class MiniDbServer {
 
     MiniDbServer(int port, CatalogSpi catalog, DataSourceSpi dataSource,
                  TransactionManager txnManager, UserManager userManager,
-                 int sqlThreadPoolSize) {
+                 int sqlThreadPoolSize, String defaultDatabase) {
         this.port = port;
         this.catalog = catalog;
         this.dataSource = dataSource;
         this.txnManager = txnManager;
         this.userManager = userManager;
         this.sqlThreadPoolSize = sqlThreadPoolSize;
+        this.defaultDatabase = defaultDatabase;
     }
 
     /**
@@ -87,7 +89,7 @@ public class MiniDbServer {
                         pipeline.addLast("decoder", new MysqlPacketDecoder());
                         pipeline.addLast("encoder", new MysqlPacketEncoder());
                         pipeline.addLast("handler", new MysqlConnectionHandler(
-                                catalog, dataSource, txnManager, userManager, sqlExecutor));
+                                catalog, dataSource, txnManager, userManager, sqlExecutor, defaultDatabase));
                     }
                 });
 
@@ -124,7 +126,7 @@ public class MiniDbServer {
                         pipeline.addLast("decoder", new MysqlPacketDecoder());
                         pipeline.addLast("encoder", new MysqlPacketEncoder());
                         pipeline.addLast("handler", new MysqlConnectionHandler(
-                                catalog, dataSource, txnManager, userManager, sqlExecutor));
+                                catalog, dataSource, txnManager, userManager, sqlExecutor, defaultDatabase));
                     }
                 });
 

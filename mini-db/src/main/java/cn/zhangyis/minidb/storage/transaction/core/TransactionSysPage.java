@@ -12,8 +12,12 @@ import java.nio.ByteOrder;
 /**
  * 事务系统页 (Transaction System Page)
  *
- * <p>事务系统页 (通常是 Page 5) 存储事务子系统的全局元数据，
+ * <p>事务系统页存储事务子系统的全局元数据，
  * 包括下一个可分配的事务 ID、Rollback Segment 头信息等。</p>
+ *
+ * <p>Catalog 固定占用 system space 的 page 3/4/5，其中 page 5 是 DDL log head。
+ * 因此 TRX_SYS 不能再固定复用 page 5，而是从 page 6 开始扫描已有页；
+ * 若不存在，则在 page 6 之后追加分配一个专用页面。</p>
  *
  * <h2>页面布局</h2>
  * <pre>
@@ -129,7 +133,15 @@ public final class TransactionSysPage {
     /**
      * 默认系统页号
      */
-    public static final int DEFAULT_PAGE_NO = 5;
+    public static final int DEFAULT_PAGE_NO = 6;
+
+    /**
+     * 旧版本将 TRX_SYS 固定写在 page 5。
+     *
+     * <p>Catalog bootstrap 会在升级路径中识别该 legacy 布局，
+     * 先迁移 nextTrxId，再把 page 5 改造成 DDL log head。</p>
+     */
+    public static final int LEGACY_PAGE_NO = 5;
 
     // ==================== 私有构造函数 ====================
 
@@ -331,6 +343,36 @@ public final class TransactionSysPage {
         return pageType == PAGE_TYPE_TRX_SYS;
     }
 
+    /**
+     * 复制 TRX_SYS 持久化头部。
+     *
+     * <p>用于 page 5 legacy TRX_SYS 迁移：目标页保留自己的 FIL Header
+     * （尤其是 page_no / space_id），只覆盖 TRX_SYS header 区域。</p>
+     *
+     * @param source 源 TRX_SYS 页面
+     * @param target 目标 TRX_SYS 页面
+     */
+    public static void copyHeader(ByteBuffer source, ByteBuffer target) {
+        if (source == null || target == null) {
+            throw new NullPointerException("source/target cannot be null");
+        }
+        if (!isTrxSysPage(source)) {
+            throw new IllegalArgumentException("source is not a TRX_SYS page");
+        }
+        if (!isTrxSysPage(target)) {
+            throw new IllegalArgumentException("target is not a TRX_SYS page");
+        }
+
+        ByteBuffer sourceCopy = source.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer targetCopy = target.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        byte[] header = new byte[TRX_SYS_HEADER_SIZE];
+
+        sourceCopy.position(TRX_SYS_HEADER_OFFSET);
+        sourceCopy.get(header);
+        targetCopy.position(TRX_SYS_HEADER_OFFSET);
+        targetCopy.put(header);
+    }
+
     // ==================== 调试方法 ====================
 
     /**
@@ -361,7 +403,7 @@ public final class TransactionSysPage {
     // ==================== 页面 ID 工具方法 ====================
 
     /**
-     * 获取事务系统页的 PageId
+     * 获取事务系统页默认候选页的 PageId
      *
      * @param spaceId 表空间 ID
      * @return PageId
@@ -371,11 +413,21 @@ public final class TransactionSysPage {
     }
 
     /**
-     * 获取默认表空间的事务系统页 PageId
+     * 获取默认表空间的事务系统页默认候选 PageId
      *
      * @return PageId
      */
     public static PageId getDefaultPageId() {
         return getPageId(0);
+    }
+
+    /**
+     * 获取 legacy 布局中 page 5 的 PageId。
+     *
+     * @param spaceId 表空间 ID
+     * @return legacy PageId
+     */
+    public static PageId getLegacyPageId(int spaceId) {
+        return PageId.of(spaceId, LEGACY_PAGE_NO);
     }
 }

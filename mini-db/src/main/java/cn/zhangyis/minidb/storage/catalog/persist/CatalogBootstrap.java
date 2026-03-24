@@ -14,6 +14,7 @@ import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.record.schema.RecordSchema;
 import cn.zhangyis.minidb.storage.record.schema.SchemaRegistry;
+import cn.zhangyis.minidb.storage.transaction.core.TransactionSysPage;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -124,6 +125,11 @@ public class CatalogBootstrap {
 
                 mtr.commit();
             }
+
+            // 强制刷盘，确保 catalog 页面持久化到磁盘
+            bufferPool.flushPage(catalogPageId);
+            bufferPool.flushPage(tableMetaPageId);
+            bufferPool.flushPage(ddlLogPageId);
         } catch (MiniDbException e) {
             throw new CatalogException("Failed to initialize catalog", e);
         }
@@ -136,22 +142,52 @@ public class CatalogBootstrap {
         PageId ddlLogPageId = PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO);
         try {
             ensureSystemCatalogPagesAllocated(DdlLogPage.DDL_LOG_PAGE_NO);
+            List<PageId> pagesToFlush = new ArrayList<>();
             try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
                 BufferFrame ddlLogFrame = mtr.getPageFrame(ddlLogPageId, BufferPool.FetchMode.READ_EXISTING);
                 ddlLogFrame.writeLock();
                 try {
-                    if (!DdlLogPage.isValid(ddlLogFrame)) {
+                    if (DdlLogPage.isValid(ddlLogFrame)) {
+                        // 已是新布局，无需处理
+                    } else if (TransactionSysPage.isTrxSysPage(ddlLogFrame.buffer())) {
+                        BufferFrame trxSysFrame = mtr.newPageFrame(SYSTEM_SPACE_ID);
+                        trxSysFrame.writeLock();
+                        try {
+                            if (trxSysFrame.getPageId().getPageNo() < TransactionSysPage.DEFAULT_PAGE_NO) {
+                                throw new MiniDbException("Legacy TRX_SYS migration allocated reserved page: "
+                                        + trxSysFrame.getPageId());
+                            }
+                            migrateLegacyTrxSysPage(ddlLogFrame, trxSysFrame);
+                            mtr.markDirty(trxSysFrame.getPage());
+                            pagesToFlush.add(trxSysFrame.getPageId());
+                        } finally {
+                            trxSysFrame.writeUnlock();
+                        }
+
                         DdlLogPage.initPage(ddlLogFrame);
                         mtr.markDirty(ddlLogFrame.getPage());
+                        pagesToFlush.add(ddlLogPageId);
+                    } else {
+                        DdlLogPage.initPage(ddlLogFrame);
+                        mtr.markDirty(ddlLogFrame.getPage());
+                        pagesToFlush.add(ddlLogPageId);
                     }
                 } finally {
                     ddlLogFrame.writeUnlock();
                 }
                 mtr.commit();
             }
+            for (PageId pageId : pagesToFlush) {
+                bufferPool.flushPage(pageId);
+            }
         } catch (MiniDbException e) {
             throw new CatalogException("Failed to ensure DDL log page", e);
         }
+    }
+
+    private void migrateLegacyTrxSysPage(BufferFrame legacyFrame, BufferFrame newFrame) {
+        TransactionSysPage.init(newFrame.buffer(), SYSTEM_SPACE_ID);
+        TransactionSysPage.copyHeader(legacyFrame.buffer(), newFrame.buffer());
     }
 
     /**

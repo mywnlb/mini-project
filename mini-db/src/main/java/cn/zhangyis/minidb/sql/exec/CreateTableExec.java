@@ -31,7 +31,7 @@ public class CreateTableExec implements ExecNode {
             message = "Table '" + tableName + "' already exists, skipped";
         } else {
             List<ColumnMeta> columns = create.columnDefs().stream()
-                .map(def -> new ColumnMeta(def.name(), def.type(), def.primaryKey()))
+                .map(def -> new ColumnMeta(def.name(), def.type(), def.primaryKey(), def.nullable(), null))
                 .toList();
             catalog.createTable(TableMeta.of(tableName, columns, 0));
             message = "Table '" + tableName + "' created";

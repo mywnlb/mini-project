@@ -1,7 +1,6 @@
 package cn.zhangyis.minidb.server;
 
 import cn.zhangyis.minidb.sql.catalog.StorageCatalog;
-import cn.zhangyis.minidb.sql.exec.MockDataSourceAdapter;
 import cn.zhangyis.minidb.storage.DatabaseBootstrap;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.catalog.CatalogManager;
@@ -12,48 +11,36 @@ import org.slf4j.LoggerFactory;
 /**
  * mini-db 服务器启动入口。
  *
- * <p>整合存储引擎（{@link DatabaseBootstrap}）和 MySQL 协议服务器（{@link MiniDbServer}），
- * 提供完整的数据库服务。</p>
+ * <p>从 {@code minidb.yml} 加载配置，整合存储引擎（{@link DatabaseBootstrap}）
+ * 和 MySQL 协议服务器（{@link MiniDbServer}），提供完整的数据库服务。</p>
  *
  * <p>启动流程：
  * <ol>
+ *   <li>加载配置（{@link ServerConfig}）</li>
  *   <li>初始化存储引擎组件（DiskManager、BufferPool、CatalogManager）</li>
  *   <li>执行 crash recovery（DatabaseBootstrap.start()）</li>
  *   <li>启动 MySQL 协议服务器</li>
  * </ol></p>
- *
- * <p>用法：{@code java cn.zhangyis.minidb.server.MiniDbServerMain [port] [dataDir]}</p>
  */
 public class MiniDbServerMain {
 
     private static final Logger log = LoggerFactory.getLogger(MiniDbServerMain.class);
 
-    private static final int DEFAULT_PORT = 3307;
-    private static final String DEFAULT_DATA_DIR = "data";
-    private static final int DEFAULT_BUFFER_POOL_PAGES = 1024;
-
     public static void main(String[] args) {
-        int port = DEFAULT_PORT;
-        String dataDir = DEFAULT_DATA_DIR;
-
-        if (args.length >= 1) {
-            port = Integer.parseInt(args[0]);
-        }
-        if (args.length >= 2) {
-            dataDir = args[1];
-        }
-
-        log.info("mini-db 启动中... port={}, dataDir={}", port, dataDir);
+        // 加载配置
+        ServerConfig config = ServerConfig.load();
+        log.info("mini-db 启动中... {}", config);
 
         try {
             // 初始化存储引擎
-            DiskManager diskManager = new DiskManager(dataDir);
-            BufferPool bufferPool = new BufferPool(DEFAULT_BUFFER_POOL_PAGES, diskManager);
+            DiskManager diskManager = new DiskManager(config.getDataDir());
+            BufferPool bufferPool = new BufferPool(config.getBufferPoolPages(), diskManager);
             CatalogManager catalogManager = new CatalogManager(bufferPool);
 
             // Crash recovery
             DatabaseBootstrap bootstrap = new DatabaseBootstrap(
-                    diskManager, bufferPool, catalogManager, "system");
+                    diskManager, bufferPool, catalogManager, config.getSystemTablespace());
+            bootstrap.configureDefaultDatabase(config.getDefaultDatabaseName());
             bootstrap.start();
 
             // 注册 shutdown hook
@@ -67,14 +54,15 @@ public class MiniDbServerMain {
             }));
 
             // 启动 MySQL 协议服务器
-            // 已集成 StorageDataSource：MysqlConnectionHandler 会为每个连接动态创建
-            // 真正的 storage + sql 已经打通，支持 MVCC、Redo、BufferPool 等完整存储引擎功能。
-            StorageCatalog catalog = new StorageCatalog(catalogManager, "default", bufferPool);
+            StorageCatalog catalog = new StorageCatalog(
+                    catalogManager, config.getDefaultDatabaseName(), bufferPool);
             MiniDbServer server = new MiniDbServerBuilder()
-                    .port(port)
+                    .port(config.getPort())
                     .catalog(catalog)
                     .dataSource(null)  // 由 MysqlConnectionHandler 动态创建 StorageDataSource
-                    .user("root", "")
+                    .transactionManager(bootstrap.getTransactionManager())
+                    .user(config.getUser(), config.getPassword())
+                    .defaultDatabase(config.getDefaultDatabaseName())
                     .build();
 
             server.start(); // 阻塞直到服务器关闭

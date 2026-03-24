@@ -15,5 +15,10 @@ public record SqlCreateTable(
     @Override
     public SqlKind kind() { return SqlKind.CREATE_TABLE; }
 
-    public record ColumnDef(String name, SqlType type, boolean primaryKey) {}
+    public record ColumnDef(String name, SqlType type, boolean primaryKey, boolean nullable) {
+        /** 兼容构造：默认 nullable=true */
+        public ColumnDef(String name, SqlType type, boolean primaryKey) {
+            this(name, type, primaryKey, true);
+        }
+    }
 }

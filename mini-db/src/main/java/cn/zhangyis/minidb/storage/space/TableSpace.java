@@ -102,7 +102,20 @@ public class TableSpace {
         // 3. 分配INODE Entry（逻辑层操作）
         int entryIndex = allocateInodeEntry(mtr, inodePage, segmentId);
         if (entryIndex == -1) {
-            return null;
+            // 当前 INODE Page 已满，从 FREE 迁移到 FULL，再分配新的 INODE Page
+            FlstBaseNode inodesFreeList = fspHeader.getInodesFreeList();
+            FlstNode listNode = inodePage.getListNode();
+            inodesFreeList.remove(mtr, inodePage, listNode.getOffset());
+            fspHeader.addToInodesFullList(mtr, inodePage);
+
+            inodePage = findOrCreateInodePage(mtr);
+            if (inodePage == null) {
+                return null;
+            }
+            entryIndex = allocateInodeEntry(mtr, inodePage, segmentId);
+            if (entryIndex == -1) {
+                return null;
+            }
         }
 
         // 4. 初始化Segment Descriptor

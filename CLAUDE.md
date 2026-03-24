@@ -223,6 +223,53 @@ try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
 
 ---
 
+## 🔗 系统启动依赖链（MANDATORY）
+
+修改任何组件前，必须理解该组件在启动链中的位置及上下游依赖。
+不允许跳过上游初始化，不允许在链外单独创建已纳入链内的组件。
+
+```
+DatabaseBootstrap.start() 统一编排以下阶段：
+
+Phase 1: DiskManager
+  └→ createTablespace / openTablespace
+  └→ 首次创建时必须调用 TableSpace.initializeTablespace(mtr)
+     （初始化 FSP Header: nextSegmentId=1, INODE Page, Extent 等物理结构）
+
+Phase 2: BufferPool
+  └→ 依赖 DiskManager
+  └→ 后台 LRU 整理线程随构造启动（页面少时精度低属正常）
+
+Phase 3: Redo Recovery（可选）
+  └→ 依赖 BufferPool
+  └→ 必须在 Catalog 加载前完成（否则读到过期页面）
+
+Phase 4: CatalogManager.bootstrap()
+  └→ 依赖 BufferPool + 系统表空间已初始化
+  └→ 首次启动: CatalogBootstrap.initCatalog() 初始化 page 3/4/5
+  └→ 后续启动: loadCatalog() 加载快照 + DDL log replay
+
+Phase 5: UndoLogManager → TransactionManager
+  └→ 依赖 BufferPool + 系统表空间 FSP Header 已初始化
+  └→ UndoLogManager 构造时会 createSegment → allocateSegmentId
+     （要求 nextSegmentId ≥ 1，未初始化的表空间会导致 Segment ID=0 拒绝）
+  └→ TransactionManager 依赖 UndoLogManager
+
+Phase 6: MiniDbServer（MySQL 协议层）
+  └→ 依赖 CatalogManager + TransactionManager
+  └→ MysqlConnectionHandler 在认证时动态创建 StorageDataSource
+     （需要 ExecutionContext.txnManager() 非 null）
+  └→ dataSource 允许为 null（由 handler 按连接动态创建）
+```
+
+### 依赖链规则
+1. **不允许在 Bootstrap 外部手动创建链内组件**（如 TransactionManager）
+2. **新建表空间 = 创建文件 + 初始化物理结构**，两步缺一不可
+3. **修改任一 Phase 前，必须先读该 Phase 上下游的实现代码**
+4. **配置项集中在 minidb.yml，由 ServerConfig 加载，MiniDbServerMain 传递**
+
+---
+
 ## Final Rule
 If any step above is skipped, the implementation must be discarded as unsafe.
 

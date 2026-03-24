@@ -55,6 +55,7 @@ public class MysqlConnectionHandler extends ChannelInboundHandlerAdapter {
     private final TransactionManager txnManager;
     private final UserManager userManager;
     private final ExecutorService sqlExecutor;
+    private final String defaultDatabase;
 
     private State state = State.HANDSHAKE;
     private byte[] authChallenge;
@@ -65,12 +66,13 @@ public class MysqlConnectionHandler extends ChannelInboundHandlerAdapter {
 
     public MysqlConnectionHandler(CatalogSpi catalog, DataSourceSpi dataSource,
                                    TransactionManager txnManager, UserManager userManager,
-                                   ExecutorService sqlExecutor) {
+                                   ExecutorService sqlExecutor, String defaultDatabase) {
         this.catalog = catalog;
         this.dataSource = dataSource;
         this.txnManager = txnManager;
         this.userManager = userManager;
         this.sqlExecutor = sqlExecutor;
+        this.defaultDatabase = defaultDatabase;
     }
 
     @Override
@@ -143,6 +145,17 @@ public class MysqlConnectionHandler extends ChannelInboundHandlerAdapter {
         }
 
         this.session = new ConnectionSession(connectionId, catalog, effectiveDataSource, execCtx);
+
+        // 设置默认数据库：优先使用配置文件的默认值
+        // 注意：不直接使用 response.database()，因为某些客户端（如 Navicat）的握手包
+        // 解析可能因 auth response 长度差异导致 database 字段错位读取到无关字符串
+        if (defaultDatabase != null && !defaultDatabase.isEmpty()) {
+            session.setCurrentDatabase(defaultDatabase);
+        }
+        String clientDb = response.database();
+        if (clientDb != null && !clientDb.isEmpty()) {
+            log.debug("Client requested database in handshake: '{}'", clientDb);
+        }
 
         this.dispatcher = new CommandDispatcher(session, writer);
 

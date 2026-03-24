@@ -4,10 +4,16 @@ import cn.zhangyis.minidb.common.exception.MiniDbException;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
 import cn.zhangyis.minidb.storage.catalog.CatalogManager;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
+import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
+import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.redo.fileset.RedoLogFileSet;
+import cn.zhangyis.minidb.storage.space.FspHeaderPage;
 import cn.zhangyis.minidb.storage.redo.recovery.RecoveryCoordinator;
 import cn.zhangyis.minidb.storage.redo.recovery.RecoveryException;
+import cn.zhangyis.minidb.storage.space.TableSpace;
+import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
 import cn.zhangyis.minidb.storage.transaction.recovery.UndoRecoveryManager;
+import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,13 +21,14 @@ import org.slf4j.LoggerFactory;
  * 数据库启动引导器 —— Crash Recovery 端到端入口。
  *
  * <p>将 open system space → redo recovery → catalog load（含 DDL log replay）
- * → ready 四个阶段按正确顺序串联。</p>
+ * → transaction subsystem → ready 五个阶段按正确顺序串联。</p>
  *
  * <h3>启动顺序不变量</h3>
  * <ol>
  *   <li>打开系统表空间（system space, spaceId=0）</li>
  *   <li>Redo recovery：从 checkpoint 重放 redo log，将页面恢复到 crash-consistent 状态</li>
  *   <li>Catalog bootstrap：加载 catalog snapshot + DDL log replay + undo recovery（可选）</li>
+ *   <li>Transaction subsystem：初始化 UndoLogManager + TransactionManager</li>
  *   <li>标记 ready</li>
  * </ol>
  *
@@ -30,8 +37,9 @@ import org.slf4j.LoggerFactory;
  * 依赖 durable catalog snapshot 判定，不需要外部单独调用。</p>
  *
  * <h3>首次启动</h3>
- * <p>如果没有配置 {@link RedoLogFileSet} 或没有有效 checkpoint，
- * 跳过 redo/undo recovery，只执行 catalog 初始化。</p>
+ * <p>如果数据目录中尚无任何 .ibd 文件，Phase 1 会先创建并初始化 system space；
+ * 如果系统表空间文件缺失但目录内已存在其他表空间，则按损坏实例 fail-stop。
+ * 没有配置 {@link RedoLogFileSet} 或没有有效 checkpoint 时，跳过 redo/undo recovery。</p>
  *
  * <h3>使用方式</h3>
  * <pre>
@@ -55,6 +63,10 @@ public class DatabaseBootstrap {
     private final CatalogManager catalogManager;
     private final String systemSpaceName;
 
+    // ==================== 可选：默认数据库 ====================
+
+    private String defaultDatabaseName;
+
     // ==================== 可选：Redo recovery ====================
 
     private RedoLogFileSet redoLogFileSet;
@@ -65,6 +77,10 @@ public class DatabaseBootstrap {
     private int undoPageStart;
     private int undoPageEnd;
     private UndoRecoveryManager.UndoRecordApplier undoRecordApplier;
+
+    // ==================== 启动后可用的组件 ====================
+
+    private TransactionManager transactionManager;
 
     // ==================== 状态 ====================
 
@@ -92,6 +108,19 @@ public class DatabaseBootstrap {
     }
 
     // ==================== 可选配置 ====================
+
+    /**
+     * 配置默认数据库。
+     *
+     * <p>如果配置了默认数据库名，启动时在 catalog bootstrap 之后自动创建（如果不存在）。</p>
+     *
+     * @param name 默认数据库名称
+     * @return this
+     */
+    public DatabaseBootstrap configureDefaultDatabase(String name) {
+        this.defaultDatabaseName = name;
+        return this;
+    }
 
     /**
      * 配置 Redo recovery。
@@ -156,6 +185,12 @@ public class DatabaseBootstrap {
         // Phase 3: Catalog bootstrap（含 DDL log replay）
         bootstrapCatalog();
 
+        // Phase 3.5: 确保默认数据库存在
+        ensureDefaultDatabase();
+
+        // Phase 4: 事务子系统
+        initTransactionSubsystem();
+
         started = true;
         long elapsed = System.currentTimeMillis() - t0;
         log.info("=== Database startup completed in {} ms ===", elapsed);
@@ -179,17 +214,84 @@ public class DatabaseBootstrap {
     // ==================== 内部阶段 ====================
 
     /**
-     * Phase 1: 确保系统表空间已打开。
+     * Phase 1: 确保系统表空间已就绪。
      *
-     * <p>如果 DiskManager 中尚未注册 spaceId=0，则按名称打开。</p>
+     * <p>空 data dir 视为首次启动，创建并初始化 system space；
+     * 如果目录中已有其他 .ibd 但缺失 system space，则 fail-stop。</p>
      */
     private void ensureSystemSpaceOpen() throws MiniDbException {
         if (diskManager.tablespaceExists(SYSTEM_SPACE_ID)) {
-            log.debug("System space already open");
+            if (isSystemTablespaceInitialized()) {
+                log.debug("System space already open");
+                return;
+            }
+
+            log.warn("System tablespace already open but FSP Header is uninitialized, recreating...");
+            recreateSystemTablespace();
             return;
         }
+
+        if (!diskManager.tablespaceFileExists(systemSpaceName)) {
+            if (diskManager.hasAnyTablespaceFiles()) {
+                throw new MiniDbException("System tablespace file missing in non-empty data directory: "
+                        + systemSpaceName + ".ibd");
+            }
+
+            log.info("System tablespace file missing in empty data directory; creating new system space: {}",
+                    systemSpaceName);
+            createAndInitializeSystemTablespace();
+            return;
+        }
+
+        // 尝试打开已有文件
         log.info("Opening system tablespace: {}", systemSpaceName);
         diskManager.openTablespace(SYSTEM_SPACE_ID, systemSpaceName);
+
+        // 文件存在时检查 FSP Header 是否已正确初始化
+        if (isSystemTablespaceInitialized()) {
+            log.info("System tablespace opened successfully");
+            return;
+        }
+
+        // 文件存在但未初始化（上次启动失败残留），删除后重建
+        log.warn("System tablespace corrupted (uninitialized FSP Header), recreating...");
+        recreateSystemTablespace();
+    }
+
+    private boolean isSystemTablespaceInitialized() {
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            FspHeaderPage fsp = new FspHeaderPage(mtr.getPage(PageId.of(SYSTEM_SPACE_ID, 0)));
+            return fsp.getNextSegmentId() >= 1;
+        } catch (MiniDbException e) {
+            log.debug("System tablespace FSP Header is not readable yet", e);
+            return false;
+        }
+    }
+
+    private void recreateSystemTablespace() throws MiniDbException {
+        clearSystemSpacePagesFromBufferPool();
+        if (diskManager.tablespaceExists(SYSTEM_SPACE_ID)) {
+            diskManager.dropTablespace(SYSTEM_SPACE_ID, systemSpaceName);
+        }
+        createAndInitializeSystemTablespace();
+    }
+
+    private void clearSystemSpacePagesFromBufferPool() {
+        int pageCount = diskManager.getPageCount(SYSTEM_SPACE_ID);
+        for (int pageNo = 0; pageNo < pageCount; pageNo++) {
+            bufferPool.deletePage(PageId.of(SYSTEM_SPACE_ID, pageNo));
+        }
+    }
+
+    private void createAndInitializeSystemTablespace() throws MiniDbException {
+        log.info("Creating system tablespace: {}", systemSpaceName);
+        diskManager.createTablespace(SYSTEM_SPACE_ID, systemSpaceName);
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            TableSpace tableSpace = new TableSpace(SYSTEM_SPACE_ID, bufferPool);
+            tableSpace.initializeTablespace(mtr);
+            mtr.commit();
+        }
+        log.info("System tablespace initialized: {}", systemSpaceName);
     }
 
     /**
@@ -244,6 +346,39 @@ public class DatabaseBootstrap {
         log.info("Catalog bootstrap completed");
     }
 
+    /**
+     * Phase 3.5: 确保默认数据库存在。
+     *
+     * <p>如果配置了 {@link #defaultDatabaseName}，在 catalog bootstrap 之后检查并自动创建。
+     * 已存在则跳过，保证幂等。</p>
+     */
+    private void ensureDefaultDatabase() throws MiniDbException {
+        if (defaultDatabaseName == null || defaultDatabaseName.isEmpty()) {
+            return;
+        }
+        if (catalogManager.hasDatabase(defaultDatabaseName)) {
+            log.debug("Default database '{}' already exists", defaultDatabaseName);
+            return;
+        }
+        log.info("Creating default database: {}", defaultDatabaseName);
+        catalogManager.createDatabase(defaultDatabaseName);
+        log.info("Default database '{}' created", defaultDatabaseName);
+    }
+
+    /**
+     * Phase 4: 初始化事务子系统。
+     *
+     * <p>创建 UndoLogManager 和 TransactionManager，
+     * 必须在 catalog bootstrap 之后执行（依赖系统表空间已就绪）。</p>
+     */
+    private void initTransactionSubsystem() throws MiniDbException {
+        log.info("Initializing transaction subsystem...");
+        UndoLogManager undoLogManager = new UndoLogManager(bufferPool, SYSTEM_SPACE_ID);
+        this.transactionManager = new TransactionManager(bufferPool, undoLogManager);
+        this.transactionManager.initialize();
+        log.info("Transaction subsystem initialized");
+    }
+
     // ==================== 状态查询 ====================
 
     /**
@@ -251,6 +386,16 @@ public class DatabaseBootstrap {
      */
     public boolean isStarted() {
         return started;
+    }
+
+    /**
+     * 获取事务管理器（启动完成后可用）
+     */
+    public TransactionManager getTransactionManager() {
+        if (!started) {
+            throw new IllegalStateException("Database not started yet");
+        }
+        return transactionManager;
     }
 
     /**

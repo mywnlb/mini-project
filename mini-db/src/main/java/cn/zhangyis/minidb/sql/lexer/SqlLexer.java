@@ -116,6 +116,20 @@ public class SqlLexer {
             return new Token(TokenType.STRING, sb.toString(), start, pos);
         }
 
+        // 反引号标识符（MySQL 风格，如 `table_name`）
+        if (c == '`') {
+            pos++;
+            StringBuilder sb = new StringBuilder();
+            while (pos < sql.length() && sql.charAt(pos) != '`') {
+                sb.append(sql.charAt(pos));
+                pos++;
+            }
+            if (pos < sql.length()) pos++; // skip closing backtick
+            String word = sb.toString();
+            // 反引号内的内容视为标识符（即使是关键字也不做关键字匹配）
+            return new Token(TokenType.IDENTIFIER, word.toUpperCase(), start, pos);
+        }
+
         // 双字符运算符
         if (pos + 1 < sql.length()) {
             String two = sql.substring(pos, pos + 2);

@@ -69,17 +69,24 @@ public class CommandDispatcher {
     // ==================== COM_QUERY ====================
 
     private void handleQuery(ByteBuf payload) {
-        String sql = ComQueryPacket.decode(payload).sql().trim();
-        log.debug("COM_QUERY: {}", sql);
+        String rawSql = ComQueryPacket.decode(payload).sql().trim();
+        log.debug("COM_QUERY: {}", rawSql);
 
-        // 先尝试拦截兼容性查询
-        if (SystemVariableHandler.tryHandle(sql, session, writer)) {
-            return;
+        // 多语句拆分（Navicat 等客户端会用分号拼接多条 SQL）
+        String[] statements = rawSql.split(";");
+        for (String stmt : statements) {
+            String sql = stmt.trim();
+            if (sql.isEmpty()) continue;
+
+            // 先尝试拦截兼容性查询
+            if (SystemVariableHandler.tryHandle(sql, session, writer)) {
+                continue;
+            }
+
+            // 正常执行 SQL
+            List<Row> rows = session.sqlSession().execute(sql);
+            writeQueryResult(rows, sql);
         }
-
-        // 正常执行 SQL
-        List<Row> rows = session.sqlSession().execute(sql);
-        writeQueryResult(rows, sql);
     }
 
     /**

@@ -1,0 +1,14 @@
+<configuration>
+    <conversionRule conversionWord="levelColor"
+                    converterClass="cn.zhangyis.minidb.common.log.LevelColorConverter" />
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %levelColor(%-5level) %cyan(%logger{36}) - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="DEBUG">
+        <appender-ref ref="CONSOLE" />
+    </root>
+</configuration>

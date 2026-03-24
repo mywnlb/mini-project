@@ -286,6 +286,31 @@ public class DiskManager implements AutoCloseable {
         return tablespaces.containsKey(spaceId);
     }
 
+    /**
+     * 检查表空间文件是否存在（不要求当前已打开）。
+     *
+     * @param name 表空间名称（不含 .ibd）
+     * @return true 表示对应文件存在
+     */
+    public boolean tablespaceFileExists(String name) {
+        return Files.exists(dataDir.resolve(name + ".ibd"));
+    }
+
+    /**
+     * 检查数据目录下是否已经存在任意表空间文件。
+     *
+     * @return true 表示目录内至少存在一个 .ibd 文件
+     * @throws DiskIOException 如果扫描目录失败
+     */
+    public boolean hasAnyTablespaceFiles() throws DiskIOException {
+        try (var stream = Files.list(dataDir)) {
+            return stream.anyMatch(path -> path.getFileName().toString().endsWith(".ibd"));
+        } catch (IOException e) {
+            throw new DiskIOException(DiskIOException.ERR_FILE_OPEN,
+                    "Failed to scan data directory: " + dataDir, e);
+        }
+    }
+
     // ==================== 页面 I/O ====================
 
     /**

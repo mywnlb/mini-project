@@ -144,6 +144,11 @@ public class CatalogManager {
 
     // ==================== 数据库操作 ====================
 
+    /** 判断指定名称的数据库是否已存在 */
+    public boolean hasDatabase(String name) {
+        return cache.hasDatabase(name);
+    }
+
     public DatabaseDescriptor createDatabase(String name) throws CatalogException {
         return createDatabase(name, "utf8mb4");
     }
