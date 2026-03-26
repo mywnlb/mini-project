@@ -70,6 +70,10 @@ public class SqlNodeFactory {
         return new SqlLiteral(value, SqlType.VARCHAR);
     }
 
+    public SqlLiteral hex(String value) {
+        return new SqlLiteral(value, SqlType.BLOB);
+    }
+
     public SqlFunctionCall functionCall(String name, SqlNodeList args) {
         return new SqlFunctionCall(name, args);
     }

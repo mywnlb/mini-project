@@ -177,12 +177,17 @@ public final class RecordSchema {
             case SMALLINT -> DataField.smallintField(((Number) value).shortValue());
             case INT -> DataField.intField(((Number) value).intValue());
             case BIGINT -> DataField.bigintField(((Number) value).longValue());
+            case DECIMAL -> DataField.decimalField(value);
+            case DATE -> DataField.dateField(value);
+            case TIME -> DataField.timeField(value);
+            case DATETIME -> DataField.datetimeField(value);
             case CHAR -> DataField.charField((String) value, type.getLength());
             case VARCHAR -> DataField.varcharField((String) value);
             case BINARY -> DataField.binaryField((byte[]) value, type.getLength());
             case VARBINARY -> DataField.varbinaryField((byte[]) value);
             case BLOB -> DataField.blobField((byte[]) value);
             case TEXT -> DataField.textField((String) value);
+            case JSON -> DataField.jsonField((String) value);
         };
     }
 

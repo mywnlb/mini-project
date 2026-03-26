@@ -10,19 +10,29 @@ import cn.zhangyis.minidb.sql.types.SqlType;
  * @param isPrimaryKey 是否主键
  * @param nullable     是否可空（Instant DDL 默认 true）
  * @param defaultValue 默认值字面量（null 表示无显式默认值）
+ * @param length       类型长度/精度上限（可选）
  */
 public record ColumnMeta(
     String name,
     SqlType type,
     boolean isPrimaryKey,
     boolean nullable,
-    Object defaultValue
+    Object defaultValue,
+    Integer length
 ) {
 
     /**
      * 兼容构造：默认 nullable=true, defaultValue=null
      */
     public ColumnMeta(String name, SqlType type, boolean isPrimaryKey) {
-        this(name, type, isPrimaryKey, true, null);
+        this(name, type, isPrimaryKey, true, null, null);
+    }
+
+    /**
+     * 兼容构造：默认 length=null
+     */
+    public ColumnMeta(String name, SqlType type, boolean isPrimaryKey,
+                      boolean nullable, Object defaultValue) {
+        this(name, type, isPrimaryKey, nullable, defaultValue, null);
     }
 }

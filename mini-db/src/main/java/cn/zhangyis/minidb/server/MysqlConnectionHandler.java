@@ -9,9 +9,12 @@ import cn.zhangyis.minidb.server.netty.RawMysqlPacket;
 import cn.zhangyis.minidb.server.protocol.MysqlConstants;
 import cn.zhangyis.minidb.server.protocol.packets.*;
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
+import cn.zhangyis.minidb.sql.catalog.InformationSchemaProvider;
+import cn.zhangyis.minidb.sql.catalog.MetadataAwareCatalog;
 import cn.zhangyis.minidb.sql.catalog.StorageCatalog;
 import cn.zhangyis.minidb.sql.exec.DataSourceSpi;
 import cn.zhangyis.minidb.sql.exec.ExecutionContext;
+import cn.zhangyis.minidb.sql.exec.MetadataAwareDataSource;
 import cn.zhangyis.minidb.sql.exec.MockDataSourceAdapter;
 import cn.zhangyis.minidb.sql.exec.StorageDataSource;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
@@ -144,17 +147,26 @@ public class MysqlConnectionHandler extends ChannelInboundHandlerAdapter {
             log.info("使用真实 StorageDataSource for connectionId={}", connectionId);
         }
 
-        this.session = new ConnectionSession(connectionId, catalog, effectiveDataSource, execCtx);
+        InformationSchemaProvider infoProvider = new InformationSchemaProvider(catalog);
+        CatalogSpi effectiveCatalog = new MetadataAwareCatalog(catalog, infoProvider);
+        if (effectiveDataSource != null) {
+            effectiveDataSource = new MetadataAwareDataSource(effectiveDataSource, infoProvider);
+        }
 
-        // 设置默认数据库：优先使用配置文件的默认值
-        // 注意：不直接使用 response.database()，因为某些客户端（如 Navicat）的握手包
-        // 解析可能因 auth response 长度差异导致 database 字段错位读取到无关字符串
+        this.session = new ConnectionSession(connectionId, effectiveCatalog, effectiveDataSource, execCtx);
+
+        String clientDb = response.database();
+        String handshakeDb = resolveHandshakeDatabase(clientDb);
+
+        // 默认数据库来自服务端配置；若客户端握手里显式选择了已知数据库，则以客户端为准。
         if (defaultDatabase != null && !defaultDatabase.isEmpty()) {
             session.setCurrentDatabase(defaultDatabase);
         }
-        String clientDb = response.database();
-        if (clientDb != null && !clientDb.isEmpty()) {
-            log.debug("Client requested database in handshake: '{}'", clientDb);
+        if (handshakeDb != null) {
+            session.setCurrentDatabase(handshakeDb);
+            log.debug("Using handshake database '{}' for connectionId={}", handshakeDb, connectionId);
+        } else if (clientDb != null && !clientDb.isEmpty()) {
+            log.debug("Ignoring unknown handshake database '{}' for connectionId={}", clientDb, connectionId);
         }
 
         this.dispatcher = new CommandDispatcher(session, writer);
@@ -164,6 +176,22 @@ public class MysqlConnectionHandler extends ChannelInboundHandlerAdapter {
         writer.flush();
 
         state = State.COMMAND;
+    }
+
+    private String resolveHandshakeDatabase(String requestedDatabase) {
+        if (requestedDatabase == null || requestedDatabase.isBlank()) {
+            return null;
+        }
+        try {
+            for (String database : catalog.listDatabases()) {
+                if (database != null && database.equalsIgnoreCase(requestedDatabase)) {
+                    return database;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Unable to validate handshake database '{}'", requestedDatabase, e);
+        }
+        return null;
     }
 
     /**

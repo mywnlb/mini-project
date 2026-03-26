@@ -228,6 +228,122 @@ class BinaryProtocolIntegrationTest {
         }
     }
 
+    @Test
+    void comStmtExecute_informationSchemaEmptyResult_returnsBinaryResultMetadata() throws Exception {
+        try (Socket socket = connect()) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            String sql = "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'MISSING_DB'";
+            byte[] sqlBytes = sql.getBytes(StandardCharsets.UTF_8);
+            byte[] prepPayload = new byte[1 + sqlBytes.length];
+            prepPayload[0] = MysqlConstants.COM_STMT_PREPARE;
+            System.arraycopy(sqlBytes, 0, prepPayload, 1, sqlBytes.length);
+            writePacket(out, 0, prepPayload);
+
+            byte[] prepResp = readPacket(in);
+            assertEquals(0x00, prepResp[0] & 0xFF);
+            int stmtId = readInt4LE(prepResp, 1);
+            int numColumns = readInt2LE(prepResp, 5);
+            int numParams = readInt2LE(prepResp, 7);
+
+            assertEquals(1, numColumns, "PREPARE 阶段应返回结果列元数据");
+            assertEquals(0, numParams);
+
+            readPacket(in); // column definition
+            byte[] prepEof = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, prepEof[0] & 0xFF);
+
+            byte[] execPayload = new byte[1 + 4 + 1 + 4];
+            execPayload[0] = MysqlConstants.COM_STMT_EXECUTE;
+            writeInt4LE(execPayload, 1, stmtId);
+            execPayload[5] = 0x00;
+            writeInt4LE(execPayload, 6, 1);
+            writePacket(out, 0, execPayload);
+
+            byte[] colCountPkt = readPacket(in);
+            assertEquals(1, colCountPkt[0] & 0xFF, "空结果集执行也应返回列数量");
+
+            readPacket(in); // column definition
+            byte[] eof1 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof1[0] & 0xFF);
+
+            byte[] eof2 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof2[0] & 0xFF, "0 行二进制结果集不能退化成 OK");
+
+            byte[] closePayload = new byte[5];
+            closePayload[0] = MysqlConstants.COM_STMT_CLOSE;
+            writeInt4LE(closePayload, 1, stmtId);
+            writePacket(out, 0, closePayload);
+        }
+    }
+
+    @Test
+    void comStmtExecute_navicatRoutineMetadataProbe_returnsBinaryResultMetadata() throws Exception {
+        try (Socket socket = connect()) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            String sql = "SELECT DISTINCT ROUTINE_SCHEMA, ROUTINE_NAME, PARAMS.PARAMETER " +
+                    "FROM information_schema.ROUTINES " +
+                    "LEFT JOIN ( " +
+                    "SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, " +
+                    "GROUP_CONCAT(CONCAT(DATA_TYPE, ' ', PARAMETER_NAME) ORDER BY ORDINAL_POSITION SEPARATOR ', ') PARAMETER, " +
+                    "ROUTINE_TYPE FROM information_schema.PARAMETERS " +
+                    "GROUP BY SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE " +
+                    ") PARAMS " +
+                    "ON ROUTINES.ROUTINE_SCHEMA = PARAMS.SPECIFIC_SCHEMA " +
+                    "AND ROUTINES.ROUTINE_NAME = PARAMS.SPECIFIC_NAME " +
+                    "AND ROUTINES.ROUTINE_TYPE = PARAMS.ROUTINE_TYPE " +
+                    "WHERE ROUTINE_SCHEMA = 'sql_mode' ORDER BY ROUTINE_SCHEMA";
+            byte[] sqlBytes = sql.getBytes(StandardCharsets.UTF_8);
+            byte[] prepPayload = new byte[1 + sqlBytes.length];
+            prepPayload[0] = MysqlConstants.COM_STMT_PREPARE;
+            System.arraycopy(sqlBytes, 0, prepPayload, 1, sqlBytes.length);
+            writePacket(out, 0, prepPayload);
+
+            byte[] prepResp = readPacket(in);
+            assertEquals(0x00, prepResp[0] & 0xFF);
+            int stmtId = readInt4LE(prepResp, 1);
+            int numColumns = readInt2LE(prepResp, 5);
+            int numParams = readInt2LE(prepResp, 7);
+
+            assertEquals(3, numColumns, "PREPARE 阶段应返回 Navicat 例程探测的结果列元数据");
+            assertEquals(0, numParams);
+
+            readPacket(in);
+            readPacket(in);
+            readPacket(in);
+            byte[] prepEof = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, prepEof[0] & 0xFF);
+
+            byte[] execPayload = new byte[1 + 4 + 1 + 4];
+            execPayload[0] = MysqlConstants.COM_STMT_EXECUTE;
+            writeInt4LE(execPayload, 1, stmtId);
+            execPayload[5] = 0x00;
+            writeInt4LE(execPayload, 6, 1);
+            writePacket(out, 0, execPayload);
+
+            byte[] colCountPkt = readPacket(in);
+            assertEquals(3, colCountPkt[0] & 0xFF, "EXECUTE 阶段也应返回三列空结果集元数据");
+
+            readPacket(in);
+            readPacket(in);
+            readPacket(in);
+
+            byte[] eof1 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof1[0] & 0xFF);
+
+            byte[] eof2 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof2[0] & 0xFF, "0 行二进制结果集不能退化成 ERR/OK");
+
+            byte[] closePayload = new byte[5];
+            closePayload[0] = MysqlConstants.COM_STMT_CLOSE;
+            writeInt4LE(closePayload, 1, stmtId);
+            writePacket(out, 0, closePayload);
+        }
+    }
+
     // ==================== 辅助方法 ====================
 
     private Socket connect() throws Exception {

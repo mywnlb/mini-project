@@ -5,7 +5,6 @@ import cn.zhangyis.minidb.server.netty.PacketWriter;
 import cn.zhangyis.minidb.server.protocol.MysqlConstants;
 import cn.zhangyis.minidb.server.protocol.TypeMapping;
 import cn.zhangyis.minidb.server.protocol.packets.*;
-import cn.zhangyis.minidb.sql.catalog.ColumnMeta;
 import cn.zhangyis.minidb.sql.exec.*;
 import cn.zhangyis.minidb.sql.exec.PreparedStatement;
 import io.netty.buffer.ByteBuf;
@@ -66,17 +65,67 @@ public class CommandDispatcher {
         }
     }
 
+    // ==================== 多语句拆分 ====================
+
+    /**
+     * 引号感知的分号拆分。
+     * <p>状态机遍历字符，跟踪单引号/双引号/反引号状态，
+     * 仅在引号外的 {@code ;} 处拆分。正确处理反斜杠转义的引号。</p>
+     *
+     * @param rawSql 原始 SQL 文本（可能包含多条语句）
+     * @return 拆分后的非空语句列表
+     */
+    static List<String> splitStatements(String rawSql) {
+        List<String> result = new ArrayList<>();
+        boolean inSingleQuote = false;
+        boolean inDoubleQuote = false;
+        boolean inBacktick = false;
+
+        int start = 0;
+        for (int i = 0; i < rawSql.length(); i++) {
+            char c = rawSql.charAt(i);
+
+            // 处理反斜杠转义：跳过下一个字符
+            if (c == '\\' && (inSingleQuote || inDoubleQuote)) {
+                i++; // 跳过被转义的字符
+                continue;
+            }
+
+            if (c == '\'' && !inDoubleQuote && !inBacktick) {
+                inSingleQuote = !inSingleQuote;
+            } else if (c == '"' && !inSingleQuote && !inBacktick) {
+                inDoubleQuote = !inDoubleQuote;
+            } else if (c == '`' && !inSingleQuote && !inDoubleQuote) {
+                inBacktick = !inBacktick;
+            } else if (c == ';' && !inSingleQuote && !inDoubleQuote && !inBacktick) {
+                String stmt = rawSql.substring(start, i).trim();
+                if (!stmt.isEmpty()) {
+                    result.add(stmt);
+                }
+                start = i + 1;
+            }
+        }
+
+        // 处理最后一条语句（没有尾部分号的情况）
+        if (start < rawSql.length()) {
+            String stmt = rawSql.substring(start).trim();
+            if (!stmt.isEmpty()) {
+                result.add(stmt);
+            }
+        }
+
+        return result;
+    }
+
     // ==================== COM_QUERY ====================
 
     private void handleQuery(ByteBuf payload) {
         String rawSql = ComQueryPacket.decode(payload).sql().trim();
         log.debug("COM_QUERY: {}", rawSql);
 
-        // 多语句拆分（Navicat 等客户端会用分号拼接多条 SQL）
-        String[] statements = rawSql.split(";");
-        for (String stmt : statements) {
-            String sql = stmt.trim();
-            if (sql.isEmpty()) continue;
+        // 多语句拆分（引号感知，Navicat 等客户端会用分号拼接多条 SQL）
+        List<String> statements = splitStatements(rawSql);
+        for (String sql : statements) {
 
             // 先尝试拦截兼容性查询
             if (SystemVariableHandler.tryHandle(sql, session, writer)) {
@@ -84,8 +133,22 @@ public class CommandDispatcher {
             }
 
             // 正常执行 SQL
-            List<Row> rows = session.sqlSession().execute(sql);
-            writeQueryResult(rows, sql);
+            try {
+                List<Row> rows = session.sqlSession().execute(sql);
+                writeQueryResult(rows, sql);
+            } catch (UnsupportedOperationException e) {
+                // information_schema 不支持的表等场景：返回空结果集而非断开连接
+                log.warn("查询不支持，返回空结果集: {}", e.getMessage());
+                writer.writeErr(new ErrPacket(ErrorMapping.ER_GENERAL_ERROR,
+                        "42000", e.getMessage()));
+                writer.flush();
+            } catch (Exception e) {
+                // 其他执行错误：返回错误包并停止处理后续语句
+                log.warn("SQL 执行失败: {}", e.getMessage());
+                writer.writeErr(ErrorMapping.fromException(e));
+                writer.flush();
+                return;
+            }
         }
     }
 
@@ -93,9 +156,10 @@ public class CommandDispatcher {
      * 根据查询结果判断是 DML 还是 SELECT，选择对应的响应格式。
      */
     private void writeQueryResult(List<Row> rows, String sql) {
+        ResultMetadataResolver.QueryMetadata metadata = ResultMetadataResolver.resolve(sql, session);
         int statusFlags = StatusFlagBuilder.build(session.executionContext());
 
-        if (isDmlResult(rows)) {
+        if (isDmlResult(rows) && !metadata.resultSet()) {
             // DML 结果：返回 OkPacket
             long affectedRows = 0;
             if (!rows.isEmpty()) {
@@ -104,9 +168,12 @@ public class CommandDispatcher {
             }
             writer.writeOk(OkPacket.dml(affectedRows, 0, statusFlags));
             writer.flush();
-        } else {
+        } else if (metadata.resultSet()) {
             // SELECT / EXPLAIN 结果：返回完整结果集
-            ResultSetWriter.write(rows, session, writer);
+            ResultSetWriter.write(rows, metadata.columns(), session, writer);
+        } else {
+            writer.writeOk(OkPacket.ok(statusFlags));
+            writer.flush();
         }
     }
 
@@ -119,7 +186,7 @@ public class CommandDispatcher {
             Row row = rows.get(0);
             return row.columns().containsKey("affected_rows");
         }
-        return rows.isEmpty(); // DDL 也可能返回空结果
+        return false;
     }
 
     // ==================== COM_STMT_PREPARE ====================
@@ -131,11 +198,14 @@ public class CommandDispatcher {
         // 检查是否为系统变量/拦截类查询（SQL 引擎不支持的语法如 SELECT @@xxx）
         if (SystemVariableHandler.canHandle(sql)) {
             int stmtId = session.nextStatementId();
-            ServerPreparedStatement sps = new ServerPreparedStatement(stmtId, sql, 0, Collections.emptyList());
+            List<ResultColumnMetadata> resultMeta = SystemVariableHandler.resultMetadata(sql, session);
+            ServerPreparedStatement sps = new ServerPreparedStatement(stmtId, sql, 0, resultMeta);
             session.registerPreparedStatement(stmtId, sps);
 
-            // 返回 StmtPrepareOk：0参数、0列（execute 时再返回实际结果）
-            writer.writeStmtPrepareOk(new StmtPrepareOkPacket(stmtId, 0, 0, 0));
+            writer.writeStmtPrepareOk(new StmtPrepareOkPacket(stmtId, resultMeta.size(), 0, 0));
+            if (!resultMeta.isEmpty()) {
+                writeResultMetadata(resultMeta);
+            }
             writer.flush();
             return;
         }
@@ -150,8 +220,10 @@ public class CommandDispatcher {
         int stmtId = session.nextStatementId();
         int numParams = innerPs.paramCount();
 
-        // 推断结果列元数据（当前简化：无法在 PREPARE 阶段确定结果列）
-        List<ColumnMeta> resultMeta = Collections.emptyList();
+        ResultMetadataResolver.QueryMetadata metadata = ResultMetadataResolver.resolve(sql, session);
+        List<ResultColumnMetadata> resultMeta = metadata.resultSet()
+                ? metadata.columns()
+                : Collections.emptyList();
 
         ServerPreparedStatement sps = new ServerPreparedStatement(stmtId, innerPs, numParams, resultMeta);
         session.registerPreparedStatement(stmtId, sps);
@@ -159,7 +231,7 @@ public class CommandDispatcher {
         int statusFlags = StatusFlagBuilder.build(session.executionContext());
 
         // 发送 StmtPrepareOk
-        writer.writeStmtPrepareOk(new StmtPrepareOkPacket(stmtId, 0, numParams, 0));
+        writer.writeStmtPrepareOk(new StmtPrepareOkPacket(stmtId, resultMeta.size(), numParams, 0));
 
         // 参数列定义（每个参数一个 ColumnDefinition）
         if (numParams > 0) {
@@ -170,6 +242,10 @@ public class CommandDispatcher {
                         .build());
             }
             writer.writeEof(new EofPacket(0, statusFlags));
+        }
+
+        if (!resultMeta.isEmpty()) {
+            writeResultMetadata(resultMeta);
         }
 
         writer.flush();
@@ -193,12 +269,11 @@ public class CommandDispatcher {
             payload.skipBytes(payload.readableBytes());
             List<Row> rows = SystemVariableHandler.executeIntercepted(sps.sql(), session);
             int statusFlags = StatusFlagBuilder.build(session.executionContext());
-            if (rows == null || rows.isEmpty()) {
+            if (sps.resultColumnMeta().isEmpty()) {
                 writer.writeOk(OkPacket.ok(statusFlags));
                 writer.flush();
             } else {
-                List<Integer> colTypes = inferColumnTypes(rows);
-                BinaryResultSetWriter.write(rows, colTypes, session, writer);
+                BinaryResultSetWriter.writeWithMetadata(rows != null ? rows : List.of(), sps.resultColumnMeta(), session, writer);
             }
             return;
         }
@@ -235,7 +310,7 @@ public class CommandDispatcher {
 
         // 判断结果类型并写入
         int statusFlags = StatusFlagBuilder.build(session.executionContext());
-        if (isDmlResult(rows)) {
+        if (isDmlResult(rows) && sps.resultColumnMeta().isEmpty()) {
             long affectedRows = 0;
             if (!rows.isEmpty()) {
                 Object val = rows.get(0).get("affected_rows");
@@ -243,6 +318,8 @@ public class CommandDispatcher {
             }
             writer.writeOk(OkPacket.dml(affectedRows, 0, statusFlags));
             writer.flush();
+        } else if (!sps.resultColumnMeta().isEmpty()) {
+            BinaryResultSetWriter.writeWithMetadata(rows, sps.resultColumnMeta(), session, writer);
         } else {
             // 推断列类型
             List<Integer> colTypes = inferColumnTypes(rows);
@@ -273,7 +350,7 @@ public class CommandDispatcher {
     private void handleStmtReset(ByteBuf payload) {
         int stmtId = (int) cn.zhangyis.minidb.server.protocol.MysqlBufUtil.readFixedLengthInt(payload, 4);
         ServerPreparedStatement sps = session.getPreparedStatement(stmtId);
-        if (sps != null) {
+        if (sps != null && sps.innerPs() != null) {
             sps.innerPs().reset();
         }
         writer.writeOk(OkPacket.ok(StatusFlagBuilder.build(session.executionContext())));
@@ -294,5 +371,13 @@ public class CommandDispatcher {
     private void handlePing() {
         writer.writeOk(OkPacket.ok(StatusFlagBuilder.build(session.executionContext())));
         writer.flush();
+    }
+
+    private void writeResultMetadata(List<ResultColumnMetadata> metadata) {
+        int statusFlags = StatusFlagBuilder.build(session.executionContext());
+        for (ResultColumnMetadata column : metadata) {
+            writer.writeColumnDefinition(column.definition());
+        }
+        writer.writeEof(new EofPacket(0, statusFlags));
     }
 }

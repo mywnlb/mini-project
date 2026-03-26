@@ -5,6 +5,10 @@ import cn.zhangyis.minidb.sql.functions.FunctionRegistry;
 import cn.zhangyis.minidb.sql.functions.ScalarFunction;
 import cn.zhangyis.minidb.sql.types.SqlType;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.List;
 import java.util.ArrayList;
 
@@ -320,9 +324,15 @@ public class FilterExec implements ExecNode {
         }
         if (node instanceof SqlLiteral lit) {
             return switch (lit.type()) {
+                case TINYINT -> Byte.parseByte(lit.value());
+                case SMALLINT -> Short.parseShort(lit.value());
                 case INT32 -> Integer.parseInt(lit.value());
                 case BIGINT -> Long.parseLong(lit.value());
-                case DECIMAL -> Double.parseDouble(lit.value());
+                case DECIMAL -> new BigDecimal(lit.value());
+                case DATE -> LocalDate.parse(lit.value());
+                case TIME -> LocalTime.parse(normalizeTimeText(lit.value()));
+                case DATETIME -> LocalDateTime.parse(lit.value().replace(' ', 'T'));
+                case BLOB -> hexToBytes(lit.value());
                 default -> lit.value();
             };
         }
@@ -386,6 +396,14 @@ public class FilterExec implements ExecNode {
     static Object castValue(Object val, SqlType targetType) {
         if (val == null) return null;
         return switch (targetType) {
+            case TINYINT -> {
+                if (val instanceof Number n) yield n.byteValue();
+                yield Byte.parseByte(String.valueOf(val).trim());
+            }
+            case SMALLINT -> {
+                if (val instanceof Number n) yield n.shortValue();
+                yield Short.parseShort(String.valueOf(val).trim());
+            }
             case INT32 -> {
                 if (val instanceof Number n) yield n.intValue();
                 yield Integer.parseInt(String.valueOf(val).trim());
@@ -395,11 +413,24 @@ public class FilterExec implements ExecNode {
                 yield Long.parseLong(String.valueOf(val).trim());
             }
             case DECIMAL -> {
-                if (val instanceof Number n) yield n.doubleValue();
-                yield Double.parseDouble(String.valueOf(val).trim());
+                if (val instanceof BigDecimal bd) yield bd;
+                if (val instanceof Number n) yield BigDecimal.valueOf(n.doubleValue());
+                yield new BigDecimal(String.valueOf(val).trim());
             }
-            case VARCHAR -> String.valueOf(val);
-            case DATETIME -> String.valueOf(val); // 简单实现，保持字符串
+            case CHAR, VARCHAR, TEXT, JSON -> String.valueOf(val);
+            case BLOB -> val;
+            case DATE -> {
+                if (val instanceof LocalDate d) yield d;
+                yield LocalDate.parse(String.valueOf(val).trim());
+            }
+            case TIME -> {
+                if (val instanceof LocalTime t) yield t;
+                yield LocalTime.parse(normalizeTimeText(String.valueOf(val).trim()));
+            }
+            case DATETIME -> {
+                if (val instanceof LocalDateTime dt) yield dt;
+                yield LocalDateTime.parse(String.valueOf(val).trim().replace(' ', 'T'));
+            }
         };
     }
 
@@ -415,9 +446,40 @@ public class FilterExec implements ExecNode {
         if (right == null) return -1;
         // 数字比较
         if (left instanceof Number l && right instanceof Number r) {
+            if (left instanceof BigDecimal || right instanceof BigDecimal) {
+                return toBigDecimal(left).compareTo(toBigDecimal(right));
+            }
             return Double.compare(l.doubleValue(), r.doubleValue());
+        }
+        if (left instanceof Comparable<?> && left.getClass().isInstance(right)) {
+            @SuppressWarnings("unchecked")
+            Comparable<Object> comparable = (Comparable<Object>) left;
+            return comparable.compareTo(right);
         }
         // 字符串比较（大小写不敏感）
         return String.valueOf(left).compareToIgnoreCase(String.valueOf(right));
+    }
+
+    private static BigDecimal toBigDecimal(Object value) {
+        if (value instanceof BigDecimal bd) {
+            return bd;
+        }
+        if (value instanceof Number n) {
+            return BigDecimal.valueOf(n.doubleValue());
+        }
+        return new BigDecimal(String.valueOf(value));
+    }
+
+    private static byte[] hexToBytes(String hex) {
+        byte[] bytes = new byte[hex.length() / 2];
+        for (int i = 0; i < hex.length(); i += 2) {
+            bytes[i / 2] = (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
+        }
+        return bytes;
+    }
+
+    private static String normalizeTimeText(String value) {
+        int dot = value.indexOf('.');
+        return dot >= 0 ? value.substring(0, dot) : value;
     }
 }

@@ -4,7 +4,7 @@
 
 server:
   # 监听端口（避开 MySQL 默认 3306）
-  port: 3307
+  port: 6307
   # 默认用户名
   user: root
   # 密码（空字符串表示无密码）

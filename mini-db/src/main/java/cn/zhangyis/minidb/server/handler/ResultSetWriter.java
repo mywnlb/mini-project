@@ -35,6 +35,15 @@ public class ResultSetWriter {
      * @param writer  包写入器
      */
     public static void write(List<Row> rows, ConnectionSession session, PacketWriter writer) {
+        write(rows, null, session, writer);
+    }
+
+    public static void write(List<Row> rows, List<ResultColumnMetadata> metadata,
+                             ConnectionSession session, PacketWriter writer) {
+        if (metadata != null && !metadata.isEmpty()) {
+            writeWithMetadata(rows, metadata, session, writer);
+            return;
+        }
         if (rows.isEmpty()) {
             writeEmptyResultSet(session, writer);
             return;
@@ -69,6 +78,28 @@ public class ResultSetWriter {
         }
 
         // EOF（行数据结束）
+        writer.writeEof(new EofPacket(0, statusFlags));
+        writer.flush();
+    }
+
+    private static void writeWithMetadata(List<Row> rows, List<ResultColumnMetadata> metadata,
+                                          ConnectionSession session, PacketWriter writer) {
+        int statusFlags = StatusFlagBuilder.build(session.executionContext());
+        writer.writeColumnCount(metadata.size());
+        for (ResultColumnMetadata column : metadata) {
+            writer.writeColumnDefinition(column.definition());
+        }
+        writer.writeEof(new EofPacket(0, statusFlags));
+
+        for (Row row : rows) {
+            List<String> values = new ArrayList<>(metadata.size());
+            for (ResultColumnMetadata column : metadata) {
+                Object value = row.get(column.lookupKey());
+                values.add(value == null ? null : value.toString());
+            }
+            writer.writeResultSetRow(new ResultSetRowPacket(values));
+        }
+
         writer.writeEof(new EofPacket(0, statusFlags));
         writer.flush();
     }

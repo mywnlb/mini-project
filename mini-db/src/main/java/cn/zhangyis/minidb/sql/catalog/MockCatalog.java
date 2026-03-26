@@ -31,6 +31,11 @@ public class MockCatalog implements CatalogSpi {
     }
 
     @Override
+    public List<String> listDatabases() {
+        return List.of("DEFAULT");
+    }
+
+    @Override
     public List<ColumnMeta> getColumns(String tableName) {
         TableMeta meta = getTable(tableName);
         return meta != null ? meta.columns() : List.of();

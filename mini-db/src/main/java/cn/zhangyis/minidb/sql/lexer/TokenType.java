@@ -31,7 +31,7 @@ public enum TokenType {
     LAG, LEAD, NTILE, PERCENT_RANK, CUME_DIST,
 
     // Identifiers & Literals
-    IDENTIFIER, NUMBER, STRING, STAR,
+    IDENTIFIER, NUMBER, STRING, HEX, STAR,
 
     // Operators
     EQ, LT, GT, LE, GE, NE, PLUS, MINUS, MUL, DIV,

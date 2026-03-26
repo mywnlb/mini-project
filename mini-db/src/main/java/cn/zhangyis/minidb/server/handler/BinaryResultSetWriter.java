@@ -29,6 +29,21 @@ public class BinaryResultSetWriter {
      */
     public static void write(List<Row> rows, List<Integer> columnTypes,
                               ConnectionSession session, PacketWriter writer) {
+        writeInternal(rows, null, columnTypes, session, writer);
+    }
+
+    public static void writeWithMetadata(List<Row> rows, List<ResultColumnMetadata> metadata,
+                                         ConnectionSession session, PacketWriter writer) {
+        writeInternal(rows, metadata, List.of(), session, writer);
+    }
+
+    private static void writeInternal(List<Row> rows, List<ResultColumnMetadata> metadata,
+                                      List<Integer> columnTypes,
+                                      ConnectionSession session, PacketWriter writer) {
+        if (metadata != null && !metadata.isEmpty()) {
+            writeUsingMetadata(rows, metadata, session, writer);
+            return;
+        }
         if (rows.isEmpty()) {
             int statusFlags = StatusFlagBuilder.build(session.executionContext());
             writer.writeOk(OkPacket.ok(statusFlags));
@@ -82,6 +97,29 @@ public class BinaryResultSetWriter {
         }
 
         // EOF（行数据结束）
+        writer.writeEof(new EofPacket(0, statusFlags));
+        writer.flush();
+    }
+
+    private static void writeUsingMetadata(List<Row> rows, List<ResultColumnMetadata> metadata,
+                                           ConnectionSession session, PacketWriter writer) {
+        int statusFlags = StatusFlagBuilder.build(session.executionContext());
+        List<Integer> types = metadata.stream().map(ResultColumnMetadata::mysqlType).toList();
+
+        writer.writeColumnCount(metadata.size());
+        for (ResultColumnMetadata column : metadata) {
+            writer.writeColumnDefinition(column.definition());
+        }
+        writer.writeEof(new EofPacket(0, statusFlags));
+
+        for (Row row : rows) {
+            List<Object> values = new ArrayList<>(metadata.size());
+            for (ResultColumnMetadata column : metadata) {
+                values.add(row.get(column.lookupKey()));
+            }
+            writer.writeBinaryResultSetRow(new BinaryResultSetRowPacket(values, types));
+        }
+
         writer.writeEof(new EofPacket(0, statusFlags));
         writer.flush();
     }

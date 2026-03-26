@@ -31,9 +31,17 @@ public class CreateTableExec implements ExecNode {
             message = "Table '" + tableName + "' already exists, skipped";
         } else {
             List<ColumnMeta> columns = create.columnDefs().stream()
-                .map(def -> new ColumnMeta(def.name(), def.type(), def.primaryKey(), def.nullable(), null))
+                .map(def -> new ColumnMeta(def.name(), def.type(), def.primaryKey(),
+                        def.nullable(), null, def.length()))
                 .toList();
             catalog.createTable(TableMeta.of(tableName, columns, 0));
+            for (SqlCreateTable.TableIndexDef index : create.indexes()) {
+                if (index.primary()) {
+                    continue;
+                }
+                catalog.createIndex(new cn.zhangyis.minidb.sql.catalog.IndexMeta(
+                        index.name(), tableName, index.columns(), false, index.unique()));
+            }
             message = "Table '" + tableName + "' created";
         }
         returned = false;

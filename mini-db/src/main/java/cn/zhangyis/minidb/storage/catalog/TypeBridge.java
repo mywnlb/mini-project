@@ -25,11 +25,15 @@ public final class TypeBridge {
         return switch (kind) {
             case TINYINT, SMALLINT, INT -> ColumnType.INT;
             case BIGINT -> ColumnType.BIGINT;
+            case DECIMAL -> ColumnType.VARCHAR;
+            case DATE -> ColumnType.CHAR;
+            case TIME -> ColumnType.VARCHAR;
+            case DATETIME -> ColumnType.CHAR;
             case CHAR -> ColumnType.CHAR;
             case VARCHAR -> ColumnType.VARCHAR;
             case BINARY -> ColumnType.BINARY;
             case VARBINARY -> ColumnType.VARBINARY;
-            case BLOB, TEXT -> throw new CatalogException(700501,
+            case BLOB, TEXT, JSON -> throw new CatalogException(700501,
                     "Type " + kind + " cannot be used in index keys");
         };
     }

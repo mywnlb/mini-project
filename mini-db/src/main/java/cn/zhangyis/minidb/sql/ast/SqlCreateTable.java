@@ -9,16 +9,25 @@ import java.util.List;
 public record SqlCreateTable(
     SqlIdentifier table,
     List<ColumnDef> columnDefs,
+    List<TableIndexDef> indexes,
     boolean ifNotExists
 ) implements SqlNode {
 
     @Override
     public SqlKind kind() { return SqlKind.CREATE_TABLE; }
 
-    public record ColumnDef(String name, SqlType type, boolean primaryKey, boolean nullable) {
+    public record ColumnDef(String name, SqlType type, boolean primaryKey, boolean nullable,
+                            Integer length) {
         /** 兼容构造：默认 nullable=true */
         public ColumnDef(String name, SqlType type, boolean primaryKey) {
-            this(name, type, primaryKey, true);
+            this(name, type, primaryKey, true, null);
         }
+
+        public ColumnDef(String name, SqlType type, boolean primaryKey, boolean nullable) {
+            this(name, type, primaryKey, nullable, null);
+        }
+    }
+
+    public record TableIndexDef(String name, List<String> columns, boolean primary, boolean unique) {
     }
 }

@@ -1,7 +1,15 @@
 package cn.zhangyis.minidb.storage;
 
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
+import cn.zhangyis.minidb.storage.catalog.CatalogManager;
 import cn.zhangyis.minidb.storage.disk.DiskManager;
+import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
+import cn.zhangyis.minidb.storage.page.PageId;
+import cn.zhangyis.minidb.storage.page.PageType;
+import cn.zhangyis.minidb.storage.space.FspHeaderPage;
+import cn.zhangyis.minidb.storage.space.TableSpace;
+import cn.zhangyis.minidb.storage.transaction.core.TransactionManager;
+import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
@@ -43,6 +51,9 @@ import java.nio.file.Path;
  */
 public abstract class BaseStorageTest {
 
+    protected static final int SYSTEM_SPACE_ID = 0;
+    protected static final String SYSTEM_SPACE_NAME = "system";
+
     /**
      * 默认测试表空间ID
      */
@@ -52,6 +63,9 @@ public abstract class BaseStorageTest {
      * 默认表空间名称
      */
     protected static final String SPACE_NAME = "test_space";
+
+    protected static final int UNDO_SPACE_ID = 2;
+    protected static final String UNDO_SPACE_NAME = "undo_space";
 
     /**
      * 默认BufferPool大小（1024页 = 16MB）
@@ -77,6 +91,16 @@ public abstract class BaseStorageTest {
     protected BufferPool bufferPool;
 
     /**
+     * Undo 管理器（按需初始化）
+     */
+    protected UndoLogManager undoLogManager;
+
+    /**
+     * 事务管理器（按需初始化）
+     */
+    protected TransactionManager transactionManager;
+
+    /**
      * 测试前初始化
      *
      * <p>执行顺序：</p>
@@ -92,17 +116,17 @@ public abstract class BaseStorageTest {
      */
     @BeforeEach
     void setup() throws Exception {
-        // 1. 创建临时测试目录
-        testDir = Files.createTempDirectory("minidb_test_");
+        // 1. 在受控工作目录下创建临时测试目录，避免依赖系统默认 temp 路径
+        testDir = createTempTestDir("minidb_test_");
 
         // 2. 初始化 DiskManager
         diskManager = new DiskManager(testDir);
 
-        // 3. 创建表空间（关键步骤！没有这步会导致页面操作失败）
-        diskManager.createTablespace(SPACE_ID, SPACE_NAME);
-
-        // 4. 初始化 BufferPool
+        // 3. 初始化 BufferPool
         bufferPool = new BufferPool(BUFFER_POOL_SIZE, diskManager);
+
+        // 4. 提供一个默认的已初始化用户表空间，保证测试基类本身安全
+        initUserSpace();
 
         // 5. 调用子类的额外初始化（钩子方法）
         afterSetup();
@@ -126,28 +150,28 @@ public abstract class BaseStorageTest {
         // 1. 调用子类的清理前钩子
         beforeCleanup();
 
-        // 2. 关闭 BufferPool
+        // 2. 关闭事务子系统
+        if (transactionManager != null) {
+            transactionManager.close();
+            transactionManager = null;
+        }
+        if (undoLogManager != null) {
+            undoLogManager.close();
+            undoLogManager = null;
+        }
+
+        // 3. 关闭 BufferPool
         if (bufferPool != null) {
             bufferPool.close();
         }
 
-        // 3. 关闭 DiskManager
+        // 4. 关闭 DiskManager
         if (diskManager != null) {
             diskManager.close();
         }
 
-        // 4. 清理测试文件
-        if (testDir != null) {
-            Files.walk(testDir)
-                    .sorted((a, b) -> -a.compareTo(b))  // 逆序删除（先删文件再删目录）
-                    .forEach(p -> {
-                        try {
-                            Files.delete(p);
-                        } catch (IOException e) {
-                            // 忽略删除失败
-                        }
-                    });
-        }
+        // 5. 清理测试文件
+        deleteRecursively(testDir);
     }
 
     /**
@@ -180,6 +204,113 @@ public abstract class BaseStorageTest {
      */
     protected void beforeCleanup() throws Exception {
         // 默认为空，子类可以覆盖
+    }
+
+    protected void initSystemSpace() throws Exception {
+        initializeTablespace(SYSTEM_SPACE_ID, SYSTEM_SPACE_NAME, false);
+    }
+
+    protected void initUserSpace() throws Exception {
+        initializeTablespace(SPACE_ID, SPACE_NAME, false);
+    }
+
+    protected void initUndoSpace() throws Exception {
+        initializeTablespace(UNDO_SPACE_ID, UNDO_SPACE_NAME, true);
+    }
+
+    protected void initSystemCatalog() throws Exception {
+        initSystemSpace();
+        CatalogManager catalogManager = new CatalogManager(bufferPool);
+        catalogManager.bootstrap();
+        catalogManager.close();
+    }
+
+    protected TransactionManager bootTransactionSubsystem() throws Exception {
+        initSystemCatalog();
+        undoLogManager = new UndoLogManager(bufferPool, SYSTEM_SPACE_ID);
+        transactionManager = new TransactionManager(bufferPool, undoLogManager);
+        transactionManager.initialize();
+        return transactionManager;
+    }
+
+    protected TransactionManager bootInMemoryTransactionSubsystem(int undoSpaceId, int rollbackSegments)
+            throws Exception {
+        if (undoLogManager != null) {
+            undoLogManager.close();
+        }
+        undoLogManager = new UndoLogManager(bufferPool, undoSpaceId, rollbackSegments);
+        transactionManager = new TransactionManager(bufferPool, undoLogManager);
+        transactionManager.initializeInMemory();
+        return transactionManager;
+    }
+
+    protected boolean isTablespaceInitialized(int spaceId) throws Exception {
+        if (!diskManager.tablespaceExists(spaceId)) {
+            return false;
+        }
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            FspHeaderPage fsp = FspHeaderPage.fromExistingPage(
+                    mtr.getPage(PageId.of(spaceId, 0), BufferPool.FetchMode.READ_EXISTING));
+            return fsp.getNextSegmentId() >= 1;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    protected PageType readPageType(PageId pageId) throws Exception {
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            return mtr.getPage(pageId, BufferPool.FetchMode.READ_EXISTING).getPageType();
+        }
+    }
+
+    protected FspHeaderPage readFspHeader(int spaceId) throws Exception {
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            return FspHeaderPage.fromExistingPage(
+                    mtr.getPage(PageId.of(spaceId, 0), BufferPool.FetchMode.READ_EXISTING));
+        }
+    }
+
+    private void initializeTablespace(int spaceId, String name, boolean undoTablespace) throws Exception {
+        if (!diskManager.tablespaceExists(spaceId)) {
+            diskManager.createTablespace(spaceId, name);
+        }
+        if (isTablespaceInitialized(spaceId)) {
+            return;
+        }
+        try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+            if (undoTablespace) {
+                UndoLogManager.initializeUndoTablespace(mtr, bufferPool, spaceId);
+            } else {
+                TableSpace tableSpace = new TableSpace(spaceId, bufferPool);
+                tableSpace.initializeTablespace(mtr);
+            }
+            mtr.commit();
+        }
+        // 夹具中的新表空间必须以“已持久化的物理结构”暴露给测试，避免初始化脏页污染后续断言。
+        bufferPool.flushAllPages();
+    }
+
+    private Path createTempTestDir(String prefix) throws IOException {
+        Path tmpRoot = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath();
+        Files.createDirectories(tmpRoot);
+        return Files.createTempDirectory(tmpRoot, prefix);
+    }
+
+    static void deleteRecursively(Path root) {
+        if (root == null || !Files.exists(root)) {
+            return;
+        }
+        try {
+            Files.walk(root)
+                    .sorted((a, b) -> -a.compareTo(b))
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException ignored) {
+                        }
+                    });
+        } catch (IOException ignored) {
+        }
     }
 
     /**

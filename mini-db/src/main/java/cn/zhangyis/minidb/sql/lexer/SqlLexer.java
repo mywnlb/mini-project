@@ -98,7 +98,7 @@ public class SqlLexer {
     }
 
     public Token nextToken() {
-        skipWhitespace();
+        skipIgnorables();
         if (pos >= sql.length()) return Token.EOF_TOKEN;
 
         int start = pos;
@@ -128,6 +128,16 @@ public class SqlLexer {
             String word = sb.toString();
             // 反引号内的内容视为标识符（即使是关键字也不做关键字匹配）
             return new Token(TokenType.IDENTIFIER, word.toUpperCase(), start, pos);
+        }
+
+        // 十六进制字面量 0xABCD...
+        if (c == '0' && pos + 1 < sql.length()
+                && (sql.charAt(pos + 1) == 'x' || sql.charAt(pos + 1) == 'X')) {
+            pos += 2;
+            while (pos < sql.length() && isHexDigit(sql.charAt(pos))) {
+                pos++;
+            }
+            return new Token(TokenType.HEX, sql.substring(start + 2, pos), start, pos);
         }
 
         // 双字符运算符
@@ -177,7 +187,62 @@ public class SqlLexer {
         throw new SqlParseException("Unexpected character '" + c + "' at position " + pos);
     }
 
+    private void skipIgnorables() {
+        while (true) {
+            skipWhitespace();
+            if (skipLineComment() || skipBlockComment()) {
+                continue;
+            }
+            return;
+        }
+    }
+
     private void skipWhitespace() {
-        while (pos < sql.length() && Character.isWhitespace(sql.charAt(pos))) pos++;
+        while (pos < sql.length() && Character.isWhitespace(sql.charAt(pos))) {
+            pos++;
+        }
+    }
+
+    private boolean skipLineComment() {
+        if (pos + 1 >= sql.length()) {
+            return false;
+        }
+        if (sql.charAt(pos) == '-' && sql.charAt(pos + 1) == '-'
+                && (pos + 2 >= sql.length() || Character.isWhitespace(sql.charAt(pos + 2)))) {
+            pos += 2;
+            while (pos < sql.length()) {
+                char ch = sql.charAt(pos++);
+                if (ch == '\n' || ch == '\r') {
+                    break;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private boolean skipBlockComment() {
+        if (pos + 1 >= sql.length()) {
+            return false;
+        }
+        if (sql.charAt(pos) == '/' && sql.charAt(pos + 1) == '*') {
+            pos += 2;
+            while (pos + 1 < sql.length()) {
+                if (sql.charAt(pos) == '*' && sql.charAt(pos + 1) == '/') {
+                    pos += 2;
+                    return true;
+                }
+                pos++;
+            }
+            pos = sql.length();
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isHexDigit(char c) {
+        return (c >= '0' && c <= '9')
+                || (c >= 'a' && c <= 'f')
+                || (c >= 'A' && c <= 'F');
     }
 }

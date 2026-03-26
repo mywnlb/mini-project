@@ -7,6 +7,7 @@ import cn.zhangyis.minidb.sql.ast.SqlNode;
 import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
 import cn.zhangyis.minidb.sql.catalog.ColumnMeta;
 import cn.zhangyis.minidb.sql.rel.RelAlterTable;
+import cn.zhangyis.minidb.sql.types.TypeCoercion;
 
 import java.util.Map;
 
@@ -60,14 +61,7 @@ public class AlterTableExec implements ExecNode {
             return null;
         }
         if (defaultNode instanceof SqlLiteral lit) {
-            String val = lit.value();
-            return switch (lit.type()) {
-                case INT32 -> Integer.parseInt(val);
-                case BIGINT -> Long.parseLong(val);
-                case VARCHAR -> val;
-                case DECIMAL -> Double.parseDouble(val);
-                case DATETIME -> val;
-            };
+            return TypeCoercion.coerce(lit.value(), lit.type(), "default");
         }
         return null;
     }

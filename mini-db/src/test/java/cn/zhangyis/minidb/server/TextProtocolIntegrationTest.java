@@ -143,6 +143,113 @@ class TextProtocolIntegrationTest {
         }
     }
 
+    @Test
+    void comQuery_informationSchemaEmptyResult_returnsColumnMetadata() throws Exception {
+        try (Socket socket = connect()) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            sendComQuery(out,
+                    "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'MISSING_DB'");
+
+            byte[] colCountPkt = readPacket(in);
+            assertEquals(1, colCountPkt[0] & 0xFF, "0 行 SELECT 也应返回列数量");
+
+            byte[] colDef = readPacket(in);
+            assertTrue(colDef.length > 0, "应返回列定义包");
+
+            byte[] eof1 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof1[0] & 0xFF, "列定义后应有 EOF");
+
+            byte[] eof2 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof2[0] & 0xFF, "空结果集应直接结束，而不是返回 OK");
+        }
+    }
+
+    @Test
+    void comQuery_informationSchemaEngines_returnsVirtualRows() throws Exception {
+        try (Socket socket = connect()) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            sendComQuery(out, "SELECT ENGINE, SUPPORT FROM information_schema.ENGINES");
+
+            byte[] colCountPkt = readPacket(in);
+            assertEquals(2, colCountPkt[0] & 0xFF, "应返回 ENGINE/SUPPORT 两列");
+
+            readPacket(in);
+            readPacket(in);
+
+            byte[] eof1 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof1[0] & 0xFF);
+
+            byte[] rowPkt = readPacket(in);
+            assertNotEquals(MysqlConstants.EOF_HEADER, rowPkt[0] & 0xFF, "ENGINES 虚拟表至少应返回一行");
+
+            byte[] eof2 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof2[0] & 0xFF);
+        }
+    }
+
+    @Test
+    void comQuery_navicatRoutineMetadataProbe_returnsEmptyResultSetMetadata() throws Exception {
+        try (Socket socket = connect()) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            String sql = "SELECT DISTINCT ROUTINE_SCHEMA, ROUTINE_NAME, PARAMS.PARAMETER " +
+                    "FROM information_schema.ROUTINES " +
+                    "LEFT JOIN ( " +
+                    "SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, " +
+                    "GROUP_CONCAT(CONCAT(DATA_TYPE, ' ', PARAMETER_NAME) ORDER BY ORDINAL_POSITION SEPARATOR ', ') PARAMETER, " +
+                    "ROUTINE_TYPE FROM information_schema.PARAMETERS " +
+                    "GROUP BY SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE " +
+                    ") PARAMS " +
+                    "ON ROUTINES.ROUTINE_SCHEMA = PARAMS.SPECIFIC_SCHEMA " +
+                    "AND ROUTINES.ROUTINE_NAME = PARAMS.SPECIFIC_NAME " +
+                    "AND ROUTINES.ROUTINE_TYPE = PARAMS.ROUTINE_TYPE " +
+                    "WHERE ROUTINE_SCHEMA = 'sql_mode' ORDER BY ROUTINE_SCHEMA";
+            sendComQuery(out, sql);
+
+            byte[] colCountPkt = readPacket(in);
+            assertEquals(3, colCountPkt[0] & 0xFF, "应返回 ROUTINE_SCHEMA/ROUTINE_NAME/PARAMETER 三列");
+
+            readPacket(in);
+            readPacket(in);
+            readPacket(in);
+
+            byte[] eof1 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof1[0] & 0xFF);
+
+            byte[] eof2 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof2[0] & 0xFF, "无存储过程时应返回空结果集，而不是 ERR");
+        }
+    }
+
+    @Test
+    void comQuery_informationSchemaTriggersProbe_returnsEmptyResultSetMetadata() throws Exception {
+        try (Socket socket = connect()) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            sendComQuery(out,
+                    "SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE FROM information_schema.TRIGGERS " +
+                    "WHERE TRIGGER_SCHEMA = 'sql_mode' ORDER BY TRIGGER_NAME");
+
+            byte[] colCountPkt = readPacket(in);
+            assertEquals(2, colCountPkt[0] & 0xFF, "应返回查询投影的两列元数据");
+
+            readPacket(in);
+            readPacket(in);
+
+            byte[] eof1 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof1[0] & 0xFF);
+
+            byte[] eof2 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof2[0] & 0xFF);
+        }
+    }
+
     // ==================== 辅助方法 ====================
 
     /** 建立连接并完成认证 */

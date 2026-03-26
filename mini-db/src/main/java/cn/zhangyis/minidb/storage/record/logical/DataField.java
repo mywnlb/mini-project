@@ -3,8 +3,13 @@ package cn.zhangyis.minidb.storage.record.logical;
 import cn.zhangyis.minidb.storage.record.schema.FieldKind;
 import cn.zhangyis.minidb.storage.record.schema.FieldType;
 
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -25,6 +30,9 @@ import java.util.Objects;
  * @version 1.0
  */
 public final class DataField {
+    private static final DateTimeFormatter DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
+
 
     /**
      * 字段类型
@@ -111,6 +119,52 @@ public final class DataField {
         return new DataField(FieldType.bigint(false), data, false);
     }
 
+    public static DataField decimalField(Object value) {
+        if (value == null) {
+            return nullField(FieldKind.DECIMAL);
+        }
+        BigDecimal decimal = value instanceof BigDecimal bd ? bd : new BigDecimal(String.valueOf(value));
+        byte[] data = decimal.toPlainString().getBytes(StandardCharsets.UTF_8);
+        return new DataField(FieldType.decimal(data.length, false), data, false);
+    }
+
+    public static DataField dateField(Object value) {
+        if (value == null) {
+            return nullField(FieldKind.DATE);
+        }
+        LocalDate date = value instanceof LocalDate localDate
+                ? localDate
+                : LocalDate.parse(String.valueOf(value));
+        byte[] data = date.toString().getBytes(StandardCharsets.UTF_8);
+        return new DataField(FieldType.date(false), data, false);
+    }
+
+    public static DataField timeField(Object value) {
+        if (value == null) {
+            return nullField(FieldKind.TIME);
+        }
+        LocalTime time = value instanceof LocalTime localTime
+                ? localTime
+                : LocalTime.parse(normalizeTimeText(String.valueOf(value)));
+        byte[] data = TIME_FORMATTER.format(time.withNano(0)).getBytes(StandardCharsets.UTF_8);
+        return new DataField(FieldType.time(false), data, false);
+    }
+
+    public static DataField datetimeField(Object value) {
+        if (value == null) {
+            return nullField(FieldKind.DATETIME);
+        }
+        LocalDateTime datetime;
+        if (value instanceof LocalDateTime localDateTime) {
+            datetime = localDateTime;
+        } else {
+            String normalized = String.valueOf(value).replace(' ', 'T');
+            datetime = LocalDateTime.parse(normalized);
+        }
+        byte[] data = DATETIME_FORMATTER.format(datetime.withNano(0)).getBytes(StandardCharsets.UTF_8);
+        return new DataField(FieldType.datetime(false), data, false);
+    }
+
     // ==================== 字符串工厂方法 ====================
 
     /**
@@ -186,6 +240,14 @@ public final class DataField {
         }
         byte[] data = value.getBytes(StandardCharsets.UTF_8);
         return new DataField(FieldType.text(false), data, false);
+    }
+
+    public static DataField jsonField(String value) {
+        if (value == null) {
+            return nullField(FieldKind.JSON);
+        }
+        byte[] data = value.getBytes(StandardCharsets.UTF_8);
+        return new DataField(FieldType.json(data.length, false), data, false);
     }
 
     // ==================== 通用工厂方法 ====================
@@ -311,7 +373,11 @@ public final class DataField {
             case SMALLINT -> ByteBuffer.wrap(data).getShort();
             case INT -> ByteBuffer.wrap(data).getInt();
             case BIGINT -> ByteBuffer.wrap(data).getLong();
-            case CHAR, VARCHAR, TEXT -> asString();
+            case DECIMAL -> new BigDecimal(asString());
+            case DATE -> LocalDate.parse(asString());
+            case TIME -> LocalTime.parse(normalizeTimeText(asString()));
+            case DATETIME -> LocalDateTime.parse(asString().replace(' ', 'T'));
+            case CHAR, VARCHAR, TEXT, JSON -> asString();
             case BINARY, VARBINARY, BLOB -> getData();
         };
     }
@@ -359,6 +425,11 @@ public final class DataField {
             return "0x" + bytesToHex(bytes);
         }
         return String.valueOf(value);
+    }
+
+    private static String normalizeTimeText(String value) {
+        int dot = value.indexOf('.');
+        return dot >= 0 ? value.substring(0, dot) : value;
     }
 
     private static String bytesToHex(byte[] bytes) {

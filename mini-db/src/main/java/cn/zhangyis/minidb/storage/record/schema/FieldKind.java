@@ -32,6 +32,26 @@ public enum FieldKind {
      */
     BIGINT(8, true, false),
 
+    /**
+     * DECIMAL（按规范化十进制文本存储）
+     */
+    DECIMAL(0, false, true),
+
+    /**
+     * DATE（按 ISO-8601 文本存储）
+     */
+    DATE(0, false, true),
+
+    /**
+     * TIME（按 ISO-8601 文本存储）
+     */
+    TIME(0, false, true),
+
+    /**
+     * DATETIME（按 ISO-8601 文本存储）
+     */
+    DATETIME(0, false, true),
+
     // ==================== 字符串 ====================
 
     /**
@@ -68,7 +88,12 @@ public enum FieldKind {
     /**
      * TEXT (变长文本大对象)
      */
-    TEXT(0, false, true);
+    TEXT(0, false, true),
+
+    /**
+     * JSON（当前按文本存储）
+     */
+    JSON(0, false, true);
 
     /**
      * 固定字节长度（0 表示需要额外指定长度）
@@ -133,7 +158,7 @@ public enum FieldKind {
      * @return true 如果是字符串类型
      */
     public boolean isString() {
-        return this == CHAR || this == VARCHAR || this == TEXT;
+        return this == CHAR || this == VARCHAR || this == TEXT || this == JSON;
     }
 
     /**

@@ -1,6 +1,5 @@
 package cn.zhangyis.minidb.server.handler;
 
-import cn.zhangyis.minidb.sql.catalog.ColumnMeta;
 import cn.zhangyis.minidb.sql.exec.PreparedStatement;
 
 import java.util.List;
@@ -21,20 +20,20 @@ public class ServerPreparedStatement {
     private final PreparedStatement innerPs;  // null 表示系统变量/拦截类查询
     private final String sql;                 // 原始 SQL（用于拦截类查询的 execute）
     private final int numParams;
-    private final List<ColumnMeta> resultColumnMeta;
+    private final List<ResultColumnMetadata> resultColumnMeta;
 
     public ServerPreparedStatement(int statementId, PreparedStatement innerPs,
-                                   int numParams, List<ColumnMeta> resultColumnMeta) {
+                                   int numParams, List<ResultColumnMetadata> resultColumnMeta) {
         this(statementId, innerPs, null, numParams, resultColumnMeta);
     }
 
     public ServerPreparedStatement(int statementId, String sql,
-                                   int numParams, List<ColumnMeta> resultColumnMeta) {
+                                   int numParams, List<ResultColumnMetadata> resultColumnMeta) {
         this(statementId, null, sql, numParams, resultColumnMeta);
     }
 
     private ServerPreparedStatement(int statementId, PreparedStatement innerPs, String sql,
-                                    int numParams, List<ColumnMeta> resultColumnMeta) {
+                                    int numParams, List<ResultColumnMetadata> resultColumnMeta) {
         this.statementId = statementId;
         this.innerPs = innerPs;
         this.sql = sql;
@@ -46,6 +45,6 @@ public class ServerPreparedStatement {
     public PreparedStatement innerPs() { return innerPs; }
     public String sql() { return sql; }
     public int numParams() { return numParams; }
-    public List<ColumnMeta> resultColumnMeta() { return resultColumnMeta; }
+    public List<ResultColumnMetadata> resultColumnMeta() { return resultColumnMeta; }
     public boolean isIntercepted() { return innerPs == null; }
 }

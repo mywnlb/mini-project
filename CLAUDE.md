@@ -275,3 +275,31 @@ If any step above is skipped, the implementation must be discarded as unsafe.
 
 在使用 Ralph Loop 模式时，如果连续 5次 测试失败且报错信息没有变化，请立即停止并请求人类介入。
 每次循环必须先执行 git commit -m "ralph: iteration X" 以便回滚。
+
+---
+
+## 本地编译 / 测试环境（MANDATORY）
+
+在这个仓库里执行编译或测试时，固定使用下面这套环境，不要依赖 PATH 自动解析：
+
+- `JAVA_HOME=C:\Program Files\Java\jdk-21`
+- `GRADLE_USER_HOME=C:\gradlereportiry`
+- `Gradle=D:\worker\gradle71\gradle-8.5-bin\gradle-8.5\bin\gradle.bat`
+
+PowerShell 推荐写法：
+
+```powershell
+$env:JAVA_HOME='C:\Program Files\Java\jdk-21'
+$env:GRADLE_USER_HOME='C:\gradlereportiry'
+D:\worker\gradle71\gradle-8.5-bin\gradle-8.5\bin\gradle.bat :mini-db:test
+```
+
+强制规则：
+
+1. 不要默认使用 `gradlew` / `gradlew.bat`，仓库当前可能缺失可用 wrapper 运行环境
+2. 不要使用 PATH 中旧版 `gradle`，旧版本会与 Java 21 不兼容
+3. 需要跑单测时，使用：
+
+```powershell
+D:\worker\gradle71\gradle-8.5-bin\gradle-8.5\bin\gradle.bat :mini-db:test --tests "全限定测试类名"
+```

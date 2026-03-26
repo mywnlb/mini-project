@@ -291,7 +291,9 @@ public class TableSpace {
 
         // 1. 获取当前 FREE_LIMIT（已初始化的 extent 边界，以页为单位）
         int freeLimit = fspHeader.getFreeLimit();
-        int currentExtentNo = freeLimit / EXTENT_SIZE;
+        // FREE_LIMIT 以页为单位，需要向上取整到下一个尚未初始化的 extent。
+        // 例如 FREE_LIMIT=1 表示仅 page 0 已初始化，下一个应是 extent 1，而不是 extent 0。
+        int currentExtentNo = (freeLimit + EXTENT_SIZE - 1) / EXTENT_SIZE;
 
         // 2. 计算下一个要初始化的 extent
         int nextExtentNo = currentExtentNo;

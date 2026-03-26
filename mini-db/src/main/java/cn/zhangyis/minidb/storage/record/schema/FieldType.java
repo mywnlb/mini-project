@@ -1,5 +1,9 @@
 package cn.zhangyis.minidb.storage.record.schema;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.Comparator;
 import java.util.Objects;
 
@@ -85,6 +89,22 @@ public final class FieldType {
         return of(FieldKind.BIGINT, 8, nullable);
     }
 
+    public static FieldType decimal(int precision, boolean nullable) {
+        return of(FieldKind.DECIMAL, precision, nullable);
+    }
+
+    public static FieldType date(boolean nullable) {
+        return of(FieldKind.DATE, 10, nullable);
+    }
+
+    public static FieldType time(boolean nullable) {
+        return of(FieldKind.TIME, 16, nullable);
+    }
+
+    public static FieldType datetime(boolean nullable) {
+        return of(FieldKind.DATETIME, 32, nullable);
+    }
+
     public static FieldType charType(int length, boolean nullable) {
         return of(FieldKind.CHAR, length, nullable);
     }
@@ -107,6 +127,10 @@ public final class FieldType {
 
     public static FieldType text(boolean nullable) {
         return of(FieldKind.TEXT, 0, nullable);
+    }
+
+    public static FieldType json(int length, boolean nullable) {
+        return of(FieldKind.JSON, length, nullable);
     }
 
     // ==================== Getters ====================
@@ -152,11 +176,14 @@ public final class FieldType {
      * @return 用于比较该类型值的 Comparator
      */
     public Comparator<byte[]> getComparator() {
-        if (kind.isInteger()) {
-            return getIntegerComparator();
-        } else {
-            return getBinaryComparator();
-        }
+        return switch (kind) {
+            case TINYINT, SMALLINT, INT, BIGINT -> getIntegerComparator();
+            case DECIMAL -> comparingStrings(BigDecimal::new);
+            case DATE -> comparingStrings(LocalDate::parse);
+            case TIME -> comparingStrings(value -> LocalTime.parse(normalizeTimeText(value)));
+            case DATETIME -> comparingStrings(value -> LocalDateTime.parse(value.replace(' ', 'T')));
+            default -> getBinaryComparator();
+        };
     }
 
     private Comparator<byte[]> getIntegerComparator() {
@@ -184,6 +211,15 @@ public final class FieldType {
                 if (cmp != 0) return cmp;
             }
             return Integer.compare(a.length, b.length);
+        };
+    }
+
+    private <T extends Comparable<T>> Comparator<byte[]> comparingStrings(java.util.function.Function<String, T> parser) {
+        return (a, b) -> {
+            if (a == null && b == null) return 0;
+            if (a == null) return -1;
+            if (b == null) return 1;
+            return parser.apply(new String(a)).compareTo(parser.apply(new String(b)));
         };
     }
 
@@ -221,12 +257,18 @@ public final class FieldType {
         StringBuilder sb = new StringBuilder();
         sb.append(kind.name());
         if (kind == FieldKind.CHAR || kind == FieldKind.VARCHAR ||
-            kind == FieldKind.BINARY || kind == FieldKind.VARBINARY) {
+            kind == FieldKind.BINARY || kind == FieldKind.VARBINARY
+            || kind == FieldKind.DECIMAL || kind == FieldKind.JSON) {
             sb.append("(").append(length).append(")");
         }
         if (!nullable) {
             sb.append(" NOT NULL");
         }
         return sb.toString();
+    }
+
+    private static String normalizeTimeText(String value) {
+        int dot = value.indexOf('.');
+        return dot >= 0 ? value.substring(0, dot) : value;
     }
 }

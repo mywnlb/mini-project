@@ -2,5 +2,14 @@ description = "mini db"
 
 dependencies {
     implementation 'io.netty:netty-all:4.1.100.Final'
+    testImplementation 'com.mysql:mysql-connector-j:8.4.0'
     testImplementation 'org.mockito:mockito-core:5.12.0'
+}
+
+tasks.withType(Test).configureEach {
+    def localTmpDir = layout.buildDirectory.dir("tmp/test-jvm").get().asFile
+    systemProperty 'java.io.tmpdir', localTmpDir.absolutePath
+    doFirst {
+        localTmpDir.mkdirs()
+    }
 }

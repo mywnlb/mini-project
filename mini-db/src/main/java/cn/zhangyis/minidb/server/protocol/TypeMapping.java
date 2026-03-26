@@ -3,7 +3,9 @@ package cn.zhangyis.minidb.server.protocol;
 import cn.zhangyis.minidb.sql.types.SqlType;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.Map;
 
 /**
@@ -24,10 +26,18 @@ public final class TypeMapping {
 
     // SqlType → MySQL type code
     private static final Map<SqlType, Integer> SQL_TO_MYSQL = Map.of(
+            SqlType.TINYINT, MysqlConstants.MYSQL_TYPE_TINY,
+            SqlType.SMALLINT, MysqlConstants.MYSQL_TYPE_SHORT,
             SqlType.INT32, MysqlConstants.MYSQL_TYPE_LONG,
             SqlType.BIGINT, MysqlConstants.MYSQL_TYPE_LONGLONG,
+            SqlType.CHAR, MysqlConstants.MYSQL_TYPE_STRING,
             SqlType.VARCHAR, MysqlConstants.MYSQL_TYPE_VAR_STRING,
+            SqlType.TEXT, MysqlConstants.MYSQL_TYPE_BLOB,
+            SqlType.BLOB, MysqlConstants.MYSQL_TYPE_BLOB,
+            SqlType.JSON, MysqlConstants.MYSQL_TYPE_VAR_STRING,
             SqlType.DECIMAL, MysqlConstants.MYSQL_TYPE_NEWDECIMAL,
+            SqlType.DATE, MysqlConstants.MYSQL_TYPE_DATE,
+            SqlType.TIME, MysqlConstants.MYSQL_TYPE_TIME,
             SqlType.DATETIME, MysqlConstants.MYSQL_TYPE_DATETIME
     );
 
@@ -37,12 +47,14 @@ public final class TypeMapping {
             MysqlConstants.MYSQL_TYPE_LONGLONG, SqlType.BIGINT,
             MysqlConstants.MYSQL_TYPE_VAR_STRING, SqlType.VARCHAR,
             MysqlConstants.MYSQL_TYPE_NEWDECIMAL, SqlType.DECIMAL,
+            MysqlConstants.MYSQL_TYPE_DATE, SqlType.DATE,
+            MysqlConstants.MYSQL_TYPE_TIME, SqlType.TIME,
             MysqlConstants.MYSQL_TYPE_DATETIME, SqlType.DATETIME,
             MysqlConstants.MYSQL_TYPE_VARCHAR, SqlType.VARCHAR,
-            MysqlConstants.MYSQL_TYPE_STRING, SqlType.VARCHAR,
-            MysqlConstants.MYSQL_TYPE_BLOB, SqlType.VARCHAR,
-            MysqlConstants.MYSQL_TYPE_SHORT, SqlType.INT32,
-            MysqlConstants.MYSQL_TYPE_TINY, SqlType.INT32
+            MysqlConstants.MYSQL_TYPE_STRING, SqlType.CHAR,
+            MysqlConstants.MYSQL_TYPE_BLOB, SqlType.BLOB,
+            MysqlConstants.MYSQL_TYPE_SHORT, SqlType.SMALLINT,
+            MysqlConstants.MYSQL_TYPE_TINY, SqlType.TINYINT
     );
 
     /**
@@ -81,8 +93,14 @@ public final class TypeMapping {
             return MysqlConstants.MYSQL_TYPE_LONGLONG;
         } else if (value instanceof BigDecimal || value instanceof Double || value instanceof Float) {
             return MysqlConstants.MYSQL_TYPE_NEWDECIMAL;
+        } else if (value instanceof LocalDate) {
+            return MysqlConstants.MYSQL_TYPE_DATE;
+        } else if (value instanceof LocalTime) {
+            return MysqlConstants.MYSQL_TYPE_TIME;
         } else if (value instanceof LocalDateTime) {
             return MysqlConstants.MYSQL_TYPE_DATETIME;
+        } else if (value instanceof byte[]) {
+            return MysqlConstants.MYSQL_TYPE_BLOB;
         } else {
             return MysqlConstants.MYSQL_TYPE_VAR_STRING;
         }

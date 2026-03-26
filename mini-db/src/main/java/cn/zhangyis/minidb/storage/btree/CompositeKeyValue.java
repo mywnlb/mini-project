@@ -1,5 +1,6 @@
 package cn.zhangyis.minidb.storage.btree;
 
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -188,7 +189,7 @@ public class CompositeKeyValue {
 
             case VARCHAR:
             case CHAR:
-                byte[] strBytes = ((String) value).getBytes(StandardCharsets.UTF_8);
+                byte[] strBytes = normalizeStringValue(value).getBytes(StandardCharsets.UTF_8);
                 if (column.getType() == ColumnType.VARCHAR) {
                     // 变长：2字节长度 + 数据
                     buffer.putShort((short) strBytes.length);
@@ -216,6 +217,13 @@ public class CompositeKeyValue {
                 }
                 break;
         }
+    }
+
+    private String normalizeStringValue(Object value) {
+        if (value instanceof BigDecimal decimal) {
+            return decimal.toPlainString();
+        }
+        return String.valueOf(value);
     }
 
     /**

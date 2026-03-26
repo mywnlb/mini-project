@@ -43,6 +43,37 @@ public class ParameterBinder {
             );
         }
 
+        if (node instanceof SqlWithSelect withSelect) {
+            List<SqlCte> ctes = new ArrayList<>();
+            for (SqlCte cte : withSelect.ctes()) {
+                ctes.add(new SqlCte(cte.name(), cte.columnNames(), (SqlSelect) bind(cte.query())));
+            }
+            return new SqlWithSelect(ctes, (SqlSelect) bind(withSelect.select()));
+        }
+
+        if (node instanceof SqlSetOperation setOp) {
+            return new SqlSetOperation(bind(setOp.left()), bind(setOp.right()), setOp.all(), setOp.opType());
+        }
+
+        if (node instanceof SqlExplain explain) {
+            return new SqlExplain(bind(explain.query()), explain.analyze());
+        }
+
+        if (node instanceof SqlJoin join) {
+            return new SqlJoin(
+                    join.joinType(),
+                    bind(join.left()),
+                    bind(join.right()),
+                    bind(join.condition()),
+                    join.usingColumns(),
+                    join.natural()
+            );
+        }
+
+        if (node instanceof SqlDerivedTable derived) {
+            return new SqlDerivedTable((SqlSelect) bind(derived.select()), derived.alias());
+        }
+
         if (node instanceof SqlBinaryOp b) {
             SqlNode newLeft = bind(b.left());
             SqlNode newRight = bind(b.right());
@@ -100,6 +131,16 @@ public class ParameterBinder {
             SqlNode newCol = bind(item.column());
             if (newCol == item.column()) return node;
             return new SqlOrderByItem(newCol, item.ascending());
+        }
+
+        if (node instanceof SqlWindowFunction wf) {
+            return new SqlWindowFunction(
+                    wf.funcName(),
+                    bind(wf.arg()),
+                    bindNodeList(wf.partitionBy()),
+                    bindNodeList(wf.orderBy()),
+                    bindNodeList(wf.extraArgs())
+            );
         }
 
         if (node instanceof SqlAggCall agg) {

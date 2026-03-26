@@ -5,7 +5,9 @@ import cn.zhangyis.minidb.storage.transaction.pointer.RollbackPointer;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Undo Segment (回滚段内的事务槽)
@@ -302,7 +304,7 @@ public class UndoSegment {
      * @return Undo 记录迭代器
      */
     public Iterable<UndoRecord> reverseIterate(UndoPageReader pageReader) {
-        return () -> new ReverseUndoIterator(lastUndoPtr, pageReader);
+        return () -> new ReverseUndoIterator(lastUndoPtr, pageReader, pageList);
     }
 
     /**
@@ -418,19 +420,23 @@ public class UndoSegment {
     private static class ReverseUndoIterator implements java.util.Iterator<UndoRecord> {
         private RollbackPointer currentPtr;
         private final UndoPageReader pageReader;
+        private final Set<Integer> ownedPageNos;
         private ByteBuffer currentPageBuffer;
         private int currentPageNo;
 
-        ReverseUndoIterator(RollbackPointer startPtr, UndoPageReader pageReader) {
+        ReverseUndoIterator(RollbackPointer startPtr, UndoPageReader pageReader, List<Integer> pageList) {
             this.currentPtr = startPtr;
             this.pageReader = pageReader;
+            this.ownedPageNos = new HashSet<>(pageList);
             this.currentPageNo = -1;
             this.currentPageBuffer = null;
         }
 
         @Override
         public boolean hasNext() {
-            return !currentPtr.isNull();
+            // prevUndoPtr 可以跨到另一个 UndoSegment；segment 级反向遍历必须在本 segment 边界停止，
+            // 否则回滚阶段会重复返回其他 segment 的记录，导致双重回滚。
+            return !currentPtr.isNull() && ownedPageNos.contains(currentPtr.getPageNo());
         }
 
         @Override

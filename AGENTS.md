@@ -244,3 +244,33 @@ try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
     mtr.commit();
 }
 ```
+
+---
+
+## 15) 本地编译 / 测试环境（MANDATORY）
+
+在本仓库执行编译或测试时，默认使用以下本机环境，不要依赖 PATH 中的旧版本工具：
+
+- `JAVA_HOME=C:\Program Files\Java\jdk-21`
+- `GRADLE_USER_HOME=C:\gradlereportiry`
+- `Gradle=D:\worker\gradle71\gradle-8.5-bin\gradle-8.5\bin\gradle.bat`
+
+执行 Gradle 前必须先设置上述环境变量。
+
+PowerShell 推荐写法：
+
+```powershell
+$env:JAVA_HOME='C:\Program Files\Java\jdk-21'
+$env:GRADLE_USER_HOME='C:\gradlereportiry'
+D:\worker\gradle71\gradle-8.5-bin\gradle-8.5\bin\gradle.bat :mini-db:test
+```
+
+额外规则：
+
+1. **不要优先使用 `gradlew` / `gradlew.bat`**，当前仓库缺少可用的 wrapper 运行环境时会直接失败
+2. **不要使用 PATH 中默认的旧版 `gradle`**，本机旧版本曾因 Java 21 classfile 不兼容导致构建失败
+3. 如果只跑单个测试，使用：
+
+```powershell
+D:\worker\gradle71\gradle-8.5-bin\gradle-8.5\bin\gradle.bat :mini-db:test --tests "全限定测试类名"
+```

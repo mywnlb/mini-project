@@ -1,5 +1,10 @@
 package cn.zhangyis.minidb.sql.types;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+
 /**
  * 集中化的类型转换和校验工具类。
  *
@@ -33,10 +38,15 @@ public final class TypeCoercion {
         if (value == null) return null;
 
         return switch (targetType) {
+            case TINYINT -> coerceToTinyint(value, columnName);
+            case SMALLINT -> coerceToSmallint(value, columnName);
             case INT32 -> coerceToInt(value, columnName);
             case BIGINT -> coerceToBigint(value, columnName);
+            case CHAR, VARCHAR, TEXT, JSON -> coerceToVarchar(value);
+            case BLOB -> coerceToBlob(value, columnName);
             case DECIMAL -> coerceToDecimal(value, columnName);
-            case VARCHAR -> coerceToVarchar(value);
+            case DATE -> coerceToDate(value, columnName);
+            case TIME -> coerceToTime(value, columnName);
             case DATETIME -> coerceToDatetime(value, columnName);
         };
     }
@@ -79,6 +89,40 @@ public final class TypeCoercion {
         throw new TypeMismatchException(columnName, SqlType.INT32, value);
     }
 
+    private static Object coerceToTinyint(Object value, String columnName) {
+        if (value instanceof Byte) return value;
+        if (value instanceof Number n) {
+            double d = n.doubleValue();
+            if (d != Math.floor(d)) throw new TypeMismatchException(columnName, SqlType.TINYINT, value);
+            long l = n.longValue();
+            if (l >= Byte.MIN_VALUE && l <= Byte.MAX_VALUE) return (byte) l;
+        }
+        if (value instanceof String s) {
+            try {
+                return Byte.parseByte(s.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        throw new TypeMismatchException(columnName, SqlType.TINYINT, value);
+    }
+
+    private static Object coerceToSmallint(Object value, String columnName) {
+        if (value instanceof Short) return value;
+        if (value instanceof Number n) {
+            double d = n.doubleValue();
+            if (d != Math.floor(d)) throw new TypeMismatchException(columnName, SqlType.SMALLINT, value);
+            long l = n.longValue();
+            if (l >= Short.MIN_VALUE && l <= Short.MAX_VALUE) return (short) l;
+        }
+        if (value instanceof String s) {
+            try {
+                return Short.parseShort(s.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        throw new TypeMismatchException(columnName, SqlType.SMALLINT, value);
+    }
+
     private static Object coerceToBigint(Object value, String columnName) {
         if (value instanceof Long) return value;
         if (value instanceof Integer i) return i.longValue();
@@ -98,11 +142,16 @@ public final class TypeCoercion {
     }
 
     private static Object coerceToDecimal(Object value, String columnName) {
-        if (value instanceof Double) return value;
-        if (value instanceof Number n) return n.doubleValue();
+        if (value instanceof BigDecimal) return value;
+        if (value instanceof Number n) {
+            if (n instanceof Float || n instanceof Double) {
+                return BigDecimal.valueOf(n.doubleValue());
+            }
+            return BigDecimal.valueOf(n.longValue());
+        }
         if (value instanceof String s) {
             try {
-                return Double.parseDouble(s.trim());
+                return new BigDecimal(s.trim());
             } catch (NumberFormatException e) {
                 throw new TypeMismatchException(columnName, SqlType.DECIMAL, value);
             }
@@ -115,8 +164,78 @@ public final class TypeCoercion {
         return String.valueOf(value);
     }
 
+    private static Object coerceToBlob(Object value, String columnName) {
+        if (value instanceof byte[]) {
+            return value;
+        }
+        if (value instanceof String s) {
+            String hex = s.trim();
+            if (hex.startsWith("0x") || hex.startsWith("0X")) {
+                hex = hex.substring(2);
+            }
+            return decodeHex(hex, columnName);
+        }
+        throw new TypeMismatchException(columnName, SqlType.BLOB, value);
+    }
+
+    private static Object coerceToDate(Object value, String columnName) {
+        if (value instanceof LocalDate) return value;
+        if (value instanceof String s) {
+            try {
+                return LocalDate.parse(s.trim());
+            } catch (Exception e) {
+                throw new TypeMismatchException(columnName, SqlType.DATE, value);
+            }
+        }
+        throw new TypeMismatchException(columnName, SqlType.DATE, value);
+    }
+
+    private static Object coerceToTime(Object value, String columnName) {
+        if (value instanceof LocalTime) return value;
+        if (value instanceof String s) {
+            try {
+                return LocalTime.parse(normalizeTimeText(s.trim()));
+            } catch (Exception e) {
+                throw new TypeMismatchException(columnName, SqlType.TIME, value);
+            }
+        }
+        throw new TypeMismatchException(columnName, SqlType.TIME, value);
+    }
+
     private static Object coerceToDatetime(Object value, String columnName) {
-        if (value instanceof String) return value;
+        if (value instanceof LocalDateTime) return value;
+        if (value instanceof String s) {
+            String normalized = s.trim().replace('T', ' ');
+            try {
+                return LocalDateTime.parse(normalized.replace(' ', 'T'));
+            } catch (Exception ignored) {
+                try {
+                    return LocalDate.parse(normalized).atStartOfDay();
+                } catch (Exception e) {
+                    throw new TypeMismatchException(columnName, SqlType.DATETIME, value);
+                }
+            }
+        }
         throw new TypeMismatchException(columnName, SqlType.DATETIME, value);
+    }
+
+    private static String normalizeTimeText(String value) {
+        int dot = value.indexOf('.');
+        return dot >= 0 ? value.substring(0, dot) : value;
+    }
+
+    private static byte[] decodeHex(String hex, String columnName) {
+        if ((hex.length() & 1) != 0) {
+            throw new TypeMismatchException(columnName, SqlType.BLOB, hex);
+        }
+        byte[] bytes = new byte[hex.length() / 2];
+        for (int i = 0; i < hex.length(); i += 2) {
+            try {
+                bytes[i / 2] = (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
+            } catch (NumberFormatException e) {
+                throw new TypeMismatchException(columnName, SqlType.BLOB, hex);
+            }
+        }
+        return bytes;
     }
 }

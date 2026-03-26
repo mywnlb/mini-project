@@ -12,6 +12,7 @@ import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.PageId;
 import cn.zhangyis.minidb.storage.page.PageType;
 import cn.zhangyis.minidb.storage.record.schema.FieldType;
+import cn.zhangyis.minidb.storage.space.FspHeaderPage;
 import cn.zhangyis.minidb.storage.space.TableSpace;
 import cn.zhangyis.minidb.storage.transaction.core.TransactionSysPage;
 import org.junit.jupiter.api.*;
@@ -48,10 +49,10 @@ public class DatabaseBootstrapTest {
 
     @BeforeEach
     void setup() throws Exception {
-        testDir = Files.createTempDirectory("minidb_bootstrap_test_");
+        Path tmpRoot = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath();
+        Files.createDirectories(tmpRoot);
+        testDir = Files.createTempDirectory(tmpRoot, "minidb_bootstrap_test_");
         diskManager = new DiskManager(testDir);
-        // 预先创建系统表空间文件，模拟已有数据库
-        diskManager.createTablespace(SYSTEM_SPACE_ID, SYSTEM_SPACE_NAME);
         bufferPool = new BufferPool(BUFFER_POOL_SIZE, diskManager);
         catalogManager = new CatalogManager(bufferPool);
     }
@@ -64,17 +65,7 @@ public class DatabaseBootstrapTest {
         if (diskManager != null) {
             diskManager.close();
         }
-        if (testDir != null) {
-            Files.walk(testDir)
-                    .sorted((a, b) -> -a.compareTo(b))
-                    .forEach(p -> {
-                        try {
-                            Files.delete(p);
-                        } catch (IOException e) {
-                            // ignore
-                        }
-                    });
-        }
+        BaseStorageTest.deleteRecursively(testDir);
     }
 
     // ==================== 首次启动 ====================
@@ -91,6 +82,8 @@ public class DatabaseBootstrapTest {
 
         assertTrue(bootstrap.isStarted(), "应标记为已启动");
         assertNull(bootstrap.getRedoStats(), "首次启动不应有 redo stats");
+        assertTrue(readNextSegmentId(PageId.of(SYSTEM_SPACE_ID, 0)) >= 1L,
+                "首次启动后 FSP Header 必须处于已初始化状态，后续 phase 可继续推进 nextSegmentId");
 
         bootstrap.shutdown();
         assertFalse(bootstrap.isStarted(), "shutdown 后应标记为未启动");
@@ -121,7 +114,7 @@ public class DatabaseBootstrapTest {
     @Order(3)
     @DisplayName("system space 已打开时跳过 open 步骤")
     void start_systemSpaceAlreadyOpen_skipsOpen() throws Exception {
-        // system space 在 setup 中已经通过 createTablespace 打开
+        createAndInitializeSystemTablespace();
         assertTrue(diskManager.tablespaceExists(SYSTEM_SPACE_ID));
 
         DatabaseBootstrap bootstrap = new DatabaseBootstrap(
@@ -138,7 +131,7 @@ public class DatabaseBootstrapTest {
     @Order(4)
     @DisplayName("空 data dir 首次启动时自动初始化 system space")
     void start_initializesSystemSpaceWhenDataDirIsEmpty() throws Exception {
-        Path emptyDir = Files.createTempDirectory("minidb_empty_");
+        Path emptyDir = createLocalTempDir("minidb_empty_");
         try {
             DiskManager emptyDiskManager = new DiskManager(emptyDir);
             BufferPool emptyBufferPool = new BufferPool(BUFFER_POOL_SIZE, emptyDiskManager);
@@ -154,6 +147,8 @@ public class DatabaseBootstrapTest {
                 assertEquals(PageType.FIL_PAGE_DDL_LOG,
                         readPageType(emptyBufferPool, PageId.of(SYSTEM_SPACE_ID, DdlLogPage.DDL_LOG_PAGE_NO)));
                 assertNotNull(findTrxSysPageId(emptyBufferPool, emptyDiskManager));
+                assertTrue(readNextSegmentId(emptyBufferPool, PageId.of(SYSTEM_SPACE_ID, 0)) >= 1L,
+                        "system space 完成启动链后必须保持已初始化状态");
             } finally {
                 if (bootstrap.isStarted()) {
                     bootstrap.shutdown();
@@ -162,11 +157,7 @@ public class DatabaseBootstrapTest {
                 emptyDiskManager.close();
             }
         } finally {
-            Files.walk(emptyDir)
-                    .sorted((a, b) -> -a.compareTo(b))
-                    .forEach(p -> {
-                        try { Files.delete(p); } catch (IOException e) { /* ignore */ }
-                    });
+            BaseStorageTest.deleteRecursively(emptyDir);
         }
     }
 
@@ -174,7 +165,7 @@ public class DatabaseBootstrapTest {
     @Order(5)
     @DisplayName("system space 缺失但 data dir 非空时启动失败")
     void start_failsIfSystemSpaceMissingInNonEmptyDataDir() throws Exception {
-        Path brokenDir = Files.createTempDirectory("minidb_missing_system_");
+        Path brokenDir = createLocalTempDir("minidb_missing_system_");
         try {
             DiskManager brokenDiskManager = new DiskManager(brokenDir);
             brokenDiskManager.createTablespace(1, "orphan");
@@ -193,11 +184,7 @@ public class DatabaseBootstrapTest {
                 brokenDiskManager.close();
             }
         } finally {
-            Files.walk(brokenDir)
-                    .sorted((a, b) -> -a.compareTo(b))
-                    .forEach(p -> {
-                        try { Files.delete(p); } catch (IOException e) { /* ignore */ }
-                    });
+            BaseStorageTest.deleteRecursively(brokenDir);
         }
     }
 
@@ -319,7 +306,7 @@ public class DatabaseBootstrapTest {
     }
 
     private void seedLegacyCatalogWithTrxSysPage(long nextTrxId) throws Exception {
-        initializeSystemTablespace();
+        createAndInitializeSystemTablespace();
         CatalogBootstrap catalogBootstrap = new CatalogBootstrap(bufferPool);
         catalogBootstrap.initCatalog();
 
@@ -347,6 +334,15 @@ public class DatabaseBootstrapTest {
         }
     }
 
+    private void createAndInitializeSystemTablespace() throws Exception {
+        if (!diskManager.tablespaceExists(SYSTEM_SPACE_ID)) {
+            diskManager.createTablespace(SYSTEM_SPACE_ID, SYSTEM_SPACE_NAME);
+        }
+        if (!isSystemTablespaceInitialized(bufferPool)) {
+            initializeSystemTablespace();
+        }
+    }
+
     private PageType readPageType(PageId pageId) throws Exception {
         return readPageType(bufferPool, pageId);
     }
@@ -360,6 +356,16 @@ public class DatabaseBootstrapTest {
             } finally {
                 frame.readUnlock();
             }
+        }
+    }
+
+    private boolean isSystemTablespaceInitialized(BufferPool targetBufferPool) throws Exception {
+        try (MiniTransaction mtr = new MiniTransaction(targetBufferPool)) {
+            FspHeaderPage fsp = FspHeaderPage.fromExistingPage(
+                    mtr.getPage(PageId.of(SYSTEM_SPACE_ID, 0), BufferPool.FetchMode.READ_EXISTING));
+            return fsp.getNextSegmentId() >= 1;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -396,5 +402,23 @@ public class DatabaseBootstrapTest {
                 frame.readUnlock();
             }
         }
+    }
+
+    private long readNextSegmentId(PageId pageId) throws Exception {
+        return readNextSegmentId(bufferPool, pageId);
+    }
+
+    private long readNextSegmentId(BufferPool targetBufferPool, PageId pageId) throws Exception {
+        try (MiniTransaction mtr = new MiniTransaction(targetBufferPool)) {
+            FspHeaderPage fsp = FspHeaderPage.fromExistingPage(
+                    mtr.getPage(pageId, BufferPool.FetchMode.READ_EXISTING));
+            return fsp.getNextSegmentId();
+        }
+    }
+
+    private Path createLocalTempDir(String prefix) throws IOException {
+        Path tmpRoot = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath();
+        Files.createDirectories(tmpRoot);
+        return Files.createTempDirectory(tmpRoot, prefix);
     }
 }

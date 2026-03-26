@@ -2,6 +2,7 @@ package cn.zhangyis.minidb.sql.parser;
 
 import cn.zhangyis.minidb.sql.lexer.*;
 import cn.zhangyis.minidb.sql.ast.*;
+import cn.zhangyis.minidb.sql.catalog.InformationSchemaNames;
 import cn.zhangyis.minidb.sql.functions.FunctionRegistry;
 import cn.zhangyis.minidb.sql.types.SqlType;
 import java.util.List;
@@ -28,7 +29,7 @@ public class SqlParser {
             case SELECT -> {
                 SqlNode s = parseSelect();
                 TokenType setOpToken = tokens.current().type();
-                if (setOpToken == TokenType.UNION || setOpToken == TokenType.EXCEPT || setOpToken == TokenType.INTERSECT) {
+                while (setOpToken == TokenType.UNION || setOpToken == TokenType.EXCEPT || setOpToken == TokenType.INTERSECT) {
                     tokens.next();
                     boolean all = tokens.match(TokenType.ALL);
                     SqlNode right = parseSelect();
@@ -38,7 +39,8 @@ public class SqlParser {
                         case INTERSECT -> SqlSetOperation.SetOpType.INTERSECT;
                         default -> throw new SqlParseException("Unexpected: " + setOpToken);
                     };
-                    yield factory.setOperation(s, right, all, opType);
+                    s = factory.setOperation(s, right, all, opType);
+                    setOpToken = tokens.current().type();
                 }
                 yield s;
             }
@@ -362,22 +364,30 @@ public class SqlParser {
         tokens.expect(TokenType.LPAREN);
 
         java.util.List<SqlCreateTable.ColumnDef> columnDefs = new java.util.ArrayList<>();
+        java.util.List<SqlCreateTable.TableIndexDef> indexes = new java.util.ArrayList<>();
         java.util.Set<String> tableLevelPkColumns = new java.util.LinkedHashSet<>();
-        do {
-            // 表级约束：PRIMARY KEY (...)、UNIQUE KEY (...)、INDEX/KEY (...)
+        while (tokens.current().type() != TokenType.RPAREN && tokens.current().type() != TokenType.EOF) {
             if (tokens.current().type() == TokenType.PRIMARY) {
-                // PRIMARY KEY (...) — 解析出主键列名
-                tableLevelPkColumns.addAll(parsePrimaryKeyConstraint());
+                SqlCreateTable.TableIndexDef primary = parsePrimaryKeyConstraint();
+                indexes.add(primary);
+                for (String column : primary.columns()) {
+                    tableLevelPkColumns.add(column.toUpperCase());
+                }
+            } else if (isUniqueConstraintStart()) {
+                indexes.add(parseTableIndexConstraint(true));
             } else if (tokens.current().type() == TokenType.INDEX
                     || tokens.current().type() == TokenType.KEY) {
-                skipTableConstraint();
-            } else if (tokens.current().type() == TokenType.IDENTIFIER
-                    && "UNIQUE".equals(tokens.current().value())) {
-                skipTableConstraint();
+                indexes.add(parseTableIndexConstraint(false));
+            } else if (isForeignKeyConstraintStart()) {
+                skipTableConstraintDefinition();
             } else {
                 columnDefs.add(parseColumnDef());
             }
-        } while (tokens.match(TokenType.COMMA));
+
+            if (!tokens.match(TokenType.COMMA)) {
+                break;
+            }
+        }
 
         // 将表级 PRIMARY KEY 标记合并到列定义
         if (!tableLevelPkColumns.isEmpty()) {
@@ -385,7 +395,8 @@ public class SqlParser {
             for (SqlCreateTable.ColumnDef def : columnDefs) {
                 if (tableLevelPkColumns.contains(def.name().toUpperCase())) {
                     // 标记为主键，且主键列隐含 NOT NULL
-                    merged.add(new SqlCreateTable.ColumnDef(def.name(), def.type(), true, false));
+                    merged.add(new SqlCreateTable.ColumnDef(
+                            def.name(), def.type(), true, false, def.length()));
                 } else {
                     merged.add(def);
                 }
@@ -394,52 +405,38 @@ public class SqlParser {
         }
 
         tokens.expect(TokenType.RPAREN);
-        return new SqlCreateTable(table, columnDefs, ifNotExists);
+        skipCreateTableOptions();
+        return new SqlCreateTable(table, columnDefs, indexes, ifNotExists);
     }
 
     /**
-     * 解析表级 PRIMARY KEY (...) 约束，返回主键列名集合（大写）。
+     * 解析表级 PRIMARY KEY (...) 约束。
      */
-    private java.util.Set<String> parsePrimaryKeyConstraint() {
+    private SqlCreateTable.TableIndexDef parsePrimaryKeyConstraint() {
         tokens.expect(TokenType.PRIMARY);
         tokens.expect(TokenType.KEY);
-        tokens.expect(TokenType.LPAREN);
-
-        java.util.Set<String> columns = new java.util.LinkedHashSet<>();
-        do {
-            // 列名可能被反引号包裹，取 token value
-            String colName = tokens.current().value();
-            tokens.next();
-            columns.add(colName.toUpperCase());
-        } while (tokens.match(TokenType.COMMA));
-
-        tokens.expect(TokenType.RPAREN);
-        return columns;
+        java.util.List<String> columns = parseIndexColumnList();
+        skipIndexOptions();
+        return new SqlCreateTable.TableIndexDef("PRIMARY", columns, true, true);
     }
 
     /**
-     * 跳过表级约束定义（PRIMARY KEY (...)、UNIQUE KEY name (...)、INDEX name (...) 等）。
-     * 约束信息当前不参与建表逻辑，仅需跳过 tokens 避免解析错误。
+     * 跳过表级约束定义（CONSTRAINT ... FOREIGN KEY ... REFERENCES ...）。
      */
-    private void skipTableConstraint() {
-        // 跳过关键字部分直到遇到 LPAREN
-        while (tokens.current().type() != TokenType.LPAREN
-                && tokens.current().type() != TokenType.EOF
-                && tokens.current().type() != TokenType.RPAREN) {
+    private void skipTableConstraintDefinition() {
+        int depth = 0;
+        while (tokens.current().type() != TokenType.EOF) {
+            if (tokens.current().type() == TokenType.LPAREN) {
+                depth++;
+            } else if (tokens.current().type() == TokenType.RPAREN) {
+                if (depth == 0) {
+                    return;
+                }
+                depth--;
+            } else if (tokens.current().type() == TokenType.COMMA && depth == 0) {
+                return;
+            }
             tokens.next();
-        }
-        // 跳过括号内的列列表
-        if (tokens.current().type() == TokenType.LPAREN) {
-            tokens.next(); // skip (
-            int depth = 1;
-            while (depth > 0 && tokens.current().type() != TokenType.EOF) {
-                if (tokens.current().type() == TokenType.LPAREN) depth++;
-                if (tokens.current().type() == TokenType.RPAREN) depth--;
-                if (depth > 0) tokens.next();
-            }
-            if (tokens.current().type() == TokenType.RPAREN) {
-                tokens.next(); // skip )
-            }
         }
     }
 
@@ -454,7 +451,7 @@ public class SqlParser {
             name = token.value(); // unreachable
         }
 
-        SqlType type = parseColumnType();
+        ParsedColumnType type = parseColumnType();
 
         // 解析列修饰符：NOT NULL、NULL、DEFAULT、COMMENT、PRIMARY KEY、AUTO_INCREMENT 等
         boolean primaryKey = false;
@@ -470,8 +467,7 @@ public class SqlParser {
                 case NULL -> tokens.next(); // NULL (nullable)
                 case DEFAULT -> {
                     tokens.next();
-                    // 跳过默认值（数字、字符串、NULL、标识符）
-                    tokens.next();
+                    skipColumnValueExpression();
                 }
                 case PRIMARY -> {
                     tokens.next();
@@ -482,7 +478,16 @@ public class SqlParser {
                     String kw = tokens.current().value();
                     if ("COMMENT".equals(kw)) {
                         tokens.next();
-                        tokens.next(); // 跳过注释字符串
+                        skipColumnValueExpression();
+                    } else if ("CHARACTER".equals(kw)) {
+                        tokens.next();
+                        if (tokens.current().type() == TokenType.SET || isIdentifierValue("SET")) {
+                            tokens.next();
+                            parseIdentifier();
+                        }
+                    } else if ("COLLATE".equals(kw)) {
+                        tokens.next();
+                        parseIdentifier();
                     } else if ("AUTO_INCREMENT".equals(kw) || "UNSIGNED".equals(kw)
                             || "UNIQUE".equals(kw)) {
                         tokens.next();
@@ -490,47 +495,72 @@ public class SqlParser {
                         done = true;
                     }
                 }
+                case ON -> {
+                    tokens.next();
+                    tokens.expect(TokenType.UPDATE);
+                    skipColumnValueExpression();
+                }
                 default -> done = true;
             }
         }
 
-        return new SqlCreateTable.ColumnDef(name, type, primaryKey, nullable);
+        return new SqlCreateTable.ColumnDef(name, type.type(), primaryKey, nullable, type.length());
     }
 
-    private SqlType parseColumnType() {
+    private ParsedColumnType parseColumnType() {
         String typeName = tokens.current().value();
         tokens.expect(TokenType.IDENTIFIER);
 
-        // 跳过可选的类型长度/精度声明，如 bigint(20)、varchar(255)、decimal(10,2)
+        Integer length = null;
         if (tokens.current().type() == TokenType.LPAREN) {
-            tokens.next(); // skip (
+            tokens.next();
+            if (tokens.current().type() == TokenType.NUMBER) {
+                length = Integer.parseInt(tokens.current().value());
+            }
             while (tokens.current().type() != TokenType.RPAREN
                     && tokens.current().type() != TokenType.EOF) {
                 tokens.next();
             }
             if (tokens.current().type() == TokenType.RPAREN) {
-                tokens.next(); // skip )
+                tokens.next();
             }
         }
 
-        return switch (typeName.toUpperCase()) {
+        SqlType sqlType = switch (typeName.toUpperCase()) {
+            case "TINYINT" -> SqlType.TINYINT;
+            case "SMALLINT" -> SqlType.SMALLINT;
             case "INT", "INTEGER" -> SqlType.INT32;
             case "BIGINT", "LONG" -> SqlType.BIGINT;
-            case "VARCHAR", "TEXT", "STRING" -> SqlType.VARCHAR;
+            case "CHAR" -> SqlType.CHAR;
+            case "VARCHAR", "STRING" -> SqlType.VARCHAR;
+            case "TEXT", "MEDIUMTEXT" -> SqlType.TEXT;
+            case "JSON" -> SqlType.JSON;
+            case "BLOB", "MEDIUMBLOB" -> SqlType.BLOB;
             case "DECIMAL", "DOUBLE", "FLOAT" -> SqlType.DECIMAL;
+            case "DATE" -> SqlType.DATE;
+            case "TIME" -> SqlType.TIME;
             case "DATETIME", "TIMESTAMP" -> SqlType.DATETIME;
             default -> throw new SqlParseException("Unknown column type: " + typeName);
         };
+        return new ParsedColumnType(sqlType, length);
     }
 
     private SqlType parseCastType() {
         String typeName = tokens.current().value();
         tokens.expect(TokenType.IDENTIFIER);
         return switch (typeName.toUpperCase()) {
+            case "TINYINT" -> SqlType.TINYINT;
+            case "SMALLINT" -> SqlType.SMALLINT;
             case "INT", "INTEGER" -> SqlType.INT32;
             case "BIGINT", "LONG" -> SqlType.BIGINT;
-            case "VARCHAR", "TEXT", "STRING" -> SqlType.VARCHAR;
+            case "CHAR" -> SqlType.CHAR;
+            case "VARCHAR", "STRING" -> SqlType.VARCHAR;
+            case "TEXT", "MEDIUMTEXT" -> SqlType.TEXT;
+            case "JSON" -> SqlType.JSON;
+            case "BLOB", "MEDIUMBLOB" -> SqlType.BLOB;
             case "DECIMAL", "DOUBLE", "FLOAT" -> SqlType.DECIMAL;
+            case "DATE" -> SqlType.DATE;
+            case "TIME" -> SqlType.TIME;
             case "DATETIME", "TIMESTAMP" -> SqlType.DATETIME;
             default -> throw new SqlParseException("Unknown CAST type: " + typeName);
         };
@@ -1003,6 +1033,10 @@ public class SqlParser {
             tokens.next();
             return factory.number(token.value());
         }
+        if (token.type() == TokenType.HEX) {
+            tokens.next();
+            return factory.hex(token.value());
+        }
         if (token.type() == TokenType.STRING) {
             tokens.next();
             return factory.string(token.value());
@@ -1066,12 +1100,24 @@ public class SqlParser {
      * 用于 DDL / DML 中表名可能被 Navicat 等客户端加上数据库前缀的场景。
      */
     private SqlIdentifier parseQualifiedTableName() {
-        SqlIdentifier id = parseIdentifier();
-        if (tokens.current().type() == TokenType.DOT) {
-            tokens.next(); // skip dot
-            id = parseIdentifier(); // 取 dot 后面的实际表名
+        SqlIdentifier first = parseIdentifier();
+        if (tokens.current().type() != TokenType.DOT) {
+            return first;
         }
-        return id;
+
+        tokens.next();
+        SqlIdentifier second = parseIdentifier();
+
+        if (InformationSchemaNames.SCHEMA_NAME.equalsIgnoreCase(first.name())) {
+            String internalName = InformationSchemaNames.internalNameFor(second.name());
+            if (internalName != null) {
+                return factory.identifier(internalName);
+            }
+            return factory.identifier(first.name() + "." + second.name());
+        }
+
+        // 当前项目仍保持普通 db.table → table 的最小语义
+        return second;
     }
 
     private SqlIdentifier parseIdentifier() {
@@ -1096,5 +1142,119 @@ public class SqlParser {
             return parseIdentifier().name();
         }
         return null;
+    }
+
+    private SqlCreateTable.TableIndexDef parseTableIndexConstraint(boolean unique) {
+        if (unique) {
+            tokens.next(); // UNIQUE
+            if (tokens.current().type() == TokenType.KEY || tokens.current().type() == TokenType.INDEX) {
+                tokens.next();
+            }
+        } else {
+            tokens.next(); // KEY / INDEX
+        }
+
+        String indexName = null;
+        if (tokens.current().type() == TokenType.LPAREN) {
+        } else {
+            indexName = parseIdentifier().name();
+        }
+
+        java.util.List<String> columns = parseIndexColumnList();
+        if (indexName == null || indexName.isBlank()) {
+            indexName = (unique ? "UNQ_" : "IDX_") + String.join("_", columns);
+        }
+        skipIndexOptions();
+        return new SqlCreateTable.TableIndexDef(indexName, columns, false, unique);
+    }
+
+    private java.util.List<String> parseIndexColumnList() {
+        tokens.expect(TokenType.LPAREN);
+        java.util.List<String> columns = new java.util.ArrayList<>();
+        do {
+            columns.add(parseIdentifier().name());
+            if (tokens.current().type() == TokenType.LPAREN) {
+                skipParenthesizedClause();
+            }
+            if (tokens.current().type() == TokenType.ASC || tokens.current().type() == TokenType.DESC) {
+                tokens.next();
+            }
+        } while (tokens.match(TokenType.COMMA));
+        tokens.expect(TokenType.RPAREN);
+        return columns;
+    }
+
+    private void skipIndexOptions() {
+        while (tokens.current().type() != TokenType.COMMA
+                && tokens.current().type() != TokenType.RPAREN
+                && tokens.current().type() != TokenType.EOF) {
+            if (tokens.current().type() == TokenType.LPAREN) {
+                skipParenthesizedClause();
+            } else {
+                tokens.next();
+            }
+        }
+    }
+
+    private void skipCreateTableOptions() {
+        while (tokens.current().type() != TokenType.EOF && tokens.current().type() != TokenType.SEMICOLON) {
+            if (tokens.current().type() == TokenType.COMMA) {
+                tokens.next();
+                continue;
+            }
+            if (tokens.current().type() == TokenType.LPAREN) {
+                skipParenthesizedClause();
+                continue;
+            }
+            tokens.next();
+        }
+    }
+
+    private void skipParenthesizedClause() {
+        tokens.expect(TokenType.LPAREN);
+        int depth = 1;
+        while (depth > 0 && tokens.current().type() != TokenType.EOF) {
+            if (tokens.current().type() == TokenType.LPAREN) {
+                depth++;
+            } else if (tokens.current().type() == TokenType.RPAREN) {
+                depth--;
+            }
+            tokens.next();
+        }
+    }
+
+    private void skipColumnValueExpression() {
+        if (tokens.current().type() == TokenType.MINUS || tokens.current().type() == TokenType.PLUS) {
+            tokens.next();
+        }
+        if (tokens.current().type() == TokenType.LPAREN) {
+            skipParenthesizedClause();
+            return;
+        }
+
+        tokens.next();
+        if (tokens.current().type() == TokenType.LPAREN) {
+            skipParenthesizedClause();
+        }
+    }
+
+    private boolean isUniqueConstraintStart() {
+        return tokens.current().type() == TokenType.IDENTIFIER
+                && "UNIQUE".equals(tokens.current().value());
+    }
+
+    private boolean isForeignKeyConstraintStart() {
+        return (tokens.current().type() == TokenType.IDENTIFIER
+                && "CONSTRAINT".equals(tokens.current().value()))
+                || (tokens.current().type() == TokenType.IDENTIFIER
+                && "FOREIGN".equals(tokens.current().value()));
+    }
+
+    private boolean isIdentifierValue(String value) {
+        return tokens.current().type() == TokenType.IDENTIFIER
+                && value.equals(tokens.current().value());
+    }
+
+    private record ParsedColumnType(SqlType type, Integer length) {
     }
 }

@@ -57,8 +57,24 @@ public class StorageCatalog implements CatalogSpi {
 
     @Override
     public TableMeta getTable(String qualifiedName) {
+        return getTable(databaseName, qualifiedName);
+    }
+
+    @Override
+    public List<String> listDatabases() {
         try {
-            TableDescriptor desc = catalogManager.getTable(databaseName, qualifiedName);
+            return catalogManager.listDatabases().stream()
+                .map(DatabaseDescriptor::getDatabaseName)
+                .collect(Collectors.toList());
+        } catch (Exception e) {
+            return List.of(databaseName);
+        }
+    }
+
+    @Override
+    public TableMeta getTable(String database, String tableName) {
+        try {
+            TableDescriptor desc = catalogManager.getTable(database, tableName);
             if (desc == null) return null;
             return toTableMeta(desc);
         } catch (Exception e) {
@@ -79,13 +95,27 @@ public class StorageCatalog implements CatalogSpi {
 
     @Override
     public List<ColumnMeta> getColumns(String tableName) {
-        TableMeta meta = getTable(tableName);
+        return getColumns(databaseName, tableName);
+    }
+
+    @Override
+    public List<ColumnMeta> getColumns(String database, String tableName) {
+        TableMeta meta = getTable(database, tableName);
         return meta != null ? meta.columns() : List.of();
     }
 
     @Override
     public boolean tableExists(String tableName) {
         return getTable(tableName) != null;
+    }
+
+    @Override
+    public String getDatabaseCharset(String database) {
+        try {
+            return catalogManager.getDatabase(database).getCharset();
+        } catch (Exception e) {
+            return "utf8mb4";
+        }
     }
 
     // ==================== DDL 操作 ====================
@@ -97,8 +127,8 @@ public class StorageCatalog implements CatalogSpi {
      * <ul>
      *   <li>SqlType.INT32 → FieldType.intType</li>
      *   <li>SqlType.VARCHAR → FieldType.varchar(255)</li>
-     *   <li>SqlType.DECIMAL → FieldType.bigint（暂无 DECIMAL 支持）</li>
-     *   <li>SqlType.DATETIME → FieldType.bigint（暂无 DATETIME 支持）</li>
+     *   <li>SqlType.DECIMAL → FieldType.decimal</li>
+     *   <li>SqlType.DATETIME → FieldType.datetime</li>
      *   <li>isPrimaryKey → NOT NULL + PRIMARY index</li>
      * </ul>
      */
@@ -112,7 +142,7 @@ public class StorageCatalog implements CatalogSpi {
                 ColumnMeta sqlCol = table.columns().get(i);
                 // nullable 取 SQL 层显式声明与主键约束的综合结果
                 boolean nullable = sqlCol.nullable() && !sqlCol.isPrimaryKey();
-                FieldType fieldType = sqlTypeToFieldType(sqlCol.type(), nullable);
+                FieldType fieldType = sqlTypeToFieldType(sqlCol.type(), nullable, sqlCol.length());
                 // columnId 用占位值 (i+1)，CatalogManager.assignColumnIds 会重新分配
                 storageColumns.add(new cn.zhangyis.minidb.storage.catalog.ColumnMeta(
                     i + 1, sqlCol.name(), fieldType, i, null
@@ -153,7 +183,7 @@ public class StorageCatalog implements CatalogSpi {
         requireBufferPool("addColumn");
 
         // 转换 SQL 类型为存储层 FieldType，nullable 由 SQL 层显式声明决定
-        FieldType fieldType = sqlTypeToFieldType(column.type(), column.nullable());
+        FieldType fieldType = sqlTypeToFieldType(column.type(), column.nullable(), column.length());
 
         // 转换默认值为 DataField
         DataField defaultField = convertDefaultValue(column.defaultValue(), fieldType);
@@ -183,9 +213,17 @@ public class StorageCatalog implements CatalogSpi {
             case BIGINT -> DataField.bigintField(((Number) defaultValue).longValue());
             case TINYINT -> DataField.tinyintField(((Number) defaultValue).byteValue());
             case SMALLINT -> DataField.smallintField(((Number) defaultValue).shortValue());
+            case DECIMAL -> DataField.decimalField(defaultValue);
+            case DATE -> DataField.dateField(defaultValue);
+            case TIME -> DataField.timeField(defaultValue);
+            case DATETIME -> DataField.datetimeField(defaultValue);
             case VARCHAR -> DataField.varcharField(String.valueOf(defaultValue));
             case CHAR -> DataField.charField(String.valueOf(defaultValue), fieldType.getLength());
             case TEXT -> DataField.textField(String.valueOf(defaultValue));
+            case JSON -> DataField.jsonField(String.valueOf(defaultValue));
+            case BLOB -> defaultValue instanceof byte[] bytes
+                    ? DataField.blobField(bytes)
+                    : DataField.blobField(String.valueOf(defaultValue).getBytes());
             default -> throw new UnsupportedOperationException(
                     "Default value conversion not supported for type: " + kind);
         };
@@ -230,7 +268,7 @@ public class StorageCatalog implements CatalogSpi {
                     indexId,
                     index.indexName(),
                     tableDesc.getTableId(),
-                    IndexType.SECONDARY,
+                    index.unique() ? IndexType.UNIQUE : IndexType.SECONDARY,
                     indexColumns,
                     mtr
                 );
@@ -293,8 +331,13 @@ public class StorageCatalog implements CatalogSpi {
      */
     @Override
     public List<IndexMeta> getIndexes(String tableName) {
+        return getIndexes(databaseName, tableName);
+    }
+
+    @Override
+    public List<IndexMeta> getIndexes(String database, String tableName) {
         try {
-            TableDescriptor tableDesc = catalogManager.getTable(databaseName, tableName);
+            TableDescriptor tableDesc = catalogManager.getTable(database, tableName);
             if (bufferPool == null) {
                 // 无 bufferPool 时，从 TableDescriptor 的 indexId 列表推断最小信息
                 return buildIndexMetaFromDescriptor(tableDesc);
@@ -339,7 +382,11 @@ public class StorageCatalog implements CatalogSpi {
                                        Set<String> primaryColumns) {
         SqlType sqlType = fieldKindToSqlType(storageCol.getKind());
         boolean isPrimaryKey = primaryColumns.contains(storageCol.getName().toUpperCase());
-        return new ColumnMeta(storageCol.getName(), sqlType, isPrimaryKey);
+        Object defaultValue = storageCol.getDefaultValue() != null
+                ? storageCol.getDefaultValue().getValue()
+                : null;
+        return new ColumnMeta(storageCol.getName(), sqlType, isPrimaryKey,
+                storageCol.isNullable(), defaultValue, storageCol.getType().getLength());
     }
 
     /**
@@ -347,9 +394,19 @@ public class StorageCatalog implements CatalogSpi {
      */
     static SqlType fieldKindToSqlType(FieldKind kind) {
         return switch (kind) {
-            case TINYINT, SMALLINT, INT -> SqlType.INT32;
+            case TINYINT -> SqlType.TINYINT;
+            case SMALLINT -> SqlType.SMALLINT;
+            case INT -> SqlType.INT32;
             case BIGINT -> SqlType.BIGINT;
-            case CHAR, VARCHAR, TEXT -> SqlType.VARCHAR;
+            case CHAR -> SqlType.CHAR;
+            case VARCHAR -> SqlType.VARCHAR;
+            case TEXT -> SqlType.TEXT;
+            case BLOB -> SqlType.BLOB;
+            case JSON -> SqlType.JSON;
+            case DECIMAL -> SqlType.DECIMAL;
+            case DATE -> SqlType.DATE;
+            case TIME -> SqlType.TIME;
+            case DATETIME -> SqlType.DATETIME;
             default -> SqlType.VARCHAR;
         };
     }
@@ -365,13 +422,22 @@ public class StorageCatalog implements CatalogSpi {
      *   <li>DATETIME → FieldType.bigint（暂无 DATETIME，用 BIGINT 存时间戳）</li>
      * </ul>
      */
-    static FieldType sqlTypeToFieldType(SqlType sqlType, boolean nullable) {
+    static FieldType sqlTypeToFieldType(SqlType sqlType, boolean nullable, Integer length) {
+        int declaredLength = length != null && length > 0 ? length : 255;
         return switch (sqlType) {
+            case TINYINT -> FieldType.tinyint(nullable);
+            case SMALLINT -> FieldType.smallint(nullable);
             case INT32 -> FieldType.intType(nullable);
             case BIGINT -> FieldType.bigint(nullable);
-            case VARCHAR -> FieldType.varchar(255, nullable);
-            case DECIMAL -> FieldType.bigint(nullable);  // 暂无 DECIMAL 支持
-            case DATETIME -> FieldType.bigint(nullable);  // 暂无 DATETIME 支持
+            case CHAR -> FieldType.charType(declaredLength, nullable);
+            case VARCHAR -> FieldType.varchar(declaredLength, nullable);
+            case TEXT -> FieldType.text(nullable);
+            case BLOB -> FieldType.blob(nullable);
+            case JSON -> FieldType.json(declaredLength, nullable);
+            case DECIMAL -> FieldType.decimal(length != null ? length : 65, nullable);
+            case DATE -> FieldType.date(nullable);
+            case TIME -> FieldType.time(nullable);
+            case DATETIME -> FieldType.datetime(nullable);
         };
     }
 
@@ -441,6 +507,10 @@ public class StorageCatalog implements CatalogSpi {
             throw new IllegalStateException("BufferPool is required to create StorageDataSource");
         }
         return new StorageDataSource(catalogManager, databaseName, executionContext, bufferPool);
+    }
+
+    public String databaseName() {
+        return databaseName;
     }
 
     private long rowCount(TableDescriptor tableDesc) {

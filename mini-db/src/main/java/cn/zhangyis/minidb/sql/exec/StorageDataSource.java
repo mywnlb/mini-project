@@ -35,6 +35,9 @@ import cn.zhangyis.minidb.storage.transaction.undo.UndoLogManager;
 import cn.zhangyis.minidb.storage.transaction.undo.UpdateUndoRecord;
 
 import java.nio.ByteBuffer;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -107,6 +110,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             Row normalized = normalizeRow(row, access);
             RowKey key = access.requirePrimaryKey(normalized);
             ensurePrimaryKeyAvailable(access, txn, key, null);
+            ensureSecondaryIndexesAvailable(access, txn, normalized, null);
             overlayFor(txn).table(tableName).insert(access, normalized);
             executionContext.autoCommitIfNeeded(txn);
         } catch (RuntimeException e) {
@@ -138,6 +142,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                             "Updating primary key is not yet supported by storage-backed SQL path");
                 }
                 ensurePrimaryKeyAvailable(access, txn, key, row);
+                ensureSecondaryIndexesAvailable(access, txn, normalized, row);
                 overlay.update(access, row, normalized);
                 count++;
             }
@@ -256,14 +261,14 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                 case INSERT -> insertCommitted(access, txn, change.row());
                 case UPDATE -> {
                     if (!change.originalKey().equals(change.currentKey())) {
-                        deleteCommitted(access, txn, change.originalKey());
+                        deleteCommitted(access, txn, change.originalKey(), change.before());
                         insertCommitted(access, txn, change.row());
                     } else {
                         // 使用 before 行构造 oldColumns（RR 隔离需要正确的旧快照）
                         updateCommitted(access, txn, change.currentKey(), change.row(), change.before());
                     }
                 }
-                case DELETE -> deleteCommitted(access, txn, change.originalKey());
+                case DELETE -> deleteCommitted(access, txn, change.originalKey(), change.before());
             }
         }
     }
@@ -275,7 +280,8 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             if (!inserted) {
                 throw new IllegalStateException("Duplicate primary key on table " + access.tableName());
             }
-            access.flushPrimaryMetadata(dml.getBTree(), mtr);
+            access.insertSecondaryIndexes(row, mtr);
+            access.flushMetadata(dml.getBTree(), mtr);
             mtr.commit();
         } catch (MiniDbException e) {
             throw new RuntimeException("Storage insert failed for table: " + access.tableName(), e);
@@ -308,21 +314,23 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             if (!updated) {
                 throw new IllegalStateException("Primary key not found on table " + access.tableName());
             }
-            access.flushPrimaryMetadata(dml.getBTree(), mtr);
+            access.updateSecondaryIndexes(oldRow, newRow, mtr);
+            access.flushMetadata(dml.getBTree(), mtr);
             mtr.commit();
         } catch (MiniDbException e) {
             throw new RuntimeException("Storage update failed for table: " + access.tableName(), e);
         }
     }
 
-    private void deleteCommitted(TableAccess access, Transaction txn, RowKey key) {
+    private void deleteCommitted(TableAccess access, Transaction txn, RowKey key, Row row) {
         try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
             TransactionalDml dml = access.dml();
+            access.deleteSecondaryIndexes(row, mtr);
             boolean deleted = dml.delete(mtr, txn, key.bytes());
             if (!deleted) {
                 throw new IllegalStateException("Primary key not found on table " + access.tableName());
             }
-            access.flushPrimaryMetadata(dml.getBTree(), mtr);
+            access.flushMetadata(dml.getBTree(), mtr);
             mtr.commit();
         } catch (MiniDbException e) {
             throw new RuntimeException("Storage delete failed for table: " + access.tableName(), e);
@@ -349,6 +357,38 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         boolean hiddenByOverlay = overlay != null && overlay.hidesCommittedRow(candidateKey);
         if (!sameRow && !hiddenByOverlay) {
             throw new IllegalStateException("Duplicate primary key on table " + access.tableName());
+        }
+    }
+
+    private void ensureSecondaryIndexesAvailable(TableAccess access, Transaction txn, Row candidateRow, Row sourceRow) {
+        TableOverlay overlay = overlayOrNull(txn, access.tableName());
+        for (SecondaryIndexAccess index : access.secondaryIndexes()) {
+            if (!index.unique()) {
+                continue;
+            }
+            RowKey candidateKey = index.keyOf(candidateRow, access.tableName());
+            if (candidateKey == null) {
+                continue;
+            }
+
+            if (overlay != null) {
+                for (PendingChange change : overlay.visibleRows()) {
+                    if (change.row() == null || (sourceRow != null && change.matchesSourceRow(access.keyOf(sourceRow)))) {
+                        continue;
+                    }
+                    RowKey pendingKey = index.keyOf(change.row(), access.tableName());
+                    if (candidateKey.equals(pendingKey)) {
+                        throw new IllegalStateException("Duplicate key for unique index '" + index.indexName()
+                                + "' on table " + access.tableName());
+                    }
+                }
+            }
+
+            RowKey sourceIndexKey = sourceRow == null ? null : index.keyOf(sourceRow, access.tableName());
+            if (index.exists(candidateKey) && (sourceIndexKey == null || !sourceIndexKey.equals(candidateKey))) {
+                throw new IllegalStateException("Duplicate key for unique index '" + index.indexName()
+                        + "' on table " + access.tableName());
+            }
         }
     }
 
@@ -533,9 +573,14 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             case BIGINT -> DataField.bigintField(((Number) value).longValue());
             case TINYINT -> DataField.tinyintField(((Number) value).byteValue());
             case SMALLINT -> DataField.smallintField(((Number) value).shortValue());
+            case DECIMAL -> DataField.decimalField(value);
+            case DATE -> DataField.dateField(value);
+            case TIME -> DataField.timeField(value);
+            case DATETIME -> DataField.datetimeField(value);
             case VARCHAR -> DataField.varcharField(String.valueOf(value));
             case CHAR -> DataField.charField(String.valueOf(value), column.getType().getLength());
             case TEXT -> DataField.textField(String.valueOf(value));
+            case JSON -> DataField.jsonField(String.valueOf(value));
             case VARBINARY -> DataField.varbinaryField((byte[]) value);
             case BINARY -> DataField.binaryField((byte[]) value, column.getType().getLength());
             case BLOB -> DataField.blobField((byte[]) value);
@@ -574,7 +619,11 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                     case BIGINT -> Long.parseLong(strValue);
                     case TINYINT -> Byte.parseByte(strValue);
                     case SMALLINT -> Short.parseShort(strValue);
-                    case VARCHAR, CHAR, TEXT -> strValue;
+                    case DECIMAL -> new java.math.BigDecimal(strValue);
+                    case DATE -> LocalDate.parse(strValue);
+                    case TIME -> LocalTime.parse(normalizeTimeText(strValue));
+                    case DATETIME -> LocalDateTime.parse(strValue.replace(' ', 'T'));
+                    case VARCHAR, CHAR, TEXT, JSON -> strValue;
                     default -> field.getValue();
                 };
                 values.put(tableName + "." + column.getName(), typed);
@@ -604,6 +653,11 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         return new Row(renamed);
     }
 
+    private static String normalizeTimeText(String value) {
+        int dot = value.indexOf('.');
+        return dot >= 0 ? value.substring(0, dot) : value;
+    }
+
     private TransactionOverlay overlayFor(Transaction txn) {
         return overlays.computeIfAbsent(txn.getId().getValue(), ignored -> new TransactionOverlay());
     }
@@ -630,6 +684,13 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                 if (primary == null) {
                     throw new IllegalStateException("Primary index descriptor missing for table " + tableName);
                 }
+                List<SecondaryIndexAccess> secondaryIndexes = new ArrayList<>();
+                for (Long indexId : table.getSecondaryIndexIds()) {
+                    IndexDescriptor descriptor = indexManager.getDescriptor(indexId);
+                    if (descriptor != null && !descriptor.isDeleted()) {
+                        secondaryIndexes.add(new SecondaryIndexAccess(bufferPool, table, descriptor));
+                    }
+                }
                 mtr.commit();
                 return new TableAccess(
                         bufferPool,
@@ -640,6 +701,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                         primary.toCompositeKeyDef(),
                         primary,
                         new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset()),
+                        secondaryIndexes,
                         undoLogManager
                 );
             }
@@ -657,12 +719,14 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
         private final CompositeKeyDef primaryKeyDef;
         private final IndexDescriptor primaryIndex;
         private final ClusteredPrimaryKeyComparator primaryComparator;
+        private final List<SecondaryIndexAccess> secondaryIndexes;
         private final UndoLogManager undoLogManager;
 
         private TableAccess(BufferPool bufferPool, TableDescriptor table, RecordSchema schema, SystemLayout layout,
                             RowReader rowReader, CompositeKeyDef primaryKeyDef,
                             IndexDescriptor primaryIndex,
                             ClusteredPrimaryKeyComparator primaryComparator,
+                            List<SecondaryIndexAccess> secondaryIndexes,
                             UndoLogManager undoLogManager) {
             this.bufferPool = bufferPool;
             this.table = table;
@@ -672,6 +736,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             this.primaryKeyDef = primaryKeyDef;
             this.primaryIndex = primaryIndex;
             this.primaryComparator = primaryComparator;
+            this.secondaryIndexes = List.copyOf(secondaryIndexes);
             this.undoLogManager = undoLogManager;
         }
 
@@ -685,6 +750,10 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
 
         RowReader rowReader() {
             return rowReader;
+        }
+
+        List<SecondaryIndexAccess> secondaryIndexes() {
+            return secondaryIndexes;
         }
 
         boolean supportsLookup(String columnName) {
@@ -759,10 +828,135 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
             }
         }
 
-        void flushPrimaryMetadata(BTree tree, MiniTransaction mtr) throws MiniDbException {
+        void insertSecondaryIndexes(Row row, MiniTransaction mtr) throws MiniDbException {
+            for (SecondaryIndexAccess index : secondaryIndexes) {
+                index.insert(row, tableName(), mtr);
+            }
+        }
+
+        void updateSecondaryIndexes(Row before, Row after, MiniTransaction mtr) throws MiniDbException {
+            for (SecondaryIndexAccess index : secondaryIndexes) {
+                index.update(before, after, tableName(), mtr);
+            }
+        }
+
+        void deleteSecondaryIndexes(Row row, MiniTransaction mtr) throws MiniDbException {
+            for (SecondaryIndexAccess index : secondaryIndexes) {
+                index.delete(row, tableName(), mtr);
+            }
+        }
+
+        void flushMetadata(BTree tree, MiniTransaction mtr) throws MiniDbException {
             IndexManager indexManager = new IndexManager(bufferPool, table.getSpaceId(), TABLE_INDEX_META_PAGE_NO);
             indexManager.initialize(mtr);
             indexManager.updateIndexMetadata(tree, mtr);
+            for (SecondaryIndexAccess index : secondaryIndexes) {
+                indexManager.updateIndexMetadata(index.openTree(mtr), mtr);
+            }
+        }
+    }
+
+    private static final class SecondaryIndexAccess {
+        private final BufferPool bufferPool;
+        private final TableDescriptor table;
+        private final IndexDescriptor descriptor;
+        private final CompositeKeyDef keyDef;
+        private final cn.zhangyis.minidb.storage.btree.CompositeKeyComparator comparator;
+
+        private SecondaryIndexAccess(BufferPool bufferPool, TableDescriptor table, IndexDescriptor descriptor) {
+            this.bufferPool = bufferPool;
+            this.table = table;
+            this.descriptor = descriptor;
+            this.keyDef = descriptor.toCompositeKeyDef();
+            this.comparator = new cn.zhangyis.minidb.storage.btree.CompositeKeyComparator(keyDef);
+        }
+
+        String indexName() {
+            return descriptor.getIndexName();
+        }
+
+        boolean unique() {
+            return descriptor.isUnique();
+        }
+
+        RowKey keyOf(Row row, String tableName) {
+            if (row == null) {
+                return null;
+            }
+            Object[] values = new Object[descriptor.getColumns().size()];
+            for (int i = 0; i < descriptor.getColumns().size(); i++) {
+                String columnName = descriptor.getColumns().get(i).getName();
+                Object value = row.get(tableName + "." + columnName);
+                if (value == null) {
+                    value = row.get(columnName);
+                }
+                if (value == null) {
+                    return null;
+                }
+                values[i] = value;
+            }
+            return new RowKey(new CompositeKeyValue(keyDef, values).encode());
+        }
+
+        boolean exists(RowKey key) {
+            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+                boolean exists = openTree(mtr).containsKey(key.bytes(), mtr);
+                mtr.commit();
+                return exists;
+            } catch (MiniDbException e) {
+                throw new RuntimeException("Failed to check unique index '" + descriptor.getIndexName() + "'", e);
+            }
+        }
+
+        void insert(Row row, String tableName, MiniTransaction mtr) throws MiniDbException {
+            RowKey key = keyOf(row, tableName);
+            if (key == null) {
+                return;
+            }
+            BTree tree = openTree(mtr);
+            if (descriptor.isUnique() && tree.containsKey(key.bytes(), mtr)) {
+                throw new IllegalStateException("Duplicate key for unique index '" + descriptor.getIndexName() + "'");
+            }
+            tree.insert(buildRecord(key), key.bytes(), mtr);
+        }
+
+        void update(Row before, Row after, String tableName, MiniTransaction mtr) throws MiniDbException {
+            RowKey beforeKey = keyOf(before, tableName);
+            RowKey afterKey = keyOf(after, tableName);
+            if (Objects.equals(beforeKey, afterKey)) {
+                return;
+            }
+            if (beforeKey != null) {
+                openTree(mtr).delete(beforeKey.bytes(), recordSize(beforeKey), mtr);
+            }
+            if (afterKey != null) {
+                insert(after, tableName, mtr);
+            }
+        }
+
+        void delete(Row row, String tableName, MiniTransaction mtr) throws MiniDbException {
+            RowKey key = keyOf(row, tableName);
+            if (key == null) {
+                return;
+            }
+            openTree(mtr).delete(key.bytes(), recordSize(key), mtr);
+        }
+
+        BTree openTree(MiniTransaction mtr) {
+            return new BTree(descriptor.toBTreeMetadata(), bufferPool, comparator);
+        }
+
+        private byte[] buildRecord(RowKey key) {
+            byte[] record = new byte[RecordHeader.SIZE + key.bytes().length];
+            RecordHeader header = new RecordHeader();
+            header.setRecType(RecordHeader.REC_ORDINARY);
+            header.writeTo(ByteBuffer.wrap(record), 0);
+            System.arraycopy(key.bytes(), 0, record, RecordHeader.SIZE, key.bytes().length);
+            return record;
+        }
+
+        private int recordSize(RowKey key) {
+            return RecordHeader.SIZE + key.bytes().length;
         }
     }
 
