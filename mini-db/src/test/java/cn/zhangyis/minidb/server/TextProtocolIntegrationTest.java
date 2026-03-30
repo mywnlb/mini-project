@@ -250,6 +250,45 @@ class TextProtocolIntegrationTest {
         }
     }
 
+    @Test
+    void comQuery_showIndex_returnsIndexMetadataRows() throws Exception {
+        catalog.createTable(TableMeta.of("USERS", List.of(
+                new ColumnMeta("ID", SqlType.INT32, true),
+                new ColumnMeta("NAME", SqlType.VARCHAR, false)
+        ), 0));
+        catalog.createIndex(new IndexMeta("PRIMARY", "USERS", List.of("ID"), true, true));
+        catalog.createIndex(new IndexMeta("IDX_USERS_NAME", "USERS", List.of("NAME"), false, false));
+
+        try (Socket socket = connect()) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            sendComQuery(out, "SHOW INDEX FROM USERS");
+
+            byte[] colCountPkt = readPacket(in);
+            assertEquals(13, colCountPkt[0] & 0xFF, "SHOW INDEX 应返回兼容的索引元数据列");
+
+            for (int i = 0; i < 13; i++) {
+                readPacket(in);
+            }
+            byte[] eof1 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof1[0] & 0xFF);
+
+            List<List<String>> rows = new ArrayList<>();
+            while (true) {
+                byte[] packet = readPacket(in);
+                if ((packet[0] & 0xFF) == MysqlConstants.EOF_HEADER) {
+                    break;
+                }
+                rows.add(decodeTextRow(packet));
+            }
+
+            assertEquals(2, rows.size(), "SHOW INDEX 应返回 PRIMARY 和普通二级索引两行");
+            assertTrue(rows.stream().anyMatch(row -> row.contains("PRIMARY")));
+            assertTrue(rows.stream().anyMatch(row -> row.contains("IDX_USERS_NAME")));
+        }
+    }
+
     // ==================== 辅助方法 ====================
 
     /** 建立连接并完成认证 */
@@ -348,10 +387,23 @@ class TextProtocolIntegrationTest {
         return buf;
     }
 
+    private List<String> decodeTextRow(byte[] packet) {
+        List<String> values = new ArrayList<>();
+        int offset = 0;
+        while (offset < packet.length) {
+            int len = packet[offset] & 0xFF;
+            offset++;
+            values.add(new String(packet, offset, len, StandardCharsets.UTF_8));
+            offset += len;
+        }
+        return values;
+    }
+
     // ==================== 内存 Catalog/DataSource 实现 ====================
 
     static class InMemoryCatalog implements CatalogSpi {
         private final Map<String, TableMeta> tables = new ConcurrentHashMap<>();
+        private final List<IndexMeta> indexes = new CopyOnWriteArrayList<>();
 
         @Override public TableMeta getTable(String name) { return tables.get(name.toUpperCase()); }
         @Override public List<String> listTables(String database) { return new ArrayList<>(tables.keySet()); }
@@ -361,11 +413,21 @@ class TextProtocolIntegrationTest {
         }
         @Override public boolean tableExists(String name) { return tables.containsKey(name.toUpperCase()); }
         @Override public void createTable(TableMeta table) { tables.put(table.name().toUpperCase(), table); }
-        @Override public void dropTable(String name) { tables.remove(name.toUpperCase()); }
+        @Override public void dropTable(String name) {
+            tables.remove(name.toUpperCase());
+            indexes.removeIf(index -> index.tableName().equalsIgnoreCase(name));
+        }
         @Override public void addColumn(String name, ColumnMeta col) {}
-        @Override public void createIndex(IndexMeta index) {}
-        @Override public void dropIndex(String table, String index) {}
-        @Override public List<IndexMeta> getIndexes(String name) { return List.of(); }
+        @Override public void createIndex(IndexMeta index) { indexes.add(index); }
+        @Override public void dropIndex(String table, String index) {
+            indexes.removeIf(meta -> meta.tableName().equalsIgnoreCase(table)
+                    && meta.indexName().equalsIgnoreCase(index));
+        }
+        @Override public List<IndexMeta> getIndexes(String name) {
+            return indexes.stream()
+                    .filter(index -> index.tableName().equalsIgnoreCase(name))
+                    .toList();
+        }
     }
 
     static class InMemoryDataSource implements DataSourceSpi {

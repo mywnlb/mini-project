@@ -150,7 +150,7 @@ public class MysqlConnectionHandler extends ChannelInboundHandlerAdapter {
         InformationSchemaProvider infoProvider = new InformationSchemaProvider(catalog);
         CatalogSpi effectiveCatalog = new MetadataAwareCatalog(catalog, infoProvider);
         if (effectiveDataSource != null) {
-            effectiveDataSource = new MetadataAwareDataSource(effectiveDataSource, infoProvider);
+            effectiveDataSource = new MetadataAwareDataSource(effectiveDataSource, catalog);
         }
 
         this.session = new ConnectionSession(connectionId, effectiveCatalog, effectiveDataSource, execCtx);

@@ -4,9 +4,13 @@ import cn.zhangyis.minidb.server.ConnectionSession;
 import cn.zhangyis.minidb.server.netty.PacketWriter;
 import cn.zhangyis.minidb.server.protocol.MysqlConstants;
 import cn.zhangyis.minidb.server.protocol.packets.*;
+import cn.zhangyis.minidb.sql.catalog.ColumnMeta;
+import cn.zhangyis.minidb.sql.catalog.IndexMeta;
+import cn.zhangyis.minidb.sql.catalog.TableMeta;
 import cn.zhangyis.minidb.sql.exec.Row;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -79,6 +83,10 @@ public class SystemVariableHandler {
     private static final Pattern SHOW_DATABASES = Pattern.compile(
             "(?i)^\\s*SHOW\\s+DATABASES\\s*$");
 
+    // 匹配 SHOW INDEX|INDEXES|KEYS FROM tbl [FROM db]
+    private static final Pattern SHOW_INDEX = Pattern.compile(
+            "(?i)^\\s*SHOW\\s+(?:INDEX|INDEXES|KEYS)\\s+(?:FROM|IN)\\s+(\\S+)(?:\\s+(?:FROM|IN)\\s+(\\S+))?\\s*$");
+
     // 匹配 SHOW CHARACTER SET / SHOW COLLATION / SHOW ENGINES 等 Navicat 探测命令
     private static final Pattern SHOW_MISC = Pattern.compile(
             "(?i)^\\s*SHOW\\s+(?:CHARACTER\\s+SET|COLLATION|ENGINES|GRANTS|PROCESSLIST|STATUS)(?:\\s+.+)?\\s*$");
@@ -97,14 +105,12 @@ public class SystemVariableHandler {
             "COLUMN_PRIVILEGES",
             "EVENTS",
             "FILES",
-            "KEY_COLUMN_USAGE",
             "PARAMETERS",
             "PARTITIONS",
             "PLUGINS",
             "REFERENTIAL_CONSTRAINTS",
             "ROUTINES",
             "SCHEMA_PRIVILEGES",
-            "TABLE_CONSTRAINTS",
             "TABLE_PRIVILEGES",
             "TRIGGERS",
             "USER_PRIVILEGES",
@@ -216,6 +222,11 @@ public class SystemVariableHandler {
             return rows;
         }
 
+        Matcher showIndexMatcher = SHOW_INDEX.matcher(sql);
+        if (showIndexMatcher.matches()) {
+            return buildShowIndexRows(session, showIndexMatcher.group(1), showIndexMatcher.group(2));
+        }
+
         // SHOW DATABASES（返回数据库列表）
         if (SHOW_DATABASES.matcher(sql).matches()) {
             List<String> databases = session.catalog().listDatabases();
@@ -284,6 +295,7 @@ public class SystemVariableHandler {
                 || SELECT_DATABASE.matcher(sql).matches()
                 || SHOW_TABLES.matcher(sql).matches()
                 || SHOW_TABLE_STATUS.matcher(sql).matches()
+                || SHOW_INDEX.matcher(sql).matches()
                 || SHOW_VARIABLES.matcher(sql).matches()
                 || SHOW_DATABASES.matcher(sql).matches()
                 || SHOW_MISC.matcher(sql).matches()
@@ -367,6 +379,10 @@ public class SystemVariableHandler {
 
         if (SHOW_TABLE_STATUS.matcher(sql).matches()) {
             return showTableStatusMetadata();
+        }
+
+        if (SHOW_INDEX.matcher(sql).matches()) {
+            return showIndexMetadata();
         }
 
         if (SHOW_DATABASES.matcher(sql).matches()) {
@@ -509,6 +525,17 @@ public class SystemVariableHandler {
         // SHOW TABLE STATUS（返回表元数据）
         if (SHOW_TABLE_STATUS.matcher(sql).matches()) {
             handleShowTableStatus(sql, session, writer);
+            return true;
+        }
+
+        Matcher showIndexMatcher = SHOW_INDEX.matcher(sql);
+        if (showIndexMatcher.matches()) {
+            ResultSetWriter.write(
+                    buildShowIndexRows(session, showIndexMatcher.group(1), showIndexMatcher.group(2)),
+                    showIndexMetadata(),
+                    session,
+                    writer
+            );
             return true;
         }
 
@@ -1042,6 +1069,99 @@ public class SystemVariableHandler {
 
         writer.writeEof(new EofPacket(0, statusFlags));
         writer.flush();
+    }
+
+    private static List<ResultColumnMetadata> showIndexMetadata() {
+        return List.of(
+                ResultColumnMetadata.of("Table", "", "", "", "Table", "Table",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Non_unique", "", "", "", "Non_unique", "Non_unique",
+                        MysqlConstants.MYSQL_TYPE_LONG, 0),
+                ResultColumnMetadata.of("Key_name", "", "", "", "Key_name", "Key_name",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Seq_in_index", "", "", "", "Seq_in_index", "Seq_in_index",
+                        MysqlConstants.MYSQL_TYPE_LONG, 0),
+                ResultColumnMetadata.of("Column_name", "", "", "", "Column_name", "Column_name",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Collation", "", "", "", "Collation", "Collation",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Cardinality", "", "", "", "Cardinality", "Cardinality",
+                        MysqlConstants.MYSQL_TYPE_LONGLONG, 0),
+                ResultColumnMetadata.of("Sub_part", "", "", "", "Sub_part", "Sub_part",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Packed", "", "", "", "Packed", "Packed",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Null", "", "", "", "Null", "Null",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Index_type", "", "", "", "Index_type", "Index_type",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Comment", "", "", "", "Comment", "Comment",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0),
+                ResultColumnMetadata.of("Index_comment", "", "", "", "Index_comment", "Index_comment",
+                        MysqlConstants.MYSQL_TYPE_VAR_STRING, 0)
+        );
+    }
+
+    private static List<Row> buildShowIndexRows(ConnectionSession session, String rawTableName, String rawDatabaseName) {
+        String tableName = stripIdentifierQuotes(rawTableName);
+        String requestedDatabase = stripIdentifierQuotes(rawDatabaseName);
+        String database = resolveMetadataDatabase(session, requestedDatabase);
+
+        TableMeta tableMeta = database != null
+                ? session.catalog().getTable(database, tableName)
+                : session.catalog().getTable(tableName);
+        if (tableMeta == null) {
+            return List.of();
+        }
+
+        List<IndexMeta> indexes = database != null
+                ? session.catalog().getIndexes(database, tableName)
+                : session.catalog().getIndexes(tableName);
+        Map<String, ColumnMeta> columnsByName = new LinkedHashMap<>();
+        for (ColumnMeta column : tableMeta.columns()) {
+            columnsByName.put(column.name().toUpperCase(Locale.ROOT), column);
+        }
+
+        List<Row> rows = new ArrayList<>();
+        for (IndexMeta index : indexes) {
+            List<String> columnNames = index.columns().isEmpty()
+                    ? primaryColumns(tableMeta)
+                    : index.columns();
+            for (int i = 0; i < columnNames.size(); i++) {
+                String columnName = columnNames.get(i);
+                ColumnMeta columnMeta = columnsByName.get(columnName.toUpperCase(Locale.ROOT));
+                LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+                values.put("Table", tableName);
+                values.put("Non_unique", index.primary() || index.unique() ? 0 : 1);
+                values.put("Key_name", index.indexName());
+                values.put("Seq_in_index", i + 1);
+                values.put("Column_name", columnName);
+                values.put("Collation", "A");
+                values.put("Cardinality", tableMeta.rowCount());
+                values.put("Sub_part", "");
+                values.put("Packed", "");
+                values.put("Null", columnMeta != null && columnMeta.nullable() ? "YES" : "");
+                values.put("Index_type", "BTREE");
+                values.put("Comment", "");
+                values.put("Index_comment", "");
+                rows.add(new Row(values));
+            }
+        }
+        return rows;
+    }
+
+    private static List<String> primaryColumns(TableMeta tableMeta) {
+        return tableMeta.columns().stream()
+                .filter(ColumnMeta::isPrimaryKey)
+                .map(ColumnMeta::name)
+                .toList();
+    }
+
+    private static String stripIdentifierQuotes(String identifier) {
+        if (identifier == null) {
+            return null;
+        }
+        return identifier.replace("`", "");
     }
 
     private static Map<String, String> allSystemVariables(ConnectionSession session) {

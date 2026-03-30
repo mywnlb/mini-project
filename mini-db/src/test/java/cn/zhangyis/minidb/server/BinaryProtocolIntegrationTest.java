@@ -5,6 +5,7 @@ import cn.zhangyis.minidb.server.protocol.MysqlConstants;
 import cn.zhangyis.minidb.sql.catalog.*;
 import cn.zhangyis.minidb.sql.exec.DataSourceSpi;
 import cn.zhangyis.minidb.sql.exec.Row;
+import cn.zhangyis.minidb.sql.types.SqlType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -344,6 +345,89 @@ class BinaryProtocolIntegrationTest {
         }
     }
 
+    @Test
+    void comStmtExecute_showIndex_returnsBinaryMetadataAndRows() throws Exception {
+        InMemoryCatalog catalog = new InMemoryCatalog();
+        catalog.createTable(TableMeta.of("USERS", List.of(
+                new ColumnMeta("ID", SqlType.INT32, true),
+                new ColumnMeta("NAME", SqlType.VARCHAR, false)
+        ), 0));
+        catalog.createIndex(new IndexMeta("PRIMARY", "USERS", List.of("ID"), true, true));
+        catalog.createIndex(new IndexMeta("IDX_USERS_NAME", "USERS", List.of("NAME"), false, false));
+
+        server.stop();
+        UserManager userManager = new UserManager();
+        userManager.addUser("root", "");
+        server = new MiniDbServerBuilder()
+                .port(TEST_PORT)
+                .catalog(catalog)
+                .dataSource(new InMemoryDataSource())
+                .userManager(userManager)
+                .sqlThreadPoolSize(2)
+                .build();
+        server.startAsync();
+        Thread.sleep(500);
+
+        try (Socket socket = connect()) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            String sql = "SHOW INDEX FROM USERS";
+            byte[] sqlBytes = sql.getBytes(StandardCharsets.UTF_8);
+            byte[] prepPayload = new byte[1 + sqlBytes.length];
+            prepPayload[0] = MysqlConstants.COM_STMT_PREPARE;
+            System.arraycopy(sqlBytes, 0, prepPayload, 1, sqlBytes.length);
+            writePacket(out, 0, prepPayload);
+
+            byte[] prepResp = readPacket(in);
+            assertEquals(0x00, prepResp[0] & 0xFF);
+            int stmtId = readInt4LE(prepResp, 1);
+            int numColumns = readInt2LE(prepResp, 5);
+            int numParams = readInt2LE(prepResp, 7);
+
+            assertEquals(13, numColumns, "SHOW INDEX PREPARE 阶段应返回索引元数据列");
+            assertEquals(0, numParams);
+
+            for (int i = 0; i < numColumns; i++) {
+                readPacket(in);
+            }
+            byte[] prepEof = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, prepEof[0] & 0xFF);
+
+            byte[] execPayload = new byte[1 + 4 + 1 + 4];
+            execPayload[0] = MysqlConstants.COM_STMT_EXECUTE;
+            writeInt4LE(execPayload, 1, stmtId);
+            execPayload[5] = 0x00;
+            writeInt4LE(execPayload, 6, 1);
+            writePacket(out, 0, execPayload);
+
+            byte[] colCountPkt = readPacket(in);
+            assertEquals(13, colCountPkt[0] & 0xFF, "SHOW INDEX EXECUTE 阶段也应返回同样的列数");
+
+            for (int i = 0; i < 13; i++) {
+                readPacket(in);
+            }
+            byte[] eof1 = readPacket(in);
+            assertEquals(MysqlConstants.EOF_HEADER, eof1[0] & 0xFF);
+
+            int rowCount = 0;
+            while (true) {
+                byte[] packet = readPacket(in);
+                if ((packet[0] & 0xFF) == MysqlConstants.EOF_HEADER) {
+                    break;
+                }
+                assertEquals(0x00, packet[0] & 0xFF, "二进制行必须以 0x00 开头");
+                rowCount++;
+            }
+            assertEquals(2, rowCount, "SHOW INDEX 二进制结果应返回两行索引元数据");
+
+            byte[] closePayload = new byte[5];
+            closePayload[0] = MysqlConstants.COM_STMT_CLOSE;
+            writeInt4LE(closePayload, 1, stmtId);
+            writePacket(out, 0, closePayload);
+        }
+    }
+
     // ==================== 辅助方法 ====================
 
     private Socket connect() throws Exception {
@@ -440,6 +524,7 @@ class BinaryProtocolIntegrationTest {
 
     static class InMemoryCatalog implements CatalogSpi {
         private final Map<String, TableMeta> tables = new ConcurrentHashMap<>();
+        private final List<IndexMeta> indexes = new CopyOnWriteArrayList<>();
         @Override public TableMeta getTable(String name) { return tables.get(name.toUpperCase()); }
         @Override public List<String> listTables(String database) { return new ArrayList<>(tables.keySet()); }
         @Override public List<ColumnMeta> getColumns(String name) {
@@ -448,11 +533,21 @@ class BinaryProtocolIntegrationTest {
         }
         @Override public boolean tableExists(String name) { return tables.containsKey(name.toUpperCase()); }
         @Override public void createTable(TableMeta table) { tables.put(table.name().toUpperCase(), table); }
-        @Override public void dropTable(String name) { tables.remove(name.toUpperCase()); }
+        @Override public void dropTable(String name) {
+            tables.remove(name.toUpperCase());
+            indexes.removeIf(index -> index.tableName().equalsIgnoreCase(name));
+        }
         @Override public void addColumn(String name, ColumnMeta col) {}
-        @Override public void createIndex(IndexMeta index) {}
-        @Override public void dropIndex(String table, String index) {}
-        @Override public List<IndexMeta> getIndexes(String name) { return List.of(); }
+        @Override public void createIndex(IndexMeta index) { indexes.add(index); }
+        @Override public void dropIndex(String table, String index) {
+            indexes.removeIf(meta -> meta.tableName().equalsIgnoreCase(table)
+                    && meta.indexName().equalsIgnoreCase(index));
+        }
+        @Override public List<IndexMeta> getIndexes(String name) {
+            return indexes.stream()
+                    .filter(index -> index.tableName().equalsIgnoreCase(name))
+                    .toList();
+        }
     }
 
     static class InMemoryDataSource implements DataSourceSpi {

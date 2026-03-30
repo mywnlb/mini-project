@@ -24,7 +24,12 @@ public class CreateIndexExec implements ExecNode {
         SqlCreateIndex create = relCreateIndex.createIndex();
         CatalogSpi catalog = relCreateIndex.catalog();
 
-        IndexMeta index = new IndexMeta(create.indexName(), create.table().name(), create.columns());
+        IndexMeta index = new IndexMeta(
+                create.indexName(),
+                create.table().name(),
+                create.columns(),
+                false,
+                create.unique());
         catalog.createIndex(index);
         message = "Index '" + create.indexName() + "' created on table '" + create.table().name() + "'";
         returned = false;

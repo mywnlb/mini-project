@@ -13,19 +13,25 @@ public final class InformationSchemaNames {
     public static final String COLUMNS = "COLUMNS";
     public static final String STATISTICS = "STATISTICS";
     public static final String ENGINES = "ENGINES";
+    public static final String KEY_COLUMN_USAGE = "KEY_COLUMN_USAGE";
+    public static final String TABLE_CONSTRAINTS = "TABLE_CONSTRAINTS";
 
     public static final String INTERNAL_SCHEMATA = "__MINIDB_INFO_SCHEMATA";
     public static final String INTERNAL_TABLES = "__MINIDB_INFO_TABLES";
     public static final String INTERNAL_COLUMNS = "__MINIDB_INFO_COLUMNS";
     public static final String INTERNAL_STATISTICS = "__MINIDB_INFO_STATISTICS";
     public static final String INTERNAL_ENGINES = "__MINIDB_INFO_ENGINES";
+    public static final String INTERNAL_KEY_COLUMN_USAGE = "__MINIDB_INFO_KEY_COLUMN_USAGE";
+    public static final String INTERNAL_TABLE_CONSTRAINTS = "__MINIDB_INFO_TABLE_CONSTRAINTS";
 
     private static final Map<String, String> EXTERNAL_TO_INTERNAL = Map.of(
             SCHEMATA, INTERNAL_SCHEMATA,
             TABLES, INTERNAL_TABLES,
             COLUMNS, INTERNAL_COLUMNS,
             STATISTICS, INTERNAL_STATISTICS,
-            ENGINES, INTERNAL_ENGINES
+            ENGINES, INTERNAL_ENGINES,
+            KEY_COLUMN_USAGE, INTERNAL_KEY_COLUMN_USAGE,
+            TABLE_CONSTRAINTS, INTERNAL_TABLE_CONSTRAINTS
     );
 
     private static final Map<String, String> INTERNAL_TO_EXTERNAL;
@@ -65,6 +71,14 @@ public final class InformationSchemaNames {
     }
 
     public static List<String> supportedExternalTables() {
-        return List.of(SCHEMATA, TABLES, COLUMNS, STATISTICS, ENGINES);
+        return List.of(
+                SCHEMATA,
+                TABLES,
+                COLUMNS,
+                STATISTICS,
+                ENGINES,
+                KEY_COLUMN_USAGE,
+                TABLE_CONSTRAINTS
+        );
     }
 }

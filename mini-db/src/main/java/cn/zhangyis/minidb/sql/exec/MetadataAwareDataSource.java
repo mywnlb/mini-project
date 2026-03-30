@@ -1,5 +1,6 @@
 package cn.zhangyis.minidb.sql.exec;
 
+import cn.zhangyis.minidb.sql.catalog.CatalogSpi;
 import cn.zhangyis.minidb.sql.catalog.InformationSchemaNames;
 import cn.zhangyis.minidb.sql.catalog.InformationSchemaProvider;
 
@@ -9,22 +10,25 @@ import java.util.function.Predicate;
 
 /**
  * DataSource 装饰器：information_schema 命中 provider，其他表完全委托底层数据源。
+ *
+ * <p>每次 scan 时创建新的 {@link InformationSchemaProvider}，
+ * 保证每次查询看到最新的 DDL 变更，同时 provider 内部快照保证单次查询的多视图一致性。</p>
  */
 public class MetadataAwareDataSource implements DataSourceSpi {
 
     private final DataSourceSpi delegate;
-    private final InformationSchemaProvider provider;
+    private final CatalogSpi baseCatalog;
 
-    public MetadataAwareDataSource(DataSourceSpi delegate, InformationSchemaProvider provider) {
+    public MetadataAwareDataSource(DataSourceSpi delegate, CatalogSpi baseCatalog) {
         this.delegate = delegate;
-        this.provider = provider;
+        this.baseCatalog = baseCatalog;
     }
 
     @Override
     public Iterator<Row> scan(String tableName) {
         failIfUnsupportedInformationSchema(tableName);
-        if (provider.supportsInternalName(tableName)) {
-            return provider.scan(tableName);
+        if (InformationSchemaNames.isVirtualInternalName(tableName)) {
+            return new InformationSchemaProvider(baseCatalog).scan(tableName);
         }
         return delegate.scan(tableName);
     }
@@ -49,7 +53,7 @@ public class MetadataAwareDataSource implements DataSourceSpi {
 
     @Override
     public int partitionCount(String tableName) {
-        if (provider.supportsInternalName(tableName)) {
+        if (InformationSchemaNames.isVirtualInternalName(tableName)) {
             return 1;
         }
         return delegate.partitionCount(tableName);
@@ -57,15 +61,16 @@ public class MetadataAwareDataSource implements DataSourceSpi {
 
     @Override
     public Iterator<Row> scanPartition(String tableName, int partitionId, int totalPartitions) {
-        if (provider.supportsInternalName(tableName)) {
-            return provider.scan(tableName);
+        if (InformationSchemaNames.isVirtualInternalName(tableName)) {
+            return new InformationSchemaProvider(baseCatalog).scan(tableName);
         }
         return delegate.scanPartition(tableName, partitionId, totalPartitions);
     }
 
     @Override
     public boolean supportsLookup(String tableName, String columnName) {
-        return !provider.supportsInternalName(tableName) && delegate.supportsLookup(tableName, columnName);
+        return !InformationSchemaNames.isVirtualInternalName(tableName)
+                && delegate.supportsLookup(tableName, columnName);
     }
 
     @Override
@@ -76,14 +81,14 @@ public class MetadataAwareDataSource implements DataSourceSpi {
 
     @Override
     public void invalidateTable(String tableName) {
-        if (!provider.supportsInternalName(tableName)) {
+        if (!InformationSchemaNames.isVirtualInternalName(tableName)) {
             delegate.invalidateTable(tableName);
         }
     }
 
     private void failIfVirtualWrite(String tableName) {
         failIfUnsupportedInformationSchema(tableName);
-        if (provider.supportsInternalName(tableName)) {
+        if (InformationSchemaNames.isVirtualInternalName(tableName)) {
             throw new UnsupportedOperationException("information_schema is read-only");
         }
     }

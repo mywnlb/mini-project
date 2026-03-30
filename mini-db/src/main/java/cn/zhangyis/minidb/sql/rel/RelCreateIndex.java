@@ -21,7 +21,8 @@ public class RelCreateIndex extends RelNode {
     public String explain() {
         return "RelCreateIndex(index=" + createIndex.indexName()
             + ", table=" + createIndex.table().name()
-            + ", cols=" + createIndex.columns() + ")";
+            + ", cols=" + createIndex.columns()
+            + ", unique=" + createIndex.unique() + ")";
     }
 
     public SqlCreateIndex createIndex() { return createIndex; }

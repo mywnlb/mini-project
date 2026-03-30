@@ -4,6 +4,7 @@ import cn.zhangyis.minidb.sql.exec.Row;
 import cn.zhangyis.minidb.sql.types.SqlType;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -27,8 +28,28 @@ public class InformationSchemaProvider {
 
     private final CatalogSpi baseCatalog;
 
+    /** 构造时快照，保证同一 provider 内所有 rows() 调用看到一致的约束视图 */
+    private final Map<String, List<IndexMeta>> constraintIndexSnapshot;
+
     public InformationSchemaProvider(CatalogSpi baseCatalog) {
         this.baseCatalog = baseCatalog;
+        this.constraintIndexSnapshot = snapshotConstraintIndexes();
+    }
+
+    private Map<String, List<IndexMeta>> snapshotConstraintIndexes() {
+        Map<String, List<IndexMeta>> snapshot = new HashMap<>();
+        for (String database : allDatabases()) {
+            if (InformationSchemaNames.SCHEMA_NAME.equalsIgnoreCase(database)) {
+                continue;
+            }
+            for (String tableName : baseCatalog.listTables(database)) {
+                snapshot.put(database + "." + tableName,
+                        baseCatalog.getIndexes(database, tableName).stream()
+                                .filter(index -> index.primary() || index.unique())
+                                .toList());
+            }
+        }
+        return snapshot;
     }
 
     public boolean supportsInternalName(String tableName) {
@@ -47,6 +68,8 @@ public class InformationSchemaProvider {
             case InformationSchemaNames.COLUMNS -> columnsColumns();
             case InformationSchemaNames.STATISTICS -> statisticsColumns();
             case InformationSchemaNames.ENGINES -> enginesColumns();
+            case InformationSchemaNames.KEY_COLUMN_USAGE -> keyColumnUsageColumns();
+            case InformationSchemaNames.TABLE_CONSTRAINTS -> tableConstraintsColumns();
             default -> List.of();
         };
 
@@ -64,6 +87,8 @@ public class InformationSchemaProvider {
             case InformationSchemaNames.INTERNAL_COLUMNS -> buildColumnsRows();
             case InformationSchemaNames.INTERNAL_STATISTICS -> buildStatisticsRows();
             case InformationSchemaNames.INTERNAL_ENGINES -> buildEnginesRows();
+            case InformationSchemaNames.INTERNAL_KEY_COLUMN_USAGE -> buildKeyColumnUsageRows();
+            case InformationSchemaNames.INTERNAL_TABLE_CONSTRAINTS -> buildTableConstraintsRows();
             default -> List.of();
         };
     }
@@ -189,6 +214,61 @@ public class InformationSchemaProvider {
         )));
     }
 
+    private List<Row> buildKeyColumnUsageRows() {
+        List<Row> rows = new ArrayList<>();
+        for (String database : allDatabases()) {
+            if (InformationSchemaNames.SCHEMA_NAME.equalsIgnoreCase(database)) {
+                continue;
+            }
+
+            for (String tableName : baseCatalog.listTables(database)) {
+                for (IndexMeta index : constraintIndexes(database, tableName)) {
+                    List<String> columnNames = index.columns().isEmpty()
+                            ? primaryColumnsFallback(baseCatalog.getTable(database, tableName))
+                            : index.columns();
+                    for (int i = 0; i < columnNames.size(); i++) {
+                        Map<String, Object> values = new LinkedHashMap<>();
+                        values.put("CONSTRAINT_CATALOG", TABLE_CATALOG);
+                        values.put("CONSTRAINT_SCHEMA", database);
+                        values.put("CONSTRAINT_NAME", index.indexName());
+                        values.put("TABLE_CATALOG", TABLE_CATALOG);
+                        values.put("TABLE_SCHEMA", database);
+                        values.put("TABLE_NAME", tableName);
+                        values.put("COLUMN_NAME", columnNames.get(i));
+                        values.put("ORDINAL_POSITION", i + 1);
+                        values.put("POSITION_IN_UNIQUE_CONSTRAINT", null);
+                        rows.add(row(InformationSchemaNames.INTERNAL_KEY_COLUMN_USAGE, values));
+                    }
+                }
+            }
+        }
+        return rows;
+    }
+
+    private List<Row> buildTableConstraintsRows() {
+        List<Row> rows = new ArrayList<>();
+        for (String database : allDatabases()) {
+            if (InformationSchemaNames.SCHEMA_NAME.equalsIgnoreCase(database)) {
+                continue;
+            }
+
+            for (String tableName : baseCatalog.listTables(database)) {
+                for (IndexMeta index : constraintIndexes(database, tableName)) {
+                    Map<String, Object> values = new LinkedHashMap<>();
+                    values.put("CONSTRAINT_CATALOG", TABLE_CATALOG);
+                    values.put("CONSTRAINT_SCHEMA", database);
+                    values.put("CONSTRAINT_NAME", index.indexName());
+                    values.put("TABLE_SCHEMA", database);
+                    values.put("TABLE_NAME", tableName);
+                    values.put("CONSTRAINT_TYPE", index.primary() ? "PRIMARY KEY" : "UNIQUE");
+                    values.put("ENFORCED", "YES");
+                    rows.add(row(InformationSchemaNames.INTERNAL_TABLE_CONSTRAINTS, values));
+                }
+            }
+        }
+        return rows;
+    }
+
     private void appendColumnRows(List<Row> rows, String database, String tableName,
                                   List<ColumnMeta> columns, String internalTableName) {
         List<IndexMeta> indexes = InformationSchemaNames.SCHEMA_NAME.equalsIgnoreCase(database)
@@ -228,6 +308,8 @@ public class InformationSchemaProvider {
             case InformationSchemaNames.INTERNAL_COLUMNS -> virtualColumnsRowCount();
             case InformationSchemaNames.INTERNAL_STATISTICS -> virtualStatisticsRowCount();
             case InformationSchemaNames.INTERNAL_ENGINES -> 1L;
+            case InformationSchemaNames.INTERNAL_KEY_COLUMN_USAGE -> virtualKeyColumnUsageRowCount();
+            case InformationSchemaNames.INTERNAL_TABLE_CONSTRAINTS -> virtualTableConstraintsRowCount();
             default -> 0L;
         };
     }
@@ -248,13 +330,46 @@ public class InformationSchemaProvider {
                 + tablesColumns().size()
                 + columnsColumns().size()
                 + statisticsColumns().size()
-                + enginesColumns().size();
+                + enginesColumns().size()
+                + keyColumnUsageColumns().size()
+                + tableConstraintsColumns().size();
         for (String database : allDatabases()) {
             if (InformationSchemaNames.SCHEMA_NAME.equalsIgnoreCase(database)) {
                 continue;
             }
             for (String tableName : baseCatalog.listTables(database)) {
                 count += baseCatalog.getColumns(database, tableName).size();
+            }
+        }
+        return count;
+    }
+
+    private long virtualKeyColumnUsageRowCount() {
+        long count = 0L;
+        for (String database : allDatabases()) {
+            if (InformationSchemaNames.SCHEMA_NAME.equalsIgnoreCase(database)) {
+                continue;
+            }
+            for (String tableName : baseCatalog.listTables(database)) {
+                for (IndexMeta index : constraintIndexes(database, tableName)) {
+                    List<String> columnNames = index.columns().isEmpty()
+                            ? primaryColumnsFallback(baseCatalog.getTable(database, tableName))
+                            : index.columns();
+                    count += columnNames.size();
+                }
+            }
+        }
+        return count;
+    }
+
+    private long virtualTableConstraintsRowCount() {
+        long count = 0L;
+        for (String database : allDatabases()) {
+            if (InformationSchemaNames.SCHEMA_NAME.equalsIgnoreCase(database)) {
+                continue;
+            }
+            for (String tableName : baseCatalog.listTables(database)) {
+                count += constraintIndexes(database, tableName).size();
             }
         }
         return count;
@@ -407,6 +522,36 @@ public class InformationSchemaProvider {
                 new ColumnMeta("XA", SqlType.VARCHAR, false, false, "NO"),
                 new ColumnMeta("SAVEPOINTS", SqlType.VARCHAR, false, false, "YES")
         );
+    }
+
+    private List<ColumnMeta> keyColumnUsageColumns() {
+        return List.of(
+                new ColumnMeta("CONSTRAINT_CATALOG", SqlType.VARCHAR, false, false, TABLE_CATALOG),
+                new ColumnMeta("CONSTRAINT_SCHEMA", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("CONSTRAINT_NAME", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("TABLE_CATALOG", SqlType.VARCHAR, false, false, TABLE_CATALOG),
+                new ColumnMeta("TABLE_SCHEMA", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("TABLE_NAME", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("COLUMN_NAME", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("ORDINAL_POSITION", SqlType.INT32, false, false, null),
+                new ColumnMeta("POSITION_IN_UNIQUE_CONSTRAINT", SqlType.INT32, false, true, null)
+        );
+    }
+
+    private List<ColumnMeta> tableConstraintsColumns() {
+        return List.of(
+                new ColumnMeta("CONSTRAINT_CATALOG", SqlType.VARCHAR, false, false, TABLE_CATALOG),
+                new ColumnMeta("CONSTRAINT_SCHEMA", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("CONSTRAINT_NAME", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("TABLE_SCHEMA", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("TABLE_NAME", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("CONSTRAINT_TYPE", SqlType.VARCHAR, false, false, null),
+                new ColumnMeta("ENFORCED", SqlType.VARCHAR, false, false, "YES")
+        );
+    }
+
+    private List<IndexMeta> constraintIndexes(String database, String tableName) {
+        return constraintIndexSnapshot.getOrDefault(database + "." + tableName, List.of());
     }
 
     private Row row(String internalTableName, Map<String, Object> values) {

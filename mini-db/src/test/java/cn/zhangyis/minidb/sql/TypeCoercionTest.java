@@ -5,6 +5,8 @@ import cn.zhangyis.minidb.sql.types.TypeCoercion;
 import cn.zhangyis.minidb.sql.types.TypeMismatchException;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -57,17 +59,17 @@ class TypeCoercionTest {
 
     @Test
     void doublePassThrough() {
-        assertEquals(3.14, TypeCoercion.coerce(3.14, SqlType.DECIMAL, "price"));
+        assertEquals(BigDecimal.valueOf(3.14), TypeCoercion.coerce(3.14, SqlType.DECIMAL, "price"));
     }
 
     @Test
     void intToDecimal() {
-        assertEquals(42.0, TypeCoercion.coerce(42, SqlType.DECIMAL, "price"));
+        assertEquals(BigDecimal.valueOf(42), TypeCoercion.coerce(42, SqlType.DECIMAL, "price"));
     }
 
     @Test
     void stringToDecimal() {
-        assertEquals(9.99, TypeCoercion.coerce("9.99", SqlType.DECIMAL, "price"));
+        assertEquals(new BigDecimal("9.99"), TypeCoercion.coerce("9.99", SqlType.DECIMAL, "price"));
     }
 
     @Test

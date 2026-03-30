@@ -231,96 +231,33 @@ public class StorageCatalog implements CatalogSpi {
 
     /**
      * CREATE INDEX：在已有表上创建二级索引。
-     *
-     * <p>流程：
-     * <ol>
-     *   <li>通过 CatalogManager 获取 TableDescriptor</li>
-     *   <li>验证索引列存在</li>
-     *   <li>通过 IndexManager 创建 B+Tree 索引</li>
-     *   <li>更新 TableDescriptor 的 secondaryIndexIds</li>
-     * </ol>
      */
     @Override
     public void createIndex(IndexMeta index) {
         requireBufferPool("CREATE INDEX");
         try {
-            TableDescriptor tableDesc = catalogManager.getTable(databaseName, index.tableName());
-
-            // 验证列存在并构建 IndexDescriptor.ColumnDescriptor
-            List<IndexDescriptor.ColumnDescriptor> indexColumns = new ArrayList<>();
-            for (String colName : index.columns()) {
-                cn.zhangyis.minidb.storage.catalog.ColumnMeta storageCol = tableDesc.findColumn(colName);
-                if (storageCol == null) {
-                    throw new RuntimeException("Column not found: " + colName + " in table " + index.tableName());
-                }
-                indexColumns.add(TypeBridge.toIndexColumn(
-                    storageCol, false));
-            }
-
-            // 通过 IndexManager 创建索引
-            int spaceId = tableDesc.getSpaceId();
-            IndexManager indexManager = new IndexManager(bufferPool, spaceId, TABLE_INDEX_META_PAGE_NO);
-            long indexId = catalogManager.getIdGenerator().allocateIndexId();
-
-            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-                indexManager.initialize(mtr);
-                indexManager.createIndex(
-                    indexId,
+            catalogManager.createIndex(
+                    databaseName,
+                    index.tableName(),
                     index.indexName(),
-                    tableDesc.getTableId(),
                     index.unique() ? IndexType.UNIQUE : IndexType.SECONDARY,
-                    indexColumns,
-                    mtr
-                );
-                mtr.commit();
-            }
-
-            // 更新 TableDescriptor
-            tableDesc.addSecondaryIndexId(indexId);
-            tableDesc.setLastUpdateTime(System.currentTimeMillis());
+                    index.columns()
+            );
         } catch (CatalogException e) {
             throw new RuntimeException("CREATE INDEX failed: " + index.indexName() + " — " + e.getMessage(), e);
-        } catch (Exception e) {
-            throw new RuntimeException("CREATE INDEX failed: " + index.indexName(), e);
         }
     }
 
     /**
      * DROP INDEX：删除表上的二级索引。
-     *
-     * <p>流程：
-     * <ol>
-     *   <li>通过 CatalogManager 获取 TableDescriptor</li>
-     *   <li>通过 IndexManager 查找并删除索引</li>
-     *   <li>更新 TableDescriptor 的 secondaryIndexIds</li>
-     * </ol>
      */
     @Override
     public void dropIndex(String tableName, String indexName) {
         requireBufferPool("DROP INDEX");
         try {
-            TableDescriptor tableDesc = catalogManager.getTable(databaseName, tableName);
-            int spaceId = tableDesc.getSpaceId();
-            IndexManager indexManager = new IndexManager(bufferPool, spaceId, TABLE_INDEX_META_PAGE_NO);
-
-            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-                indexManager.initialize(mtr);
-                boolean dropped = indexManager.dropIndexByName(
-                    tableDesc.getTableId(), indexName, mtr);
-                if (!dropped) {
-                    throw new RuntimeException("Index not found: " + indexName + " on table " + tableName);
-                }
-                mtr.commit();
-            }
-
-            // 从 TableDescriptor 移除（需要找到对应的 indexId）
-            // IndexManager 已经从自己的缓存中移除了，这里更新 TableDescriptor
-            removeSecondaryIndexByName(tableDesc, indexName);
-            tableDesc.setLastUpdateTime(System.currentTimeMillis());
+            catalogManager.dropIndex(databaseName, tableName, indexName);
         } catch (CatalogException e) {
             throw new RuntimeException("DROP INDEX failed: " + indexName + " — " + e.getMessage(), e);
-        } catch (Exception e) {
-            throw new RuntimeException("DROP INDEX failed: " + indexName, e);
         }
     }
 
@@ -528,29 +465,4 @@ public class StorageCatalog implements CatalogSpi {
         }
     }
 
-    /**
-     * 从 TableDescriptor 移除指定名称的二级索引 ID。
-     * 需要遍历 secondaryIndexIds 找到对应的 IndexDescriptor。
-     */
-    private void removeSecondaryIndexByName(TableDescriptor tableDesc, String indexName) {
-        if (bufferPool == null) return;
-        try {
-            int spaceId = tableDesc.getSpaceId();
-            IndexManager indexManager = new IndexManager(bufferPool, spaceId, TABLE_INDEX_META_PAGE_NO);
-            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-                indexManager.initialize(mtr);
-                // 查找已删除的索引 ID（IndexManager.dropIndexByName 已经从缓存移除了）
-                // 遍历 tableDesc 的 secondaryIndexIds，检查哪个不再存在于 IndexManager
-                for (Long indexId : new ArrayList<>(tableDesc.getSecondaryIndexIds())) {
-                    if (!indexManager.indexExists(indexId)) {
-                        tableDesc.removeSecondaryIndexId(indexId);
-                        break;
-                    }
-                }
-                mtr.commit();
-            }
-        } catch (Exception ignored) {
-            // best-effort cleanup
-        }
-    }
 }

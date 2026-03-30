@@ -52,7 +52,9 @@
       "WebSearch",
       "WebFetch(domain:www.infoq.com)",
       "WebFetch(domain:martinfowler.com)",
-      "WebFetch(domain:www.humanlayer.dev)"
+      "WebFetch(domain:www.humanlayer.dev)",
+      "Bash(gh pr:*)",
+      "Bash(where gh:*)"
     ]
   },
   "enabledPlugins": {

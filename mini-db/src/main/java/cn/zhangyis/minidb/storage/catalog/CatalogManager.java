@@ -355,6 +355,114 @@ public class CatalogManager {
         }
     }
 
+    public void createIndex(String dbName, String tableName, String indexName,
+                            IndexType indexType, List<String> columnNames) throws CatalogException {
+        ensureInitialized();
+        validateIdentifier("database", dbName);
+        validateIdentifier("table", tableName);
+        validateIdentifier("index", indexName);
+        Objects.requireNonNull(indexType, "indexType");
+        if (columnNames == null || columnNames.isEmpty()) {
+            throw new CatalogException("Index columns must not be empty");
+        }
+        if (indexType == IndexType.PRIMARY) {
+            throw new CatalogException("CREATE INDEX does not support PRIMARY index type");
+        }
+
+        ReentrantLock lock = getOrCreateDbLock(dbName);
+        lock.lock();
+        try {
+            DatabaseDescriptor db = cache.getDatabase(dbName);
+            if (db == null) {
+                throw CatalogException.databaseNotFound(dbName);
+            }
+
+            TableDescriptor table = cache.getTable(dbName, tableName);
+            if (table == null) {
+                throw CatalogException.tableNotFound(tableName);
+            }
+
+            long indexId = idGenerator.allocateIndexId();
+            List<IndexDescriptor.ColumnDescriptor> indexColumns = buildIndexColumns(table, columnNames);
+            long now = System.currentTimeMillis();
+            TableDescriptor updatedTable = copyTableWithSecondaryIndex(table, indexId, now);
+
+            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+                IndexManager indexManager = new IndexManager(bufferPool, table.getSpaceId(), TABLE_INDEX_META_PAGE_NO);
+                indexManager.initialize(mtr);
+                indexManager.createIndex(
+                        indexId,
+                        indexName,
+                        table.getTableId(),
+                        indexType,
+                        indexColumns,
+                        mtr
+                );
+                persistTableUpdate(updatedTable, mtr);
+                mtr.commit();
+            }
+
+            cache.putTable(dbName, updatedTable);
+        } catch (MiniDbException e) {
+            if (e instanceof CatalogException catalogException) {
+                throw catalogException;
+            }
+            throw CatalogException.persistenceFailed("createIndex", e);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void dropIndex(String dbName, String tableName, String indexName) throws CatalogException {
+        ensureInitialized();
+        validateIdentifier("database", dbName);
+        validateIdentifier("table", tableName);
+        validateIdentifier("index", indexName);
+        if (PRIMARY_INDEX_NAME.equalsIgnoreCase(indexName)) {
+            throw new CatalogException("DROP INDEX does not support PRIMARY");
+        }
+
+        ReentrantLock lock = getOrCreateDbLock(dbName);
+        lock.lock();
+        try {
+            DatabaseDescriptor db = cache.getDatabase(dbName);
+            if (db == null) {
+                throw CatalogException.databaseNotFound(dbName);
+            }
+
+            TableDescriptor table = cache.getTable(dbName, tableName);
+            if (table == null) {
+                throw CatalogException.tableNotFound(tableName);
+            }
+
+            long now = System.currentTimeMillis();
+            try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
+                IndexManager indexManager = new IndexManager(bufferPool, table.getSpaceId(), TABLE_INDEX_META_PAGE_NO);
+                indexManager.initialize(mtr);
+
+                IndexDescriptor descriptor = findIndexByName(indexManager, table.getTableId(), indexName);
+                if (descriptor == null || descriptor.isPrimary()) {
+                    throw new CatalogException("Index not found: " + indexName + " on table " + tableName);
+                }
+                if (!indexManager.dropIndex(descriptor.getIndexId(), mtr)) {
+                    throw new CatalogException("Index not found: " + indexName + " on table " + tableName);
+                }
+
+                TableDescriptor updatedTable = copyTableWithoutSecondaryIndex(table, descriptor.getIndexId(), now);
+                persistTableUpdate(updatedTable, mtr);
+                mtr.commit();
+                cache.putTable(dbName, updatedTable);
+            }
+        } catch (MiniDbException e) {
+            if (e instanceof CatalogException catalogException) {
+                throw catalogException;
+            }
+            throw CatalogException.persistenceFailed("dropIndex", e);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     // ==================== ALTER TABLE ADD COLUMN (Instant DDL) ====================
 
     /**
@@ -670,52 +778,59 @@ public class CatalogManager {
      * @throws CatalogException 如果持久化失败
      */
     private void persistTableUpdate(TableDescriptor table) throws CatalogException {
+        persistTableUpdate(table, "alterTableAddColumn");
+    }
+
+    private void persistTableUpdate(TableDescriptor table, String operation) throws CatalogException {
         try {
-            PageId metaPageId = PageId.of(SYSTEM_SPACE_ID, CatalogMetaPage.CATALOG_META_PAGE_NO);
-            TableMetaPage.TableEntry entry = toTableEntry(table);
-
             try (MiniTransaction mtr = new MiniTransaction(bufferPool)) {
-                BufferFrame metaFrame = mtr.getPageFrame(metaPageId, BufferPool.FetchMode.READ_EXISTING);
-                metaFrame.writeLock();
-                try {
-                    int firstTableMetaPageNo = CatalogMetaPage.readFirstTableMetaPage(metaFrame);
-                    if (firstTableMetaPageNo == 0) {
-                        throw new CatalogException("Catalog first TableMetaPage is missing");
-                    }
-
-                    boolean updated = false;
-                    int currentPageNo = firstTableMetaPageNo;
-                    while (currentPageNo != 0 && !updated) {
-                        BufferFrame frame = mtr.getPageFrame(
-                                PageId.of(SYSTEM_SPACE_ID, currentPageNo),
-                                BufferPool.FetchMode.READ_EXISTING);
-                        frame.writeLock();
-                        try {
-                            if (TableMetaPage.updateEntry(frame, entry)) {
-                                // 持久化 IdGenerator（columnId 已分配，INV-6）
-                                CatalogMetaPage.writeIdGenerator(metaFrame, idGenerator);
-                                mtr.markDirty(frame.getPage());
-                                mtr.markDirty(metaFrame.getPage());
-                                updated = true;
-                            } else {
-                                currentPageNo = TableMetaPage.readNextPage(frame);
-                            }
-                        } finally {
-                            frame.writeUnlock();
-                        }
-                    }
-
-                    if (!updated) {
-                        throw new CatalogException(
-                                "Table entry not found in TableMetaPage for tableId=" + table.getTableId());
-                    }
-                } finally {
-                    metaFrame.writeUnlock();
-                }
+                persistTableUpdate(table, mtr);
                 mtr.commit();
             }
         } catch (MiniDbException e) {
-            throw CatalogException.persistenceFailed("alterTableAddColumn", e);
+            throw CatalogException.persistenceFailed(operation, e);
+        }
+    }
+
+    private void persistTableUpdate(TableDescriptor table, MiniTransaction mtr) throws MiniDbException {
+        PageId metaPageId = PageId.of(SYSTEM_SPACE_ID, CatalogMetaPage.CATALOG_META_PAGE_NO);
+        TableMetaPage.TableEntry entry = toTableEntry(table);
+
+        BufferFrame metaFrame = mtr.getPageFrame(metaPageId, BufferPool.FetchMode.READ_EXISTING);
+        metaFrame.writeLock();
+        try {
+            int firstTableMetaPageNo = CatalogMetaPage.readFirstTableMetaPage(metaFrame);
+            if (firstTableMetaPageNo == 0) {
+                throw new CatalogException("Catalog first TableMetaPage is missing");
+            }
+
+            boolean updated = false;
+            int currentPageNo = firstTableMetaPageNo;
+            while (currentPageNo != 0 && !updated) {
+                BufferFrame frame = mtr.getPageFrame(
+                        PageId.of(SYSTEM_SPACE_ID, currentPageNo),
+                        BufferPool.FetchMode.READ_EXISTING);
+                frame.writeLock();
+                try {
+                    if (TableMetaPage.updateEntry(frame, entry)) {
+                        CatalogMetaPage.writeIdGenerator(metaFrame, idGenerator);
+                        mtr.markDirty(frame.getPage());
+                        mtr.markDirty(metaFrame.getPage());
+                        updated = true;
+                    } else {
+                        currentPageNo = TableMetaPage.readNextPage(frame);
+                    }
+                } finally {
+                    frame.writeUnlock();
+                }
+            }
+
+            if (!updated) {
+                throw new CatalogException(
+                        "Table entry not found in TableMetaPage for tableId=" + table.getTableId());
+            }
+        } finally {
+            metaFrame.writeUnlock();
         }
     }
 
@@ -1010,6 +1125,65 @@ public class CatalogManager {
             columnsByName.put(column.getName(), column);
         }
         return columnsByName;
+    }
+
+    private List<IndexDescriptor.ColumnDescriptor> buildIndexColumns(TableDescriptor table, List<String> columnNames)
+            throws CatalogException {
+        Map<String, ColumnMeta> columnsByName = indexColumnsByName(table.getColumns());
+        List<IndexDescriptor.ColumnDescriptor> indexColumns = new ArrayList<>(columnNames.size());
+        for (String columnName : columnNames) {
+            ColumnMeta column = columnsByName.get(columnName);
+            if (column == null) {
+                throw CatalogException.columnNotFound(table.getTableName(), columnName);
+            }
+            indexColumns.add(TypeBridge.toIndexColumn(column, false));
+        }
+        return indexColumns;
+    }
+
+    private IndexDescriptor findIndexByName(IndexManager indexManager, long tableId, String indexName) {
+        for (IndexDescriptor descriptor : indexManager.getTableIndexes(tableId)) {
+            if (descriptor.getIndexName().equalsIgnoreCase(indexName)) {
+                return descriptor;
+            }
+        }
+        return null;
+    }
+
+    private TableDescriptor copyTableWithSecondaryIndex(TableDescriptor table, long indexId, long updateTime) {
+        List<Long> secondaryIndexIds = new ArrayList<>(table.getSecondaryIndexIds());
+        secondaryIndexIds.add(indexId);
+        return new TableDescriptor(
+                table.getTableId(),
+                table.getTableName(),
+                table.getDatabaseId(),
+                table.getSpaceId(),
+                table.getSchemaRegistry(),
+                table.getColumns(),
+                table.getPrimaryIndexId(),
+                secondaryIndexIds,
+                table.getCreateTime(),
+                updateTime,
+                table.getState()
+        );
+    }
+
+    private TableDescriptor copyTableWithoutSecondaryIndex(TableDescriptor table, long indexId, long updateTime) {
+        List<Long> secondaryIndexIds = new ArrayList<>(table.getSecondaryIndexIds());
+        secondaryIndexIds.remove(Long.valueOf(indexId));
+        return new TableDescriptor(
+                table.getTableId(),
+                table.getTableName(),
+                table.getDatabaseId(),
+                table.getSpaceId(),
+                table.getSchemaRegistry(),
+                table.getColumns(),
+                table.getPrimaryIndexId(),
+                secondaryIndexIds,
+                table.getCreateTime(),
+                updateTime,
+                table.getState()
+        );
     }
 
     private String normalizeIndexName(IndexDefinition definition) throws CatalogException {

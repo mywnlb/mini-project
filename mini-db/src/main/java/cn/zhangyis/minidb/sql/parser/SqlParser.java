@@ -343,7 +343,9 @@ public class SqlParser {
         if (tokens.current().type() == TokenType.TABLE) {
             return parseCreateTable();
         }
-        if (tokens.current().type() == TokenType.INDEX) {
+        if (tokens.current().type() == TokenType.INDEX
+                || tokens.current().type() == TokenType.KEY
+                || isCreateUniqueIndexStart()) {
             return parseCreateIndex();
         }
         throw new SqlParseException("Expected TABLE or INDEX after CREATE, got " + tokens.current());
@@ -567,19 +569,26 @@ public class SqlParser {
     }
 
     private SqlCreateIndex parseCreateIndex() {
-        tokens.expect(TokenType.INDEX);
+        boolean unique = false;
+        if (isIdentifierValue("UNIQUE")) {
+            unique = true;
+            tokens.next();
+        }
+
+        if (tokens.current().type() == TokenType.INDEX || tokens.current().type() == TokenType.KEY) {
+            tokens.next();
+        } else {
+            throw new SqlParseException("Expected INDEX after CREATE"
+                    + (unique ? " UNIQUE" : "") + ", got " + tokens.current());
+        }
+
         String indexName = tokens.current().value();
         tokens.expect(TokenType.IDENTIFIER);
         tokens.expect(TokenType.ON);
-        SqlIdentifier table = parseIdentifier();
-        tokens.expect(TokenType.LPAREN);
-        java.util.List<String> columns = new java.util.ArrayList<>();
-        do {
-            columns.add(tokens.current().value());
-            tokens.expect(TokenType.IDENTIFIER);
-        } while (tokens.match(TokenType.COMMA));
-        tokens.expect(TokenType.RPAREN);
-        return new SqlCreateIndex(indexName, table, columns);
+        SqlIdentifier table = parseQualifiedTableName();
+        java.util.List<String> columns = parseIndexColumnList();
+        skipIndexOptions();
+        return new SqlCreateIndex(indexName, table, columns, unique);
     }
 
     // ==================== DROP (TABLE / INDEX) ====================
@@ -1242,6 +1251,14 @@ public class SqlParser {
     private boolean isUniqueConstraintStart() {
         return tokens.current().type() == TokenType.IDENTIFIER
                 && "UNIQUE".equals(tokens.current().value());
+    }
+
+    private boolean isCreateUniqueIndexStart() {
+        if (!isIdentifierValue("UNIQUE")) {
+            return false;
+        }
+        TokenType nextType = tokens.peek().type();
+        return nextType == TokenType.INDEX || nextType == TokenType.KEY;
     }
 
     private boolean isForeignKeyConstraintStart() {

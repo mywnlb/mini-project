@@ -17,10 +17,13 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,6 +46,7 @@ class JdbcStorageIntegrationTest {
     private static final String JOIN_ORDERS_TABLE = "JOIN_ORDERS";
     private static final String PS_USERS_TABLE = "PS_USERS";
     private static final String PS_ORDERS_TABLE = "PS_ORDERS";
+    private static final String META_USERS_TABLE = "META_USERS";
 
     private Path dataDir;
     private DiskManager diskManager;
@@ -295,6 +299,102 @@ class JdbcStorageIntegrationTest {
                     assertTrue(rs.getLong(4) >= 1L);
                     assertEquals(0L, rs.getLong(5));
                     assertEquals(0L, rs.getLong(6));
+                    assertFalse(rs.next());
+                }
+            }
+        }
+    }
+
+    @Test
+    void jdbcStatement_showIndex_matchesInformationSchemaStatistics() throws Exception {
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate("CREATE TABLE " + META_USERS_TABLE + " (ID INT PRIMARY KEY, EMAIL VARCHAR)");
+            stmt.executeUpdate("CREATE UNIQUE INDEX UQ_META_USERS_EMAIL ON " + META_USERS_TABLE + "(EMAIL)");
+
+            List<String> showIndexRows = new ArrayList<>();
+            try (ResultSet rs = stmt.executeQuery("SHOW INDEX FROM " + META_USERS_TABLE)) {
+                ResultSetMetaData meta = rs.getMetaData();
+                assertEquals(13, meta.getColumnCount(), "SHOW INDEX 应返回 13 列兼容元数据");
+                assertEquals("Table", meta.getColumnLabel(1));
+                assertEquals("Key_name", meta.getColumnLabel(3));
+                assertEquals("Column_name", meta.getColumnLabel(5));
+
+                while (rs.next()) {
+                    showIndexRows.add(rs.getString("Key_name") + "|" + rs.getString("Column_name") + "|"
+                            + rs.getInt("Non_unique"));
+                }
+            }
+
+            List<String> statisticsRows = new ArrayList<>();
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE " +
+                    "FROM information_schema.STATISTICS " +
+                    "WHERE TABLE_SCHEMA = '" + TEST_DATABASE + "' AND TABLE_NAME = '" + META_USERS_TABLE + "' " +
+                    "ORDER BY INDEX_NAME, SEQ_IN_INDEX")) {
+                while (rs.next()) {
+                    statisticsRows.add(rs.getString("INDEX_NAME") + "|" + rs.getString("COLUMN_NAME") + "|"
+                            + rs.getInt("NON_UNIQUE"));
+                }
+            }
+
+            assertEquals(statisticsRows, showIndexRows, "SHOW INDEX 与 information_schema.STATISTICS 必须对齐");
+        }
+    }
+
+    @Test
+    void jdbcPreparedStatement_canQueryConstraintMetadataTables() throws Exception {
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate("CREATE TABLE " + META_USERS_TABLE + " (ID INT PRIMARY KEY, EMAIL VARCHAR)");
+            stmt.executeUpdate("CREATE UNIQUE INDEX UQ_META_USERS_EMAIL ON " + META_USERS_TABLE + "(EMAIL)");
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT CONSTRAINT_NAME, COLUMN_NAME " +
+                    "FROM information_schema.KEY_COLUMN_USAGE " +
+                    "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? " +
+                    "ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION")) {
+                ps.setString(1, TEST_DATABASE);
+                ps.setString(2, META_USERS_TABLE);
+
+                try (ResultSet rs = ps.executeQuery()) {
+                    ResultSetMetaData meta = rs.getMetaData();
+                    assertEquals(2, meta.getColumnCount());
+                    assertEquals("CONSTRAINT_NAME", meta.getColumnLabel(1));
+                    assertEquals("COLUMN_NAME", meta.getColumnLabel(2));
+
+                    assertTrue(rs.next());
+                    assertEquals("PRIMARY", rs.getString(1));
+                    assertEquals("ID", rs.getString(2));
+
+                    assertTrue(rs.next());
+                    assertEquals("UQ_META_USERS_EMAIL", rs.getString(1));
+                    assertEquals("EMAIL", rs.getString(2));
+                    assertFalse(rs.next());
+                }
+            }
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE " +
+                    "FROM information_schema.TABLE_CONSTRAINTS " +
+                    "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? " +
+                    "ORDER BY CONSTRAINT_NAME")) {
+                ps.setString(1, TEST_DATABASE);
+                ps.setString(2, META_USERS_TABLE);
+
+                try (ResultSet rs = ps.executeQuery()) {
+                    ResultSetMetaData meta = rs.getMetaData();
+                    assertEquals(2, meta.getColumnCount());
+                    assertEquals("CONSTRAINT_NAME", meta.getColumnLabel(1));
+                    assertEquals("CONSTRAINT_TYPE", meta.getColumnLabel(2));
+
+                    assertTrue(rs.next());
+                    assertEquals("PRIMARY", rs.getString(1));
+                    assertEquals("PRIMARY KEY", rs.getString(2));
+
+                    assertTrue(rs.next());
+                    assertEquals("UQ_META_USERS_EMAIL", rs.getString(1));
+                    assertEquals("UNIQUE", rs.getString(2));
                     assertFalse(rs.next());
                 }
             }
