@@ -69,4 +69,42 @@ public interface RecordComparator {
      * @return 键长度
      */
     int getKeyLength(byte[] key);
+
+    /**
+     * 从页面读取完整记录字节（含 extraBytes 前缀）。
+     *
+     * <p>Compact 行格式的记录在 recStart 之前有 varlen list + NULL bitmap，
+     * 本方法将这些前缀字节一并读取，返回的 {@link RecordBytes} 中
+     * recordHeaderOffset 指示 RecordHeader 在字节数组中的起始位置。</p>
+     *
+     * <p>默认实现假设 SimpleRecordBuilder 的固定 10 字节记录（header 5B + key 4B + value 1B）。</p>
+     *
+     * @param buf      页面 ByteBuffer
+     * @param recStart 记录头起始偏移（页面内）
+     * @return 完整记录字节封装
+     */
+    default RecordBytes readFullRecord(ByteBuffer buf, int recStart) {
+        int size = SimpleRecordBuilder.RECORD_HEADER_SIZE + SimpleRecordBuilder.KEY_SIZE + 1;
+        byte[] data = new byte[size];
+        for (int i = 0; i < size; i++) {
+            data[i] = buf.get(recStart + i);
+        }
+        return new RecordBytes(data, 0);
+    }
+
+    /**
+     * 比较两个已提取的 key 字节数组。
+     *
+     * <p>用于页分裂时比较 searchKey 与 splitKey。
+     * 默认实现假设 4 字节整数键（兼容 {@link IntKeyComparator}）。</p>
+     *
+     * @param key1 键 1
+     * @param key2 键 2
+     * @return 负数表示 key1 < key2，0 表示相等，正数表示 key1 > key2
+     */
+    default int compareExtractedKeys(byte[] key1, byte[] key2) {
+        int k1 = IntKeyComparator.bytesToInt(key1);
+        int k2 = IntKeyComparator.bytesToInt(key2);
+        return Integer.compare(k1, k2);
+    }
 }

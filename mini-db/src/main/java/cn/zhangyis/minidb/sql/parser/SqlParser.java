@@ -629,7 +629,8 @@ public class SqlParser {
         tokens.match(TokenType.COLUMN);
         String colName = tokens.current().value();
         tokens.expect(TokenType.IDENTIFIER);
-        SqlType colType = parseColumnType();
+        ParsedColumnType parsed = parseColumnType();
+        SqlType colType = parsed.type();
 
         // 可选 NOT NULL
         boolean nullable = true;

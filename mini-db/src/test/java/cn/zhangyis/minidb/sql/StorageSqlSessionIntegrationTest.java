@@ -319,10 +319,12 @@ class StorageSqlSessionIntegrationTest {
         IndexManager indexManager = new IndexManager(bufferPool, table.getSpaceId(), 3);
         indexManager.initialize(mtr);
         var primary = indexManager.getDescriptor(table.getPrimaryIndexId());
+        var schema = table.getSchemaRegistry().getCurrentSchema();
+        var layout = SystemLayout.WITH_PK;
         return new BTree(
             primary.toBTreeMetadata(),
             bufferPool,
-            new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), SystemLayout.WITH_PK.userColumnsOffset())
+            new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset(), schema, layout)
         );
     }
 

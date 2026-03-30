@@ -1,9 +1,9 @@
 package cn.zhangyis.minidb.storage.btree;
 
 import cn.zhangyis.minidb.common.exception.MiniDbException;
-import cn.zhangyis.minidb.common.exception.MtrStateException;
 import cn.zhangyis.minidb.storage.buffer.BufferFrame;
 import cn.zhangyis.minidb.storage.buffer.BufferPool;
+import cn.zhangyis.minidb.storage.constants.StorageConstants;
 import cn.zhangyis.minidb.storage.mtr.MiniTransaction;
 import cn.zhangyis.minidb.storage.page.IndexPageLayout;
 import cn.zhangyis.minidb.storage.page.IndexPageOps;
@@ -17,7 +17,8 @@ import java.util.List;
 /**
  * 页分裂操作
  *
- * <p>实现 B+Tree 页面分裂，当页面空间不足时触发。</p>
+ * <p>实现 B+Tree 页面分裂，当页面空间不足时触发。
+ * 支持 SimpleRecordBuilder 固定格式和 Compact 行格式（通过 {@link RecordComparator#readFullRecord} 委托）。</p>
  *
  * <h2>分裂策略</h2>
  * <ul>
@@ -26,37 +27,26 @@ import java.util.List;
  *   <li><b>分裂键</b>: 新页面的最小键，用于插入父节点</li>
  * </ul>
  *
- * <h2>分裂流程</h2>
- * <ol>
- *   <li>分配新页面</li>
- *   <li>初始化新页面</li>
- *   <li>找到分裂点（中间记录）</li>
- *   <li>将后半部分记录迁移到新页面</li>
- *   <li>更新原页面的记录链表</li>
- *   <li>返回分裂键供上层使用</li>
- * </ol>
- *
  * <h2>不变量</h2>
  * <ul>
- *   <li>I1: 分裂后原页面所有键 < 分裂键</li>
- *   <li>I2: 分裂后新页面所有键 >= 分裂键</li>
- *   <li>I3: 两个页面的记录链都完整</li>
- *   <li>I4: 分裂是原子操作</li>
+ *   <li>I1: 分裂后原页面所有键 &lt; 分裂键</li>
+ *   <li>I2: 分裂后新页面所有键 &gt;= 分裂键</li>
+ *   <li>I3: 两个页面的记录链都完整（Infimum → ... → Supremum）</li>
+ *   <li>I4: 分裂是原子操作（单 MTR 内完成）</li>
+ *   <li>INV-S4: 叶子页双向链表（FIL_PAGE_PREV/NEXT）保持正确</li>
  * </ul>
  *
  * @author MiniDB
- * @version 1.0
+ * @version 2.0
  */
 public final class PageSplit {
 
     /**
      * 分裂页面
      *
-     * <p>将页面分裂为两个页面，返回分裂结果。</p>
-     *
      * @param frame       原页面 BufferFrame (必须持有 X-latch)
      * @param bufferPool  BufferPool（用于分配新页面）
-     * @param comparator  记录比较器
+     * @param comparator  记录比较器（通过 readFullRecord 支持不同记录格式）
      * @param mtr         Mini-Transaction
      * @return 分裂结果，包含分裂键和新页面信息
      * @throws MiniDbException 如果 MTR 不在 ACTIVE 状态
@@ -64,14 +54,10 @@ public final class PageSplit {
     public static SplitResult split(BufferFrame frame, BufferPool bufferPool,
                                     RecordComparator comparator, MiniTransaction mtr)
             throws MiniDbException {
-        if (comparator instanceof ClusteredPrimaryKeyComparator) {
-            throw new UnsupportedOperationException(
-                    "Page split for compact clustered rows is not yet supported safely");
-        }
 
         ByteBuffer buf = frame.buffer();
 
-        // 1. 收集所有用户记录信息
+        // 1. 收集所有用户记录信息（含完整记录字节）
         List<RecordInfo> records = collectRecords(buf, comparator);
         if (records.size() < 2) {
             throw new IllegalStateException("Cannot split page with less than 2 records");
@@ -93,12 +79,15 @@ public final class PageSplit {
             IndexPageOps.initPage(newFrame, indexId, level, mtr);
 
             // 4. 迁移后半部分记录到新页面
-            int movedCount = migrateRecords(frame, newFrame, records, splitIndex, comparator, mtr);
+            int movedCount = migrateRecords(newFrame, records, splitIndex, mtr);
 
             // 5. 更新原页面（截断链表）
             truncateOriginalPage(frame, records, splitIndex, mtr);
 
-            // 6. 提取分裂键
+            // 6. 维护叶子页双向链表（INV-S4）
+            updatePageLinks(frame, newFrame, newPage.getPageId(), bufferPool, mtr);
+
+            // 7. 提取分裂键
             byte[] splitKey = splitRecord.key;
 
             return new SplitResult(splitKey, newPage.getPageId(),
@@ -135,9 +124,8 @@ public final class PageSplit {
         // 1. 先执行分裂
         SplitResult result = split(frame, bufferPool, comparator, mtr);
 
-        // 2. 决定新记录应该插入哪个页面
-        // 如果 searchKey < splitKey，插入原页面；否则插入新页面
-        int cmp = compareKeys(searchKey, result.getSplitKey());
+        // 2. 决定新记录应该插入哪个页面（INV-S3: 使用 comparator 而非硬编码 IntKey）
+        int cmp = comparator.compareExtractedKeys(searchKey, result.getSplitKey());
 
         if (cmp < 0) {
             // 插入原页面
@@ -163,7 +151,10 @@ public final class PageSplit {
     }
 
     /**
-     * 收集页面中所有用户记录的信息
+     * 收集页面中所有用户记录的信息。
+     *
+     * <p>通过 {@link RecordComparator#readFullRecord} 读取完整记录字节，
+     * 支持 Compact 行格式（含 extraBytes）和简单定长格式。</p>
      */
     private static List<RecordInfo> collectRecords(ByteBuffer buf, RecordComparator comparator) {
         List<RecordInfo> records = new ArrayList<>();
@@ -171,7 +162,8 @@ public final class PageSplit {
         int current = IndexPageLayout.readFirstUserRecordOffset(buf);
         while (current != IndexPageLayout.SUPREMUM_OFFSET && current != 0) {
             byte[] key = comparator.extractKey(buf, current);
-            records.add(new RecordInfo(current, key));
+            RecordBytes fullRecord = comparator.readFullRecord(buf, current);
+            records.add(new RecordInfo(current, key, fullRecord));
             current = IndexPageLayout.readRecordNext(buf, current);
         }
 
@@ -179,28 +171,25 @@ public final class PageSplit {
     }
 
     /**
-     * 迁移记录到新页面
+     * 迁移记录到新页面。
+     *
+     * <p>使用 {@link RecordBytes} 中的完整记录数据和 recordHeaderOffset
+     * 调用 {@link IndexPageOps#insertRecord}，确保 Compact 记录的 extraBytes 正确迁移。</p>
      *
      * @return 迁移的记录数
      */
-    private static int migrateRecords(BufferFrame oldFrame, BufferFrame newFrame,
-                                      List<RecordInfo> records, int splitIndex,
-                                      RecordComparator comparator, MiniTransaction mtr)
+    private static int migrateRecords(BufferFrame newFrame, List<RecordInfo> records,
+                                      int splitIndex, MiniTransaction mtr)
             throws MiniDbException {
-        ByteBuffer oldBuf = oldFrame.buffer();
         int movedCount = 0;
-
-        // 从分裂点开始，将记录复制到新页面
         int prevOffset = IndexPageLayout.INFIMUM_OFFSET;
 
         for (int i = splitIndex; i < records.size(); i++) {
             RecordInfo recInfo = records.get(i);
+            RecordBytes rb = recInfo.fullRecord;
 
-            // 读取原记录数据
-            byte[] recordData = readRecordData(oldBuf, recInfo.offset);
-
-            // 在新页面插入
-            int newOffset = IndexPageOps.insertRecord(newFrame, recordData, prevOffset, mtr);
+            // INV-S1 & INV-S2: 使用完整记录字节和正确的 recordHeaderOffset
+            int newOffset = IndexPageOps.insertRecord(newFrame, rb.data(), rb.recordHeaderOffset(), prevOffset, mtr);
             prevOffset = newOffset;
             movedCount++;
         }
@@ -214,8 +203,6 @@ public final class PageSplit {
     private static void truncateOriginalPage(BufferFrame frame, List<RecordInfo> records,
                                              int splitIndex, MiniTransaction mtr)
             throws MiniDbException {
-        ByteBuffer buf = frame.buffer();
-
         if (splitIndex == 0) {
             // 所有记录都迁移了，原页面变空
             IndexPageOps.setRecordNext(frame, IndexPageLayout.INFIMUM_OFFSET,
@@ -238,42 +225,40 @@ public final class PageSplit {
     }
 
     /**
-     * 读取记录数据（包括记录头）
+     * 维护叶子页双向链表（INV-S4）。
      *
-     * <p>简化实现：假设固定大小记录。实际应根据记录格式计算大小。</p>
+     * <p>分裂后新页面插入到原页面的右侧：</p>
+     * <pre>
+     * 分裂前: ... ↔ [oldPage] ↔ [oldNextPage] ↔ ...
+     * 分裂后: ... ↔ [oldPage] ↔ [newPage] ↔ [oldNextPage] ↔ ...
+     * </pre>
      */
-    private static byte[] readRecordData(ByteBuffer buf, int offset) {
-        // 简化实现：读取固定大小
-        // 实际应该根据记录头中的信息计算记录大小
-        int recordSize = estimateRecordSize(buf, offset);
-        byte[] data = new byte[recordSize];
+    private static void updatePageLinks(BufferFrame oldFrame, BufferFrame newFrame,
+                                        PageId newPageId, BufferPool bufferPool,
+                                        MiniTransaction mtr) throws MiniDbException {
+        ByteBuffer oldBuf = oldFrame.buffer();
+        int oldNextPageNo = IndexPageLayout.readNextPage(oldBuf);
+        int oldPageNo = oldFrame.getPageId().getPageNo();
+        int newPageNo = newPageId.getPageNo();
 
-        for (int i = 0; i < recordSize; i++) {
-            data[i] = buf.get(offset + i);
+        // newPage.prev = oldPage
+        IndexPageOps.setPrevPage(newFrame, oldPageNo, mtr);
+        // newPage.next = oldPage 的原 next
+        IndexPageOps.setNextPage(newFrame, oldNextPageNo, mtr);
+        // oldPage.next = newPage
+        IndexPageOps.setNextPage(oldFrame, newPageNo, mtr);
+
+        // 如果原页面有 next 页面，更新该页面的 prev 指针
+        if (oldNextPageNo != StorageConstants.FIL_NULL && oldNextPageNo != 0) {
+            PageId nextPageId = new PageId(oldFrame.getPageId().getSpaceId(), oldNextPageNo);
+            BufferFrame nextFrame = bufferPool.getPage(nextPageId, BufferPool.FetchMode.READ_EXISTING);
+            nextFrame.writeLock();
+            try {
+                IndexPageOps.setPrevPage(nextFrame, newPageNo, mtr);
+            } finally {
+                nextFrame.writeUnlock();
+            }
         }
-
-        return data;
-    }
-
-    /**
-     * 估算记录大小
-     *
-     * <p>简化实现：使用固定大小。实际应解析记录头。</p>
-     */
-    private static int estimateRecordSize(ByteBuffer buf, int offset) {
-        // 简化：假设记录头 5 字节 + 键 4 字节 + 值 1 字节 = 10 字节
-        // 实际实现应该从记录头解析
-        return SimpleRecordBuilder.RECORD_HEADER_SIZE + SimpleRecordBuilder.KEY_SIZE + 1;
-    }
-
-    /**
-     * 比较两个键
-     */
-    private static int compareKeys(byte[] key1, byte[] key2) {
-        // 简化：假设是整数键
-        int k1 = IntKeyComparator.bytesToInt(key1);
-        int k2 = IntKeyComparator.bytesToInt(key2);
-        return Integer.compare(k1, k2);
     }
 
     /**
@@ -290,8 +275,6 @@ public final class PageSplit {
     /**
      * 计算建议的分裂点
      *
-     * <p>返回分裂后原页面应保留的记录数。</p>
-     *
      * @param pageBuffer 页面 ByteBuffer
      * @return 建议保留的记录数
      */
@@ -306,10 +289,12 @@ public final class PageSplit {
     private static class RecordInfo {
         final int offset;
         final byte[] key;
+        final RecordBytes fullRecord;
 
-        RecordInfo(int offset, byte[] key) {
+        RecordInfo(int offset, byte[] key, RecordBytes fullRecord) {
             this.offset = offset;
             this.key = key;
+            this.fullRecord = fullRecord;
         }
     }
 

@@ -700,7 +700,7 @@ public class StorageDataSource implements DataSourceSpi, TransactionLifecyclePar
                         new RowReader(table.getSchemaRegistry(), layout),
                         primary.toCompositeKeyDef(),
                         primary,
-                        new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset()),
+                        new ClusteredPrimaryKeyComparator(primary.toCompositeKeyDef(), layout.userColumnsOffset(), schema, layout),
                         secondaryIndexes,
                         undoLogManager
                 );

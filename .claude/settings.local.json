@@ -38,7 +38,21 @@
       "Bash(find /c/coding/java/self/miniproject/miniproject/md -name *.md -type f)",
       "Bash(find C:codingjavaselfminiprojectminiprojectmini-dbsrctestjavacnzhangyisminidbsql -type f -name *.java)",
       "Bash(find C:/coding/java/self/miniproject/miniproject -name *Type*.java -path */ast/* -o -name *Type*.java -path */rel/*)",
-      "Bash(./gradlew classes:*)"
+      "Bash(./gradlew classes:*)",
+      "Bash(find C:codingjavaselfminiprojectminiprojectmini-dbsrc -type f -name *SqlScript* -o -name *SqlRunner* -o -name *ScriptRunner*)",
+      "Bash(find C:codingjavaselfminiprojectminiprojectmini-db -type f -name *Catalog*.java)",
+      "Bash(find C:codingjavaselfminiprojectminiprojectmini-dbsrc -type f -name *DataSource*)",
+      "Bash(find C:/coding/java/self/miniproject/miniproject/mini-db -path *test* -name *.java)",
+      "Bash(awk '{print length}')",
+      "Bash(JAVA_HOME='C:\\\\Program Files\\\\Java\\\\jdk-21' GRADLE_USER_HOME='C:\\\\gradlereportiry' D:/worker/gradle71/gradle-8.5-bin/gradle-8.5/bin/gradle.bat :mini-db:test --tests \"cn.zhangyis.minidb.sql.SqlScriptRunnerTest\")",
+      "Bash(JAVA_HOME='C:\\\\Program Files\\\\Java\\\\jdk-21' GRADLE_USER_HOME='C:\\\\gradlereportiry' D:/worker/gradle71/gradle-8.5-bin/gradle-8.5/bin/gradle.bat :mini-db:test --tests \"cn.zhangyis.minidb.sql.SqlScriptRunnerTest\" --info)",
+      "Bash(JAVA_HOME='C:\\\\Program Files\\\\Java\\\\jdk-21' GRADLE_USER_HOME='C:\\\\gradlereportiry' D:/worker/gradle71/gradle-8.5-bin/gradle-8.5/bin/gradle.bat :mini-db:test --tests \"cn.zhangyis.minidb.sql.SqlScriptRunnerTest.fullDbOnetravelImport\" --info)",
+      "Bash(JAVA_HOME='C:\\\\Program Files\\\\Java\\\\jdk-21' GRADLE_USER_HOME='C:\\\\gradlereportiry' D:/worker/gradle71/gradle-8.5-bin/gradle-8.5/bin/gradle.bat :mini-db:cleanTest :mini-db:test --tests \"cn.zhangyis.minidb.sql.SqlScriptRunnerTest.fullDbOnetravelImport\")",
+      "WebFetch(domain:openai.com)",
+      "WebSearch",
+      "WebFetch(domain:www.infoq.com)",
+      "WebFetch(domain:martinfowler.com)",
+      "WebFetch(domain:www.humanlayer.dev)"
     ]
   },
   "enabledPlugins": {

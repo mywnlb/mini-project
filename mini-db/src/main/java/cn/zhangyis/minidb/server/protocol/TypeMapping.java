@@ -24,37 +24,37 @@ public final class TypeMapping {
 
     private TypeMapping() {}
 
-    // SqlType → MySQL type code
-    private static final Map<SqlType, Integer> SQL_TO_MYSQL = Map.of(
-            SqlType.TINYINT, MysqlConstants.MYSQL_TYPE_TINY,
-            SqlType.SMALLINT, MysqlConstants.MYSQL_TYPE_SHORT,
-            SqlType.INT32, MysqlConstants.MYSQL_TYPE_LONG,
-            SqlType.BIGINT, MysqlConstants.MYSQL_TYPE_LONGLONG,
-            SqlType.CHAR, MysqlConstants.MYSQL_TYPE_STRING,
-            SqlType.VARCHAR, MysqlConstants.MYSQL_TYPE_VAR_STRING,
-            SqlType.TEXT, MysqlConstants.MYSQL_TYPE_BLOB,
-            SqlType.BLOB, MysqlConstants.MYSQL_TYPE_BLOB,
-            SqlType.JSON, MysqlConstants.MYSQL_TYPE_VAR_STRING,
-            SqlType.DECIMAL, MysqlConstants.MYSQL_TYPE_NEWDECIMAL,
-            SqlType.DATE, MysqlConstants.MYSQL_TYPE_DATE,
-            SqlType.TIME, MysqlConstants.MYSQL_TYPE_TIME,
-            SqlType.DATETIME, MysqlConstants.MYSQL_TYPE_DATETIME
+    // SqlType → MySQL type code（超过 10 对，使用 Map.ofEntries）
+    private static final Map<SqlType, Integer> SQL_TO_MYSQL = Map.ofEntries(
+            Map.entry(SqlType.TINYINT, MysqlConstants.MYSQL_TYPE_TINY),
+            Map.entry(SqlType.SMALLINT, MysqlConstants.MYSQL_TYPE_SHORT),
+            Map.entry(SqlType.INT32, MysqlConstants.MYSQL_TYPE_LONG),
+            Map.entry(SqlType.BIGINT, MysqlConstants.MYSQL_TYPE_LONGLONG),
+            Map.entry(SqlType.CHAR, MysqlConstants.MYSQL_TYPE_STRING),
+            Map.entry(SqlType.VARCHAR, MysqlConstants.MYSQL_TYPE_VAR_STRING),
+            Map.entry(SqlType.TEXT, MysqlConstants.MYSQL_TYPE_BLOB),
+            Map.entry(SqlType.BLOB, MysqlConstants.MYSQL_TYPE_BLOB),
+            Map.entry(SqlType.JSON, MysqlConstants.MYSQL_TYPE_VAR_STRING),
+            Map.entry(SqlType.DECIMAL, MysqlConstants.MYSQL_TYPE_NEWDECIMAL),
+            Map.entry(SqlType.DATE, MysqlConstants.MYSQL_TYPE_DATE),
+            Map.entry(SqlType.TIME, MysqlConstants.MYSQL_TYPE_TIME),
+            Map.entry(SqlType.DATETIME, MysqlConstants.MYSQL_TYPE_DATETIME)
     );
 
-    // MySQL type code → SqlType
-    private static final Map<Integer, SqlType> MYSQL_TO_SQL = Map.of(
-            MysqlConstants.MYSQL_TYPE_LONG, SqlType.INT32,
-            MysqlConstants.MYSQL_TYPE_LONGLONG, SqlType.BIGINT,
-            MysqlConstants.MYSQL_TYPE_VAR_STRING, SqlType.VARCHAR,
-            MysqlConstants.MYSQL_TYPE_NEWDECIMAL, SqlType.DECIMAL,
-            MysqlConstants.MYSQL_TYPE_DATE, SqlType.DATE,
-            MysqlConstants.MYSQL_TYPE_TIME, SqlType.TIME,
-            MysqlConstants.MYSQL_TYPE_DATETIME, SqlType.DATETIME,
-            MysqlConstants.MYSQL_TYPE_VARCHAR, SqlType.VARCHAR,
-            MysqlConstants.MYSQL_TYPE_STRING, SqlType.CHAR,
-            MysqlConstants.MYSQL_TYPE_BLOB, SqlType.BLOB,
-            MysqlConstants.MYSQL_TYPE_SHORT, SqlType.SMALLINT,
-            MysqlConstants.MYSQL_TYPE_TINY, SqlType.TINYINT
+    // MySQL type code → SqlType（超过 10 对，使用 Map.ofEntries）
+    private static final Map<Integer, SqlType> MYSQL_TO_SQL = Map.ofEntries(
+            Map.entry(MysqlConstants.MYSQL_TYPE_LONG, SqlType.INT32),
+            Map.entry(MysqlConstants.MYSQL_TYPE_LONGLONG, SqlType.BIGINT),
+            Map.entry(MysqlConstants.MYSQL_TYPE_VAR_STRING, SqlType.VARCHAR),
+            Map.entry(MysqlConstants.MYSQL_TYPE_NEWDECIMAL, SqlType.DECIMAL),
+            Map.entry(MysqlConstants.MYSQL_TYPE_DATE, SqlType.DATE),
+            Map.entry(MysqlConstants.MYSQL_TYPE_TIME, SqlType.TIME),
+            Map.entry(MysqlConstants.MYSQL_TYPE_DATETIME, SqlType.DATETIME),
+            Map.entry(MysqlConstants.MYSQL_TYPE_VARCHAR, SqlType.VARCHAR),
+            Map.entry(MysqlConstants.MYSQL_TYPE_STRING, SqlType.CHAR),
+            Map.entry(MysqlConstants.MYSQL_TYPE_BLOB, SqlType.BLOB),
+            Map.entry(MysqlConstants.MYSQL_TYPE_SHORT, SqlType.SMALLINT),
+            Map.entry(MysqlConstants.MYSQL_TYPE_TINY, SqlType.TINYINT)
     );
 
     /**
